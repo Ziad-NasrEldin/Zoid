@@ -171,8 +171,30 @@ Quality re-review:
 - Validate release documentation does not imply unsigned artifacts are ready for public distribution.
 - Validate docs contain placeholders only, not secrets.
 
+## Fix cycle notes
+
+### Post-push GitHub startup failure fix
+
+After the first approved commit was pushed, GitHub Actions run `26726274997` failed with `startup_failure`, no jobs, and API path `BuildFailed`.
+
+A fix subagent diagnosed YAML trigger ambiguity and updated `.github/workflows/ci.yml`:
+
+- Changed top-level `on:` to quoted `"on":`.
+- Changed `pull_request:` to `pull_request: {}`.
+- Added `workflow_dispatch: {}` for manual reruns.
+- Preserved push-to-main, PR trigger, verify job, package-macos `needs: verify`, Tauri build, and artifact upload.
+
+Post-fix verification:
+
+- `actionlint .github/workflows/ci.yml`: PASS.
+- Python YAML structural parse now returns top-level keys `['name', 'on', 'jobs']`.
+- Parsed triggers:
+  - `pull_request: {}`
+  - `push.branches: ['main']`
+  - `workflow_dispatch: {}`
+- `package-macos.needs == verify`: PASS.
+
 ## Known limitations / risks
 
-- The GitHub Actions workflow itself cannot be fully proven until committed/pushed and run on GitHub-hosted runners.
+- The GitHub Actions workflow must be re-pushed and verified on GitHub-hosted runners after the startup-failure fix.
 - Current DMGs remain unsigned/non-notarized and are for internal verification only.
-- `actionlint` was not installed locally; structural/manual workflow checks were used.

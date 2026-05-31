@@ -6,74 +6,63 @@ APPROVED
 
 ## Summary
 
-The feature adds a practical GitHub Actions CI workflow for source verification and macOS Tauri packaging, plus release documentation that correctly distinguishes unsigned internal DMGs from future signed/notarized public distribution artifacts. I found no required fixes. Local build, Rust tests, Tauri packaging, workflow linting, and DMG smoke checks passed. The only meaningful remaining gap is that the new workflow has not yet run on GitHub-hosted runners because the changes are still local/uncommitted; that is an expected deployment-readiness limitation, not a source-code blocker for this slice.
+Re-review focused on the post-push GitHub Actions startup-failure fix in `.github/workflows/ci.yml`. The workflow syntax is valid after quoting the top-level `"on"` key, changing `pull_request` to an explicit empty mapping, and adding `workflow_dispatch: {}`. `actionlint` passes with no errors, Ruby/Psych parses the trigger key as the string `"on"`, and the workflow still preserves the required pull request, push-to-main, manual dispatch, verify, package-macos, `needs: verify`, Tauri build, and artifact upload behavior.
+
+Important operational note: the fix is currently a local working-tree change, not on `origin/main`; `git branch -vv` shows `main` at `origin/main` commit `c2be7dd`, while `git status --short` shows `.github/workflows/ci.yml` and this handoff/report modified. GitHub-hosted runner verification still needs to happen after the fix is committed and pushed. I could not inspect remote workflow runs because `gh` is not authenticated and the unauthenticated GitHub Actions API returned 404 for this repository.
 
 ## What was changed
 
-- `.github/workflows/ci.yml`: new workflow triggered on pull requests and pushes to `main`; includes an Ubuntu `verify` job running Linux Tauri dependency install, `npm ci`, `npm run test:rust`, and `npm run build`; includes a dependent macOS `package-macos` job running `npm ci`, `npm run tauri:build`, and uploading DMG/app artifacts.
-- `Docs/release/macos-dmg-signing-notarization.md`: new internal macOS release checklist documenting unsigned internal artifact handling, future Apple Developer ID signing/notarization requirements, placeholder secret names, smoke checks, and publish gates.
-- `README.md`: replaces starter text with Zoid-specific development commands and a Release / CI section linking to the new release checklist.
-- `.hermes/reviews/ci-and-release-ops/handoff.md`: handoff for this review.
+- `.github/workflows/ci.yml`: changed top-level `on:` to quoted `"on":`; changed `pull_request:` to `pull_request: {}`; added `workflow_dispatch: {}`; left existing `push.branches: [main]`, `verify`, `package-macos`, `needs: verify`, Tauri build, and artifact upload intact.
+- `.hermes/reviews/ci-and-release-ops/handoff.md`: added fix-cycle notes describing the GitHub Actions `startup_failure` and local post-fix verification.
 
 ## Required fixes
 
 | ID | Severity | Area | Issue | Evidence | Required fix |
 |----|----------|------|-------|----------|--------------|
-| None | - | - | No blocking issues found. | `npm run test:rust`, `npm run build`, `npm run tauri:build`, `actionlint .github/workflows/ci.yml`, and DMG mount/identity checks all passed locally. | None. |
+| None | - | - | No source-level blocking issues found in the workflow fix. | `actionlint .github/workflows/ci.yml` exited 0; Ruby YAML parse returned top-level keys `["name", "on", "jobs"]`; parsed triggers were `pull_request: {}`, `push.branches: ["main"]`, and `workflow_dispatch: {}`; `package-macos.needs` remained `verify`. | None. |
 
 ## Improvements
 
 | ID | Priority | Area | Suggestion | Why it matters |
 |----|----------|------|------------|----------------|
-| I1 | Medium | CI | After committing/pushing, verify the workflow once on GitHub-hosted runners and record the run result/link in the release notes or handoff. | Local lint/build checks are strong, but runner images and GitHub artifact behavior can still differ from local macOS. |
-| I2 | Low | CI | Consider uploading the DMG as the primary review artifact and treating the raw `.app` upload as optional, or archive the `.app` explicitly before upload if reviewers need to run it directly. | GitHub artifact zips can be less reliable for preserving macOS bundle execution semantics than distributing the generated DMG. |
-| I3 | Low | CI/Test | Consider adding `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` once the project is ready to enforce style/lints in CI. | The current CI verifies tests/build/package, but does not yet catch formatting or common Rust lint regressions. |
+| I1 | High | CI/Ops | Commit and push the workflow fix, then verify the next GitHub Actions run starts jobs and completes or fails with ordinary job logs rather than `startup_failure`. | The previous failure was only observable on GitHub after push; local linting strongly validates the YAML, but hosted-runner verification is still the final operational proof. |
+| I2 | Medium | CI/Ops | Once GitHub access is available, record the passing run URL or failure details in the handoff. | Preserves evidence for release readiness and distinguishes local validation from hosted CI validation. |
+| I3 | Low | CI | Keep `workflow_dispatch: {}`. | Manual reruns are useful when validating workflow parser/startup fixes without needing extra code changes. |
 
 ## Tests performed
 
 - Read handoff: `/Users/ziadnasreldin/Zoid/.hermes/reviews/ci-and-release-ops/handoff.md`.
-- Inspected git state/diff:
-  - `git status --short` showed `M README.md`, `?? .github/`, `?? .hermes/reviews/ci-and-release-ops/`, `?? Docs/release/`.
-  - `git diff --stat` showed README changes; untracked workflow and release doc were inspected with `git diff --no-index`.
-- Inspected changed files directly:
-  - `.github/workflows/ci.yml`
-  - `Docs/release/macos-dmg-signing-notarization.md`
-  - `README.md`
-  - `package.json`
-  - `src-tauri/tauri.conf.json`
-- Verified lockfile presence for `npm ci`:
-  - `test -f package-lock.json`: present.
-- Ran Rust tests:
-  - `npm run test:rust`: PASS. Result: 3 tests passed, 0 failed; `src/main.rs` had 0 tests; doc-tests 0 tests.
-- Ran frontend production build:
-  - `npm run build`: PASS. TypeScript + Vite build completed successfully; generated production assets under `dist/`.
-- Ran Tauri macOS package build:
-  - `npm run tauri:build`: PASS. Built `/Users/ziadnasreldin/Zoid/src-tauri/target/release/zoid`, bundled `Zoid.app`, and bundled `Zoid_0.1.0_aarch64.dmg`.
+- Inspected workflow: `/Users/ziadnasreldin/Zoid/.github/workflows/ci.yml`.
+- Inspected current git state:
+  - `git status --short`: `M .github/workflows/ci.yml`, `M .hermes/reviews/ci-and-release-ops/handoff.md`.
+  - `git log --oneline -5`: `c2be7dd ci: add Zoid verification and macOS packaging workflow` is current `HEAD`/`origin/main`.
+  - `git branch -vv`: `main c2be7dd [origin/main] ...`.
+- Inspected diff for the fix:
+  - `on:` changed to `"on":`.
+  - `pull_request:` changed to `pull_request: {}`.
+  - `workflow_dispatch: {}` added.
 - Ran workflow linter:
-  - Installed `actionlint` via Homebrew because it was not previously available.
-  - `actionlint .github/workflows/ci.yml`: PASS with no output/errors.
-- Ran DMG smoke/identity check:
-  - Mounted `src-tauri/target/release/bundle/dmg/Zoid_0.1.0_aarch64.dmg` at a temporary mount point.
-  - Verified mounted contents included `Zoid.app` and `Applications`.
-  - Verified `CFBundleName=Zoid`.
-  - Verified `CFBundleIdentifier=com.mavoid.zoid`.
-  - Verified `CFBundleExecutable=zoid`.
-  - Verified mounted app binary was executable.
-- Checked release doc secret handling:
-  - Only placeholder values were found for Apple ID, app-specific password, team ID, certificate, and certificate password.
-  - No real signing credentials/certificates were observed in the changed docs or workflow.
+  - `actionlint .github/workflows/ci.yml`: PASS, no output/errors.
+- Ran YAML structural parse with Ruby/Psych:
+  - Command: `ruby -ryaml -e 'data=YAML.load_file(".github/workflows/ci.yml"); p data.keys; p data["on"]; p data.dig("jobs","package-macos","needs")'`
+  - Output: `["name", "on", "jobs"]`.
+  - Output: `{ "pull_request"=>{}, "push"=>{"branches"=>["main"]}, "workflow_dispatch"=>{} }`.
+  - Output: `"verify"`.
+- Checked whitespace/errors:
+  - `git diff --check -- .github/workflows/ci.yml`: PASS.
+- Attempted remote GitHub Actions verification:
+  - `gh run list --limit 5`: blocked because GitHub CLI is not authenticated.
+  - Unauthenticated REST API request to `https://api.github.com/repos/Ziad-NasrEldin/Zoid/actions/runs?per_page=5`: returned HTTP 404, likely private repository or inaccessible without auth.
 
 ## Tests still needed
 
-- First real GitHub Actions run after commit/push, including artifact upload/download verification from GitHub.
-- Future signed/notarized release candidate validation after Apple Developer Program credentials and Tauri signing/notarization configuration exist:
-  - `codesign --verify --deep --strict --verbose=2`
-  - `spctl --assess --type execute --verbose`
-  - `xcrun stapler validate`
+- Commit and push the workflow fix.
+- Verify the next GitHub Actions run on GitHub-hosted runners starts normally and does not produce `startup_failure`.
+- Verify artifact upload/download from the hosted macOS packaging job after the workflow run succeeds.
 
 ## Dev-agent instructions
 
-1. No required fixes for this review.
-2. Commit/push the workflow and docs when ready.
-3. Confirm the first GitHub Actions run passes on hosted runners and that the uploaded DMG artifact can be downloaded and smoke checked.
-4. Keep unsigned DMGs labeled/internal-only until Developer ID signing and notarization are configured and verified.
+1. No source-code changes are required from this critique.
+2. Commit and push the current `.github/workflows/ci.yml` startup-failure fix.
+3. Run or observe GitHub Actions after push, ideally using `workflow_dispatch` or the push event.
+4. Record the GitHub run URL/result in the handoff and request another review only if the hosted run fails or exposes new issues.
