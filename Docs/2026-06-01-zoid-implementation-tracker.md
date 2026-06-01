@@ -57,7 +57,8 @@ Non-negotiable gates for every implementation slice:
 - [ ] P1.10 Backend/security: secret redaction for logs, events, metadata JSON, obvious tokens/keys, nested values; JSON remains valid.
 - [x] P1.11 Backend/security: safe log writer under app-support logs with filename/path sanitization, redaction, size/rotation basics.
   - 2026-06-01 completed safe log writer with sanitized direct-child log paths, active/rotated symlink rejection, redaction before write, deterministic max-size rotation/truncation, and `log_references` upserts containing only safe relative paths/counts/metadata flags. Final critique verdict APPROVED.
-- [ ] P1.12 Backend/security: action policy evaluator for read/create/update/delete/send/publish/deploy/file/process actions.
+- [x] P1.12 Backend/security: action policy evaluator for read/create/update/delete/send/publish/deploy/file/process actions.
+  - 2026-06-01 completed typed action policy request/evaluator with read/create/update/delete/send/publish/deploy/file/process dimensions, executable gate booleans, fail-closed unknown handling, high-risk classifier precedence fixes, external/integration create gating, evaluator-backed DB seeding, and final critique verdict APPROVED.
 - [ ] P1.13 Backend: confirmation decision records/framework for consequential actions.
 - [ ] P1.14 Backend: generic event writer/reader with entity links, metadata redaction, timestamps, action type, outcome, source.
 - [ ] P1.15 Backend: entity link service for tasks, notes, products, files, repos, runs, emails, events, browser captures.
