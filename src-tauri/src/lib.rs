@@ -2383,11 +2383,18 @@ fn json_contains_secret_like_material(value: &Value, key_hint: Option<&str>) -> 
 fn looks_like_secret_material(value: &str) -> bool {
     let trimmed = value.trim();
     let lower = trimmed.to_ascii_lowercase();
-    if lower.contains("authorization:") && lower.contains("bearer ") {
+    if (lower.contains("authorization:") || lower.contains("authorization="))
+        && lower.contains("bearer ")
+    {
         return true;
     }
     if lower.starts_with("bearer ") || lower.starts_with("sk-") || lower.starts_with("ghp_") {
         return true;
+    }
+    if let Some((key, value)) = trimmed.split_once(['=', ':']) {
+        if is_secret_key(key) && !value.trim().is_empty() {
+            return true;
+        }
     }
     false
 }
@@ -3265,12 +3272,20 @@ fn redact_json_value(value: &mut Value, key_hint: Option<&str>) {
     match value {
         Value::Object(object) => {
             for (key, child) in object.iter_mut() {
-                redact_json_value(child, Some(key));
+                if is_secret_key(key) {
+                    redact_json_subtree(child);
+                } else {
+                    redact_json_value(child, Some(key));
+                }
             }
         }
         Value::Array(items) => {
             for item in items {
-                redact_json_value(item, key_hint);
+                if key_hint.is_some_and(is_secret_key) {
+                    redact_json_subtree(item);
+                } else {
+                    redact_json_value(item, key_hint);
+                }
             }
         }
         Value::String(text) => {
@@ -3289,119 +3304,248 @@ fn redact_json_value(value: &mut Value, key_hint: Option<&str>) {
     }
 }
 
+fn redact_json_subtree(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            for child in object.values_mut() {
+                redact_json_subtree(child);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                redact_json_subtree(item);
+            }
+        }
+        _ => {
+            *value = Value::String("[REDACTED]".to_string());
+        }
+    }
+}
+
 fn is_secret_key(key: &str) -> bool {
     let lower = key.to_ascii_lowercase();
-    [
+    secret_key_markers()
+        .iter()
+        .any(|secret_key| lower.contains(secret_key))
+}
+
+fn secret_key_markers() -> &'static [&'static str] {
+    &[
         "api_key",
+        "api-key",
+        "x-api-key",
         "apikey",
         "access_token",
+        "access-token",
         "refresh_token",
+        "refresh-token",
         "auth_token",
+        "auth-token",
         "token",
         "password",
+        "passwd",
+        "pwd",
         "secret",
         "client_secret",
+        "client-secret",
         "authorization",
+        "credential",
+        "credentials",
+        "private_key",
+        "private-key",
+        "privatekey",
+        "bearer",
     ]
-    .iter()
-    .any(|secret_key| lower.contains(secret_key))
 }
 
 fn redact_line(line: &str, redaction_count: &mut usize) -> String {
-    let lower = line.to_ascii_lowercase();
-    let secret_keys = [
-        "api_key",
-        "apikey",
-        "access_token",
-        "refresh_token",
-        "auth_token",
-        "token",
-        "password",
-        "secret",
-        "client_secret",
-    ];
+    let mut cursor = 0;
+    let mut redacted_line = String::new();
 
-    if lower.contains("authorization:") && lower.contains("bearer ") {
-        if let Some(index) = lower.find("bearer ") {
-            *redaction_count += 1;
-            return format!("{}bearer [REDACTED]{}", &line[..index], line_suffix(line));
-        }
-    }
+    while let Some(assignment) = find_secret_assignment(line, cursor) {
+        redacted_line.push_str(&redact_standalone_secrets(
+            &line[cursor..assignment.value_start],
+            redaction_count,
+        ));
 
-    for key in secret_keys {
-        if let Some(key_index) = lower.find(key) {
-            let after_key = &line[key_index + key.len()..];
-            if let Some(separator_offset) = after_key.find(['=', ':']) {
-                let separator_index = key_index + key.len() + separator_offset;
-                *redaction_count += 1;
-                return format!(
-                    "{}{} [REDACTED]{}",
-                    &line[..separator_index],
-                    &line[separator_index..separator_index + 1],
-                    line_suffix(line)
-                );
+        let mut value_start = assignment.value_start;
+        while value_start < line.len() {
+            let Some(character) = line[value_start..].chars().next() else {
+                break;
+            };
+            if !character.is_whitespace() || character == '\n' || character == '\r' {
+                break;
             }
+            value_start += character.len_utf8();
+            redacted_line.push(character);
+        }
+
+        let value_end = if assignment.value_has_leading_space {
+            secret_value_end(line, value_start)
+        } else {
+            compact_secret_value_end(line, value_start)
+        };
+        if value_start < value_end {
+            if value_start == assignment.value_start {
+                redacted_line.push(' ');
+            }
+            redacted_line.push_str("[REDACTED]");
+            *redaction_count += 1;
+            cursor = value_end;
+        } else {
+            cursor = assignment.value_start;
         }
     }
 
-    if line
-        .split_whitespace()
-        .any(|token| looks_like_secret_material(token.trim_matches(secret_token_boundary)))
-    {
-        *redaction_count += 1;
-        return line
-            .split_inclusive(char::is_whitespace)
-            .map(redact_standalone_secret_token)
-            .collect::<String>();
+    redacted_line.push_str(&redact_standalone_secrets(&line[cursor..], redaction_count));
+    redacted_line
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SecretAssignment {
+    value_start: usize,
+    value_has_leading_space: bool,
+}
+
+fn find_secret_assignment(line: &str, from: usize) -> Option<SecretAssignment> {
+    let lower = line.to_ascii_lowercase();
+    secret_key_markers()
+        .iter()
+        .filter_map(|secret_key| {
+            let mut search_from = from;
+            while search_from < line.len() {
+                let relative_key_index = lower[search_from..].find(secret_key)?;
+                let key_index = search_from + relative_key_index;
+                let mut separator_index = key_index + secret_key.len();
+                separator_index = skip_inline_spaces(line, separator_index);
+                if matches!(line.as_bytes().get(separator_index), Some(b'=' | b':')) {
+                    return Some(SecretAssignment {
+                        value_start: separator_index + 1,
+                        value_has_leading_space: line[separator_index + 1..]
+                            .chars()
+                            .next()
+                            .is_some_and(|character| {
+                                character.is_whitespace() && !matches!(character, '\n' | '\r')
+                            }),
+                    });
+                }
+                search_from = key_index + secret_key.len();
+            }
+            None
+        })
+        .min_by_key(|assignment| assignment.value_start)
+}
+
+fn secret_value_end(line: &str, value_start: usize) -> usize {
+    let mut index = value_start;
+    let mut last_non_newline = value_start;
+    while index < line.len() {
+        let character = line[index..].chars().next().unwrap();
+        if matches!(character, '\n' | '\r' | ',' | ';') {
+            break;
+        }
+        if character.is_whitespace() && assignment_starts_after_spaces(line, index) {
+            break;
+        }
+        if !character.is_whitespace() {
+            last_non_newline = index + character.len_utf8();
+        }
+        index += character.len_utf8();
+    }
+    last_non_newline.max(value_start)
+}
+
+fn compact_secret_value_end(line: &str, value_start: usize) -> usize {
+    let first_token_end = next_secret_token_end(line, value_start);
+    if line[value_start..first_token_end].eq_ignore_ascii_case("bearer") {
+        let next_token_start = skip_inline_spaces(line, first_token_end);
+        if next_token_start > first_token_end {
+            return next_secret_token_end(line, next_token_start);
+        }
+    }
+    first_token_end
+}
+
+fn next_secret_token_end(line: &str, value_start: usize) -> usize {
+    let mut index = value_start;
+    while index < line.len() {
+        let character = line[index..].chars().next().unwrap();
+        if character.is_whitespace() || matches!(character, ',' | ';') {
+            break;
+        }
+        index += character.len_utf8();
+    }
+    index
+}
+
+fn assignment_starts_after_spaces(line: &str, whitespace_start: usize) -> bool {
+    let key_start = skip_inline_spaces(line, whitespace_start);
+    if key_start == whitespace_start || key_start >= line.len() {
+        return false;
+    }
+    let Some(separator_offset) = line[key_start..].find(['=', ':']) else {
+        return false;
+    };
+    let candidate_key = &line[key_start..key_start + separator_offset];
+    !candidate_key.trim().is_empty()
+        && candidate_key
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+}
+
+fn skip_inline_spaces(line: &str, mut index: usize) -> usize {
+    while index < line.len() {
+        let character = line[index..].chars().next().unwrap();
+        if !character.is_whitespace() || matches!(character, '\n' | '\r') {
+            break;
+        }
+        index += character.len_utf8();
+    }
+    index
+}
+
+fn redact_standalone_secrets(segment: &str, redaction_count: &mut usize) -> String {
+    segment
+        .split_inclusive(char::is_whitespace)
+        .map(|token| {
+            let token_without_whitespace = token.trim_end_matches(char::is_whitespace);
+            let whitespace_suffix = &token[token_without_whitespace.len()..];
+            let redacted =
+                redact_standalone_secret_token(token_without_whitespace, redaction_count);
+            format!("{redacted}{whitespace_suffix}")
+        })
+        .collect()
+}
+
+fn redact_standalone_secret_token(token: &str, redaction_count: &mut usize) -> String {
+    if token.is_empty() {
+        return String::new();
     }
 
-    line.to_string()
-}
-
-fn secret_token_boundary(character: char) -> bool {
-    matches!(
-        character,
-        ',' | ';' | ':' | ')' | ']' | '}' | '(' | '[' | '{' | '"' | '\''
-    )
-}
-
-fn redact_standalone_secret_token(token: &str) -> String {
-    let token_without_whitespace = token.trim_end_matches(char::is_whitespace);
-    let whitespace_suffix = &token[token_without_whitespace.len()..];
-    let prefix_len = token_without_whitespace
+    let prefix_len = token
         .find(|character: char| !secret_token_boundary(character))
-        .unwrap_or(token_without_whitespace.len());
-    let suffix_start = token_without_whitespace
+        .unwrap_or(token.len());
+    let suffix_start = token
         .rfind(|character: char| !secret_token_boundary(character))
-        .map(|index| {
-            index
-                + token_without_whitespace[index..]
-                    .chars()
-                    .next()
-                    .unwrap()
-                    .len_utf8()
-        })
+        .map(|index| index + token[index..].chars().next().unwrap().len_utf8())
         .unwrap_or(prefix_len);
-    let core = &token_without_whitespace[prefix_len..suffix_start];
+    let prefix = &token[..prefix_len];
+    let core = &token[prefix_len..suffix_start];
+    let suffix = &token[suffix_start..];
 
     if looks_like_secret_material(core) {
-        format!(
-            "{}[REDACTED]{}{}",
-            &token_without_whitespace[..prefix_len],
-            &token_without_whitespace[suffix_start..],
-            whitespace_suffix
-        )
+        *redaction_count += 1;
+        format!("{prefix}[REDACTED]{suffix}")
     } else {
         token.to_string()
     }
 }
 
-fn line_suffix(line: &str) -> &str {
-    if line.ends_with('\n') {
-        "\n"
-    } else {
-        ""
-    }
+fn secret_token_boundary(character: char) -> bool {
+    matches!(
+        character,
+        ',' | ';' | ')' | ']' | '}' | '(' | '[' | '{' | '"' | '\''
+    )
 }
 
 fn write_safe_log(
@@ -6078,6 +6222,110 @@ mod tests {
         assert!(!redacted.text.contains("keep-me-private"));
         assert!(redacted.text.contains("[REDACTED]"));
         assert!(redacted.text.contains("normal line"));
+    }
+
+    #[test]
+    fn redaction_masks_multiple_obvious_key_value_and_bearer_forms_per_line() {
+        let redacted = redact_secrets(
+            "credential=dummy-credential-1 private_key: dummy-private-key Authorization=Bearer dummy-bearer-token visible=true",
+        );
+
+        assert!(redacted.redaction_count >= 3);
+        assert!(!redacted.text.contains("dummy-credential-1"));
+        assert!(!redacted.text.contains("dummy-private-key"));
+        assert!(!redacted.text.contains("dummy-bearer-token"));
+        assert!(redacted.text.contains("visible=true"));
+        assert!(redacted.text.matches("[REDACTED]").count() >= 3);
+    }
+
+    #[test]
+    fn redaction_masks_spaced_secret_key_value_forms() {
+        let redacted = redact_secrets(
+            "password : hunter2\napi_key = sk-live-spaced\nprivate_key : dummy-private-key\nrefresh_token : abc\nvisible=true",
+        );
+
+        assert!(redacted.redaction_count >= 4);
+        assert!(!redacted.text.contains("hunter2"));
+        assert!(!redacted.text.contains("sk-live-spaced"));
+        assert!(!redacted.text.contains("dummy-private-key"));
+        assert!(!redacted.text.contains("abc"));
+        assert!(redacted.text.contains("password : [REDACTED]"));
+        assert!(redacted.text.contains("api_key = [REDACTED]"));
+        assert!(redacted.text.contains("private_key : [REDACTED]"));
+        assert!(redacted.text.contains("refresh_token : [REDACTED]"));
+        assert!(redacted.text.contains("visible=true"));
+    }
+
+    #[test]
+    fn redaction_masks_multi_token_values_after_secret_keys() {
+        let redacted = redact_secrets(
+            "password: correct horse battery staple; visible=true\nclient_secret: line one continued, safe tail",
+        );
+
+        assert!(redacted.redaction_count >= 2);
+        assert!(!redacted.text.contains("correct"));
+        assert!(!redacted.text.contains("horse"));
+        assert!(!redacted.text.contains("battery"));
+        assert!(!redacted.text.contains("staple"));
+        assert!(!redacted.text.contains("line one continued"));
+        assert!(redacted.text.contains("password: [REDACTED]; visible=true"));
+        assert!(redacted
+            .text
+            .contains("client_secret: [REDACTED], safe tail"));
+    }
+
+    #[test]
+    fn metadata_redaction_recurses_under_secret_keys_and_keeps_json_valid() {
+        let redacted = redact_metadata_json(
+            r#"{
+                "safe":"kept",
+                "authorization":{"scheme":"Bearer","value":"dummy-bearer-token"},
+                "nested":[{"client_secret":"dummy-client-secret","safe_number":7}],
+                "passwords":["dummy-password-one",{"note":"dummy-password-two"}],
+                "flags":{"enabled":true}
+            }"#,
+        );
+        let parsed: Value =
+            serde_json::from_str(&redacted).expect("redacted metadata remains valid JSON");
+
+        assert_eq!(parsed["safe"], "kept");
+        assert_eq!(parsed["flags"]["enabled"], true);
+        assert_eq!(parsed["nested"][0]["safe_number"], 7);
+        assert!(!redacted.contains("dummy-bearer-token"));
+        assert!(!redacted.contains("dummy-client-secret"));
+        assert!(!redacted.contains("dummy-password-one"));
+        assert!(!redacted.contains("dummy-password-two"));
+        assert!(redacted.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn event_writer_uses_common_redaction_for_nested_metadata_and_summary() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+        seed_workspaces(&connection).expect("seed workspaces");
+
+        let created = create_event_record(
+            &connection,
+            EventCreateInput {
+                action_type: "create_local_task",
+                outcome: "succeeded",
+                actor_type: "system",
+                actor_id: Some("redaction_test"),
+                workspace_key: Some("tasks"),
+                summary: "ran with refresh_token=dummy-refresh-token and visible summary",
+                source: "redaction_test",
+                metadata_json: r#"{"credential":{"value":"dummy-credential-value"},"safe":"kept"}"#,
+                targets: vec![],
+            },
+        )
+        .expect("create redacted event");
+
+        assert!(!created.summary.contains("dummy-refresh-token"));
+        assert!(created.summary.contains("visible summary"));
+        assert!(!created.metadata_json.contains("dummy-credential-value"));
+        assert!(created.metadata_json.contains("\"safe\":\"kept\""));
+        serde_json::from_str::<Value>(&created.metadata_json)
+            .expect("event metadata remains valid JSON");
     }
 
     #[test]
