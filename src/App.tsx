@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import "./App.css";
 
@@ -34,11 +35,20 @@ type ActionPolicyDecision = {
   reason: string;
 };
 
+type KeychainReadinessStatus = {
+  ready: boolean;
+  status: string;
+  reason: string;
+  credential_storage_enabled: boolean;
+  test_path_exercised: boolean;
+};
+
 type SecureFoundationStatus = {
   redaction_ready: boolean;
   safe_logging_ready: boolean;
   action_policy_ready: boolean;
   event_writer_ready: boolean;
+  keychain: KeychainReadinessStatus;
   keychain_status: string;
   sample_policy: ActionPolicyDecision;
 };
@@ -99,6 +109,124 @@ const workspaceGlyphs: Record<string, string> = {
 
 const readinessLabel = (ready: boolean) => (ready ? "Ready" : "Blocked");
 
+type StatusTone = "ready" | "blocked" | "pending";
+
+type SidebarItemProps = {
+  workspace: WorkspaceRecord;
+  active: boolean;
+  glyph: string;
+  onSelect: () => void;
+};
+
+function SidebarItem({ workspace, active, glyph, onSelect }: SidebarItemProps) {
+  return (
+    <button
+      aria-current={active ? "page" : undefined}
+      className={active ? "workspace-item active" : "workspace-item"}
+      onClick={onSelect}
+      type="button"
+    >
+      <span className="workspace-glyph" aria-hidden="true">{glyph}</span>
+      <span className="workspace-copy">
+        <strong>{workspace.label}</strong>
+        <small>{workspace.description}</small>
+      </span>
+    </button>
+  );
+}
+
+type StatusBadgeProps = {
+  children: ReactNode;
+  tone?: StatusTone;
+  className?: string;
+};
+
+function StatusBadge({ children, tone = "pending", className = "" }: StatusBadgeProps) {
+  return <span className={`badge ${tone}${className ? ` ${className}` : ""}`}>{children}</span>;
+}
+
+type WorkspaceHeaderProps = {
+  title: string;
+  nativeState: string;
+  statusTone: StatusTone;
+};
+
+function WorkspaceHeader({ title, nativeState, statusTone }: WorkspaceHeaderProps) {
+  return (
+    <header className="toolbar">
+      <div className="toolbar-title">
+        <p className="eyebrow">Workspace</p>
+        <h2>{title}</h2>
+      </div>
+
+      <div className="toolbar-center" role="search">
+        <span aria-hidden="true">⌕</span>
+        <input disabled aria-label="Search is unavailable" placeholder="Search will appear when indexing is available" />
+      </div>
+
+      <div className="toolbar-actions" aria-label="App status">
+        <StatusBadge tone={statusTone}>{nativeState}</StatusBadge>
+        <span className="status-pill">Review gate enforced</span>
+      </div>
+    </header>
+  );
+}
+
+type InfoCardProps = {
+  children: ReactNode;
+  className?: string;
+};
+
+function InfoCard({ children, className = "" }: InfoCardProps) {
+  return <article className={`card${className ? ` ${className}` : ""}`}>{children}</article>;
+}
+
+type EmptyStateProps = {
+  icon: string;
+  children: ReactNode;
+};
+
+function EmptyState({ icon, children }: EmptyStateProps) {
+  return (
+    <div className="empty-state">
+      <span aria-hidden="true">{icon}</span>
+      <p>{children}</p>
+    </div>
+  );
+}
+
+type BlockerStateProps = {
+  icon?: string;
+  children: ReactNode;
+};
+
+function BlockerState({ icon = "!", children }: BlockerStateProps) {
+  return (
+    <div className="empty-state" role="alert" aria-live="polite">
+      <span aria-hidden="true">{icon}</span>
+      <p className="error-copy">{children}</p>
+    </div>
+  );
+}
+
+type InspectorPanelProps = {
+  children: ReactNode;
+  label: string;
+};
+
+function InspectorPanel({ children, label }: InspectorPanelProps) {
+  return <aside className="inspector-pane" aria-label={label}>{children}</aside>;
+}
+
+type InspectorCardProps = {
+  children: ReactNode;
+  className?: string;
+};
+
+function InspectorCard({ children, className = "" }: InspectorCardProps) {
+  return <article className={`inspector-card${className ? ` ${className}` : ""}`}>{children}</article>;
+}
+
 function App() {
   const [activeWorkspace, setActiveWorkspace] = useState("today");
   const [status, setStatus] = useState<FoundationStatus | null>(null);
@@ -149,19 +277,13 @@ function App() {
 
         <nav className="workspace-nav">
           {workspaces.length > 0 ? workspaces.map((workspace) => (
-            <button
-              aria-current={workspace.id === active?.id ? "page" : undefined}
-              className={workspace.id === active?.id ? "workspace-item active" : "workspace-item"}
+            <SidebarItem
+              active={workspace.id === active?.id}
+              glyph={workspaceGlyphs[workspace.id] ?? workspace.label.slice(0, 1)}
               key={workspace.id}
-              onClick={() => setActiveWorkspace(workspace.id)}
-              type="button"
-            >
-              <span className="workspace-glyph" aria-hidden="true">{workspaceGlyphs[workspace.id] ?? workspace.label.slice(0, 1)}</span>
-              <span className="workspace-copy">
-                <strong>{workspace.label}</strong>
-                <small>{workspace.description}</small>
-              </span>
-            </button>
+              onSelect={() => setActiveWorkspace(workspace.id)}
+              workspace={workspace}
+            />
           )) : <p className="muted-copy">No native workspaces registered.</p>}
         </nav>
 
@@ -175,22 +297,7 @@ function App() {
       </aside>
 
       <section className="app-stage">
-        <header className="toolbar">
-          <div className="toolbar-title">
-            <p className="eyebrow">Workspace</p>
-            <h2>{activeWorkspaceLabel}</h2>
-          </div>
-
-          <div className="toolbar-center" role="search">
-            <span aria-hidden="true">⌕</span>
-            <input disabled aria-label="Search is unavailable" placeholder="Search will appear when indexing is available" />
-          </div>
-
-          <div className="toolbar-actions" aria-label="App status">
-            <span className={`badge ${statusTone}`}>{nativeState}</span>
-            <span className="status-pill">Review gate enforced</span>
-          </div>
-        </header>
+        <WorkspaceHeader nativeState={nativeState} statusTone={statusTone} title={activeWorkspaceLabel} />
 
         <div className="split-view">
           <section className="primary-pane" aria-label="Workspace overview">
@@ -206,17 +313,17 @@ function App() {
             </article>
 
             <section className="dashboard-grid">
-              <article className="card large-card">
+              <InfoCard className="large-card">
                 <div className="card-header">
                   <div>
                     <p className="eyebrow">Foundation status</p>
                     <h3>Local app state</h3>
                   </div>
-                  <span className={`badge ${statusTone}`}>{statusError ? "Preview" : status ? "Ready" : "Loading"}</span>
+                  <StatusBadge tone={statusTone}>{statusError ? "Preview" : status ? "Ready" : "Loading"}</StatusBadge>
                 </div>
 
                 {statusError ? (
-                  <p className="error-copy">{statusError}</p>
+                  <BlockerState>{statusError}</BlockerState>
                 ) : status ? (
                   <dl className="status-list">
                     <div><dt>Visible root</dt><dd>{status.visible_user.root}</dd></div>
@@ -232,9 +339,9 @@ function App() {
                 ) : (
                   <p className="muted-copy">Creating local folders and reading migration state…</p>
                 )}
-              </article>
+              </InfoCard>
 
-              <article className="card">
+              <InfoCard>
                 <p className="eyebrow">Workspace registry</p>
                 <h3>Real registry, calm preview</h3>
                 <p>The sidebar is driven by native workspace records when available, with browser preview fallbacks only outside Tauri.</p>
@@ -250,22 +357,19 @@ function App() {
                     </button>
                   )) : <p className="muted-copy">The native registry returned no workspaces.</p>}
                 </div>
-              </article>
+              </InfoCard>
 
-              <article className="card">
+              <InfoCard>
                 <p className="eyebrow">Unavailable actions</p>
                 <h3>Nothing is simulated</h3>
                 <p>Search, module opening, and integration activity remain disabled until their real local capabilities exist.</p>
-                <div className="empty-state">
-                  <span aria-hidden="true">⌘</span>
-                  <p>Preview shell only. Consequential actions stay behind native status and review policy.</p>
-                </div>
-              </article>
+                <EmptyState icon="⌘">Preview shell only. Consequential actions stay behind native status and review policy.</EmptyState>
+              </InfoCard>
             </section>
           </section>
 
-          <aside className="inspector-pane" aria-label="Workspace details">
-            <article className="inspector-card active-summary">
+          <InspectorPanel label="Workspace details">
+            <InspectorCard className="active-summary">
               <p className="eyebrow">Details</p>
               <h3>{activeWorkspaceLabel}</h3>
               <p>{activeWorkspaceDescription}</p>
@@ -274,9 +378,9 @@ function App() {
                 <div><dt>Position</dt><dd>{active?.position ?? "—"}</dd></div>
                 <div><dt>Source</dt><dd>{workspaceSourceLabel}</dd></div>
               </dl>
-            </article>
+            </InspectorCard>
 
-            <article className="inspector-card">
+            <InspectorCard>
               <p className="eyebrow">Secure foundation</p>
               <h3>Local safeguards</h3>
               {status ? (
@@ -295,9 +399,9 @@ function App() {
                   Sample policy: {status.secure_services.sample_policy.category} requires {status.secure_services.sample_policy.human_confirmation.replace(/_/g, " ")} confirmation.
                 </p>
               ) : null}
-            </article>
+            </InspectorCard>
 
-            <article className="inspector-card">
+            <InspectorCard>
               <p className="eyebrow">Integration truth</p>
               <h3>Local status</h3>
               <ul className="integration-list">
@@ -311,8 +415,8 @@ function App() {
                   </li>
                 ))}
               </ul>
-            </article>
-          </aside>
+            </InspectorCard>
+          </InspectorPanel>
         </div>
       </section>
     </main>
