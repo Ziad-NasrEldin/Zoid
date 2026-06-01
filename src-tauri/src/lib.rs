@@ -119,6 +119,7 @@ struct FoundationStatus {
 struct AppSupportPaths {
     root: PathBuf,
     logs_dir: PathBuf,
+    database_parent: PathBuf,
     database_path: PathBuf,
     config_dir: PathBuf,
     config_path: PathBuf,
@@ -128,6 +129,7 @@ struct AppSupportPaths {
 struct AppSupportPathStatus {
     root: String,
     logs_dir: String,
+    database_parent: String,
     database_path: String,
     config_dir: String,
     config_path: String,
@@ -217,6 +219,7 @@ impl AppSupportPaths {
             .join("Application Support")
             .join("Zoid");
         let logs_dir = root.join("logs");
+        let database_parent = root.clone();
         let database_path = root.join("zoid.sqlite");
         let config_dir = root.join("config");
         let config_path = config_dir.join("settings.json");
@@ -224,6 +227,7 @@ impl AppSupportPaths {
         Self {
             root,
             logs_dir,
+            database_parent,
             database_path,
             config_dir,
             config_path,
@@ -234,6 +238,7 @@ impl AppSupportPaths {
         AppSupportPathStatus {
             root: display_path(&self.root),
             logs_dir: display_path(&self.logs_dir),
+            database_parent: display_path(&self.database_parent),
             database_path: display_path(&self.database_path),
             config_dir: display_path(&self.config_dir),
             config_path: display_path(&self.config_path),
@@ -244,30 +249,44 @@ impl AppSupportPaths {
 fn ensure_app_support_paths(paths: &AppSupportPaths) -> std::io::Result<()> {
     ensure_directory(&paths.root)?;
     ensure_directory(&paths.logs_dir)?;
-    ensure_directory(database_parent(paths)?)?;
+    ensure_directory(&paths.database_parent)?;
     ensure_directory(&paths.config_dir)?;
     Ok(())
 }
 
-fn database_parent(paths: &AppSupportPaths) -> std::io::Result<&Path> {
-    paths.database_path.parent().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "database path has no parent directory",
-        )
+fn ensure_directory(path: &Path) -> std::io::Result<()> {
+    if let Some(result) = validate_existing_directory(path)? {
+        return result;
+    }
+
+    fs::create_dir_all(path)?;
+    validate_existing_directory(path)?.unwrap_or_else(|| {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("{} was not created", display_path(path)),
+        ))
     })
 }
 
-fn ensure_directory(path: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(path)?;
-    let metadata = fs::metadata(path)?;
-    if metadata.is_dir() {
-        Ok(())
-    } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            format!("{} exists and is not a directory", display_path(path)),
-        ))
+fn validate_existing_directory(path: &Path) -> std::io::Result<Option<std::io::Result<()>>> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                Ok(Some(Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!("{} exists and is a symlink", display_path(path)),
+                ))))
+            } else if metadata.is_dir() {
+                Ok(Some(Ok(())))
+            } else {
+                Ok(Some(Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!("{} exists and is not a directory", display_path(path)),
+                ))))
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
     }
 }
 
@@ -940,16 +959,19 @@ mod tests {
             PathBuf::from("/Users/example/Library/Application Support/Zoid")
         );
         assert_eq!(paths.logs_dir, paths.root.join("logs"));
+        assert_eq!(paths.database_parent, paths.root);
         assert_eq!(paths.database_path, paths.root.join("zoid.sqlite"));
         assert_eq!(paths.config_dir, paths.root.join("config"));
         assert_eq!(paths.config_path, paths.config_dir.join("settings.json"));
         assert!(paths.logs_dir.starts_with(&paths.root));
+        assert!(paths.database_parent.starts_with(&paths.root));
         assert!(paths.database_path.starts_with(&paths.root));
         assert!(paths.config_path.starts_with(&paths.root));
 
         for path in [
             &paths.root,
             &paths.logs_dir,
+            &paths.database_parent,
             &paths.database_path,
             &paths.config_dir,
             &paths.config_path,
@@ -973,7 +995,7 @@ mod tests {
         assert!(paths.root.is_dir());
         assert!(paths.logs_dir.is_dir());
         assert!(paths.config_dir.is_dir());
-        assert!(database_parent(&paths).unwrap().is_dir());
+        assert!(paths.database_parent.is_dir());
         assert!(
             !paths.database_path.exists(),
             "directory creation must not create the DB file"
@@ -998,6 +1020,49 @@ mod tests {
             ensure_app_support_paths(&paths).expect_err("logs file must block directory setup");
         assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
         assert!(paths.logs_dir.is_file());
+
+        fs::remove_dir_all(home).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn app_support_creation_rejects_managed_directory_symlink_to_directory() {
+        let home = temp_home("app-support-symlink-dir");
+        let paths = AppSupportPaths::for_home(&home);
+        let target = temp_home("app-support-symlink-dir-target");
+        fs::create_dir_all(paths.root.parent().unwrap()).expect("create app support parent");
+        fs::create_dir_all(&target).expect("create symlink target directory");
+        std::os::unix::fs::symlink(&target, &paths.root).expect("create root symlink");
+
+        let error =
+            ensure_app_support_paths(&paths).expect_err("root symlink must block directory setup");
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(fs::symlink_metadata(&paths.root)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        fs::remove_dir_all(home).ok();
+        fs::remove_dir_all(target).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn app_support_creation_rejects_managed_directory_symlink_to_file() {
+        let home = temp_home("app-support-symlink-file");
+        let paths = AppSupportPaths::for_home(&home);
+        let target = home.join("target-file");
+        fs::create_dir_all(&paths.root).expect("create app support root");
+        fs::write(&target, "not a directory").expect("write symlink target file");
+        std::os::unix::fs::symlink(&target, &paths.logs_dir).expect("create logs symlink");
+
+        let error =
+            ensure_app_support_paths(&paths).expect_err("logs symlink must block directory setup");
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(fs::symlink_metadata(&paths.logs_dir)
+            .unwrap()
+            .file_type()
+            .is_symlink());
 
         fs::remove_dir_all(home).ok();
     }
