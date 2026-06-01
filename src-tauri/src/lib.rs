@@ -247,6 +247,84 @@ struct EventInput<'a> {
     targets: Vec<(&'a str, &'a str, &'a str)>,
 }
 
+#[allow(dead_code)]
+type RepoResult<T> = Result<T, RepositoryError>;
+
+#[allow(dead_code)]
+#[derive(Debug, PartialEq, Eq)]
+enum RepositoryError {
+    NotFound {
+        entity: &'static str,
+        key: String,
+    },
+    Constraint {
+        entity: &'static str,
+        message: String,
+    },
+    InvalidJson {
+        field: &'static str,
+        message: String,
+    },
+    Database {
+        message: String,
+    },
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AppSettingRecord {
+    key: String,
+    value_json: String,
+    value_type: String,
+    scope: String,
+    description: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+struct AppSettingInput<'a> {
+    key: &'a str,
+    value_json: &'a str,
+    value_type: &'a str,
+    scope: &'a str,
+    description: &'a str,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+struct AppSettingUpdate<'a> {
+    value_json: &'a str,
+    value_type: &'a str,
+    scope: &'a str,
+    description: &'a str,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EntityLinkRecord {
+    id: String,
+    source_type: String,
+    source_id: String,
+    target_type: String,
+    target_id: String,
+    relation_type: String,
+    created_by_actor_type: String,
+    metadata_json: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+struct EntityLinkInput<'a> {
+    id: &'a str,
+    source_type: &'a str,
+    source_id: &'a str,
+    target_type: &'a str,
+    target_id: &'a str,
+    relation_type: &'a str,
+    created_by_actor_type: &'a str,
+    metadata_json: &'a str,
+}
+
 #[tauri::command]
 fn get_foundation_status() -> Result<FoundationStatus, String> {
     ensure_foundation().map_err(|error| error.to_string())
@@ -598,6 +676,297 @@ fn list_workspaces(connection: &Connection) -> rusqlite::Result<Vec<WorkspaceRec
         workspaces.push(row?);
     }
     Ok(workspaces)
+}
+
+#[allow(dead_code)]
+fn validate_json_field(field: &'static str, value: &str) -> RepoResult<()> {
+    serde_json::from_str::<Value>(value)
+        .map(|_| ())
+        .map_err(|error| RepositoryError::InvalidJson {
+            field,
+            message: error.to_string(),
+        })
+}
+
+#[allow(dead_code)]
+fn map_repository_error(entity: &'static str, error: rusqlite::Error) -> RepositoryError {
+    match error {
+        rusqlite::Error::SqliteFailure(ref sqlite_error, ref message)
+            if sqlite_error.code == rusqlite::ErrorCode::ConstraintViolation =>
+        {
+            RepositoryError::Constraint {
+                entity,
+                message: message.clone().unwrap_or_else(|| error.to_string()),
+            }
+        }
+        other => RepositoryError::Database {
+            message: other.to_string(),
+        },
+    }
+}
+
+#[allow(dead_code)]
+fn app_setting_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AppSettingRecord> {
+    Ok(AppSettingRecord {
+        key: row.get(0)?,
+        value_json: row.get(1)?,
+        value_type: row.get(2)?,
+        scope: row.get(3)?,
+        description: row.get(4)?,
+    })
+}
+
+#[allow(dead_code)]
+fn upsert_app_setting(
+    connection: &Connection,
+    input: AppSettingInput<'_>,
+) -> RepoResult<AppSettingRecord> {
+    validate_json_field("value_json", input.value_json)?;
+    connection
+        .execute(
+            "
+            insert into app_settings (key, value_json, value_type, scope, description, updated_at)
+            values (?1, ?2, ?3, ?4, ?5, current_timestamp)
+            on conflict(key) do update set
+                value_json = excluded.value_json,
+                value_type = excluded.value_type,
+                scope = excluded.scope,
+                description = excluded.description,
+                updated_at = current_timestamp
+            ",
+            params![
+                input.key,
+                input.value_json,
+                input.value_type,
+                input.scope,
+                input.description
+            ],
+        )
+        .map_err(|error| map_repository_error("app_settings", error))?;
+    read_app_setting(connection, input.key)?.ok_or_else(|| RepositoryError::NotFound {
+        entity: "app_settings",
+        key: input.key.to_string(),
+    })
+}
+
+#[allow(dead_code)]
+fn read_app_setting(connection: &Connection, key: &str) -> RepoResult<Option<AppSettingRecord>> {
+    connection
+        .query_row(
+            "select key, value_json, value_type, scope, description from app_settings where key = ?1",
+            params![key],
+            app_setting_from_row,
+        )
+        .optional()
+        .map_err(|error| map_repository_error("app_settings", error))
+}
+
+#[allow(dead_code)]
+fn list_app_settings(connection: &Connection) -> RepoResult<Vec<AppSettingRecord>> {
+    connection
+        .prepare(
+            "select key, value_json, value_type, scope, description from app_settings order by key asc",
+        )
+        .and_then(|mut statement| {
+            let rows = statement.query_map([], app_setting_from_row)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map_err(|error| map_repository_error("app_settings", error))
+}
+
+#[allow(dead_code)]
+fn list_app_settings_by_scope(
+    connection: &Connection,
+    scope: &str,
+) -> RepoResult<Vec<AppSettingRecord>> {
+    connection
+        .prepare("select key, value_json, value_type, scope, description from app_settings where scope = ?1 order by key asc")
+        .and_then(|mut statement| {
+            let rows = statement.query_map(params![scope], app_setting_from_row)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map_err(|error| map_repository_error("app_settings", error))
+}
+
+#[allow(dead_code)]
+fn update_app_setting(
+    connection: &Connection,
+    key: &str,
+    update: AppSettingUpdate<'_>,
+) -> RepoResult<AppSettingRecord> {
+    validate_json_field("value_json", update.value_json)?;
+    let changed = connection
+        .execute(
+            "
+            update app_settings
+            set value_json = ?2,
+                value_type = ?3,
+                scope = ?4,
+                description = ?5,
+                updated_at = current_timestamp
+            where key = ?1
+            ",
+            params![
+                key,
+                update.value_json,
+                update.value_type,
+                update.scope,
+                update.description
+            ],
+        )
+        .map_err(|error| map_repository_error("app_settings", error))?;
+    if changed == 0 {
+        return Err(RepositoryError::NotFound {
+            entity: "app_settings",
+            key: key.to_string(),
+        });
+    }
+    read_app_setting(connection, key)?.ok_or_else(|| RepositoryError::NotFound {
+        entity: "app_settings",
+        key: key.to_string(),
+    })
+}
+
+#[allow(dead_code)]
+fn entity_link_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EntityLinkRecord> {
+    Ok(EntityLinkRecord {
+        id: row.get(0)?,
+        source_type: row.get(1)?,
+        source_id: row.get(2)?,
+        target_type: row.get(3)?,
+        target_id: row.get(4)?,
+        relation_type: row.get(5)?,
+        created_by_actor_type: row.get(6)?,
+        metadata_json: row.get(7)?,
+    })
+}
+
+#[allow(dead_code)]
+fn insert_entity_link(
+    connection: &Connection,
+    input: EntityLinkInput<'_>,
+) -> RepoResult<EntityLinkRecord> {
+    validate_json_field("metadata_json", input.metadata_json)?;
+    connection
+        .execute(
+            "
+            insert into entity_links (
+                id, source_type, source_id, target_type, target_id, relation_type,
+                created_by_actor_type, metadata_json
+            )
+            values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ",
+            params![
+                input.id,
+                input.source_type,
+                input.source_id,
+                input.target_type,
+                input.target_id,
+                input.relation_type,
+                input.created_by_actor_type,
+                input.metadata_json
+            ],
+        )
+        .map_err(|error| map_repository_error("entity_links", error))?;
+    read_entity_link(connection, input.id)?.ok_or_else(|| RepositoryError::NotFound {
+        entity: "entity_links",
+        key: input.id.to_string(),
+    })
+}
+
+#[allow(dead_code)]
+fn insert_or_get_entity_link(
+    connection: &Connection,
+    input: EntityLinkInput<'_>,
+) -> RepoResult<EntityLinkRecord> {
+    match insert_entity_link(connection, input) {
+        Ok(link) => Ok(link),
+        Err(RepositoryError::Constraint { .. }) => read_entity_link_by_unique(
+            connection,
+            input.source_type,
+            input.source_id,
+            input.target_type,
+            input.target_id,
+            input.relation_type,
+        )?
+        .ok_or_else(|| RepositoryError::NotFound {
+            entity: "entity_links",
+            key: format!(
+                "{}:{}:{}:{}:{}",
+                input.source_type,
+                input.source_id,
+                input.target_type,
+                input.target_id,
+                input.relation_type
+            ),
+        }),
+        Err(error) => Err(error),
+    }
+}
+
+#[allow(dead_code)]
+fn read_entity_link(connection: &Connection, id: &str) -> RepoResult<Option<EntityLinkRecord>> {
+    connection
+        .query_row(
+            "
+            select id, source_type, source_id, target_type, target_id, relation_type,
+                   created_by_actor_type, metadata_json
+            from entity_links
+            where id = ?1
+            ",
+            params![id],
+            entity_link_from_row,
+        )
+        .optional()
+        .map_err(|error| map_repository_error("entity_links", error))
+}
+
+#[allow(dead_code)]
+fn read_entity_link_by_unique(
+    connection: &Connection,
+    source_type: &str,
+    source_id: &str,
+    target_type: &str,
+    target_id: &str,
+    relation_type: &str,
+) -> RepoResult<Option<EntityLinkRecord>> {
+    connection
+        .query_row(
+            "
+            select id, source_type, source_id, target_type, target_id, relation_type,
+                   created_by_actor_type, metadata_json
+            from entity_links
+            where source_type = ?1 and source_id = ?2 and target_type = ?3 and target_id = ?4 and relation_type = ?5
+            ",
+            params![source_type, source_id, target_type, target_id, relation_type],
+            entity_link_from_row,
+        )
+        .optional()
+        .map_err(|error| map_repository_error("entity_links", error))
+}
+
+#[allow(dead_code)]
+fn list_entity_links_for_source(
+    connection: &Connection,
+    source_type: &str,
+    source_id: &str,
+) -> RepoResult<Vec<EntityLinkRecord>> {
+    connection
+        .prepare(
+            "
+            select id, source_type, source_id, target_type, target_id, relation_type,
+                   created_by_actor_type, metadata_json
+            from entity_links
+            where source_type = ?1 and source_id = ?2
+            order by target_type asc, target_id asc, relation_type asc, id asc
+            ",
+        )
+        .and_then(|mut statement| {
+            let rows =
+                statement.query_map(params![source_type, source_id], entity_link_from_row)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map_err(|error| map_repository_error("entity_links", error))
 }
 
 fn write_foundation_event(connection: &Connection) -> rusqlite::Result<()> {
@@ -1406,6 +1775,189 @@ mod tests {
                 "history"
             ]
         );
+    }
+
+    #[test]
+    fn repository_upserts_reads_lists_and_updates_app_settings() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+
+        upsert_app_setting(
+            &connection,
+            AppSettingInput {
+                key: "ui.theme",
+                value_json: "\"dark\"",
+                value_type: "string",
+                scope: "app",
+                description: "Current theme",
+            },
+        )
+        .expect("upsert app setting");
+        upsert_app_setting(
+            &connection,
+            AppSettingInput {
+                key: "workspace.sort",
+                value_json: "{\"by\":\"updated_at\"}",
+                value_type: "json",
+                scope: "workspace",
+                description: "Workspace sort",
+            },
+        )
+        .expect("upsert workspace setting");
+
+        let setting = read_app_setting(&connection, "ui.theme")
+            .expect("read setting")
+            .expect("setting exists");
+        assert_eq!(setting.key, "ui.theme");
+        assert_eq!(setting.value_json, "\"dark\"");
+        assert_eq!(setting.value_type, "string");
+        assert_eq!(setting.scope, "app");
+        assert_eq!(setting.description, "Current theme");
+
+        let app_settings =
+            list_app_settings_by_scope(&connection, "app").expect("list app settings");
+        assert_eq!(
+            app_settings
+                .iter()
+                .map(|setting| setting.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ui.theme"]
+        );
+        let all_settings = list_app_settings(&connection).expect("list all settings");
+        assert_eq!(
+            all_settings
+                .iter()
+                .map(|setting| setting.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ui.theme", "workspace.sort"]
+        );
+
+        let updated = update_app_setting(
+            &connection,
+            "ui.theme",
+            AppSettingUpdate {
+                value_json: "\"light\"",
+                value_type: "string",
+                scope: "workspace",
+                description: "Updated theme",
+            },
+        )
+        .expect("update setting");
+        assert_eq!(updated.value_json, "\"light\"");
+        assert_eq!(updated.scope, "workspace");
+        assert_eq!(updated.description, "Updated theme");
+
+        let missing_error = update_app_setting(
+            &connection,
+            "missing.setting",
+            AppSettingUpdate {
+                value_json: "null",
+                value_type: "json",
+                scope: "app",
+                description: "missing",
+            },
+        )
+        .expect_err("missing setting should be typed not found");
+        assert!(
+            matches!(missing_error, RepositoryError::NotFound { entity, key } if entity == "app_settings" && key == "missing.setting")
+        );
+    }
+
+    #[test]
+    fn repository_classifies_invalid_json_and_setting_constraint_errors() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+
+        let invalid_json_error = upsert_app_setting(
+            &connection,
+            AppSettingInput {
+                key: "bad.json",
+                value_json: "{not json}",
+                value_type: "json",
+                scope: "app",
+                description: "Bad JSON",
+            },
+        )
+        .expect_err("invalid json should be typed");
+        assert!(
+            matches!(invalid_json_error, RepositoryError::InvalidJson { field, .. } if field == "value_json")
+        );
+
+        let constraint_error = upsert_app_setting(
+            &connection,
+            AppSettingInput {
+                key: "bad.scope",
+                value_json: "null",
+                value_type: "json",
+                scope: "invalid_scope",
+                description: "Bad scope",
+            },
+        )
+        .expect_err("invalid scope should be typed constraint");
+        assert!(matches!(
+            constraint_error,
+            RepositoryError::Constraint { .. }
+        ));
+    }
+
+    #[test]
+    fn repository_inserts_entity_links_and_handles_unique_conflicts() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+
+        let link = insert_entity_link(
+            &connection,
+            EntityLinkInput {
+                id: "link-001",
+                source_type: "workspace",
+                source_id: "today",
+                target_type: "task",
+                target_id: "task-001",
+                relation_type: "contains",
+                created_by_actor_type: "system",
+                metadata_json: "{\"rank\":1}",
+            },
+        )
+        .expect("insert entity link");
+        assert_eq!(link.id, "link-001");
+        assert_eq!(link.metadata_json, "{\"rank\":1}");
+
+        let conflict_error = insert_entity_link(
+            &connection,
+            EntityLinkInput {
+                id: "link-002",
+                source_type: "workspace",
+                source_id: "today",
+                target_type: "task",
+                target_id: "task-001",
+                relation_type: "contains",
+                created_by_actor_type: "system",
+                metadata_json: "{}",
+            },
+        )
+        .expect_err("duplicate logical link should be a typed conflict");
+        assert!(matches!(conflict_error, RepositoryError::Constraint { .. }));
+
+        let links = list_entity_links_for_source(&connection, "workspace", "today")
+            .expect("list source links");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].id, "link-001");
+
+        let same_link = insert_or_get_entity_link(
+            &connection,
+            EntityLinkInput {
+                id: "link-002",
+                source_type: "workspace",
+                source_id: "today",
+                target_type: "task",
+                target_id: "task-001",
+                relation_type: "contains",
+                created_by_actor_type: "system",
+                metadata_json: "{}",
+            },
+        )
+        .expect("idempotent entity link insert");
+        assert_eq!(same_link.id, "link-001");
     }
 
     fn assert_table_has_columns(connection: &Connection, table: &str, expected_columns: &[&str]) {
