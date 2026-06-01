@@ -72,6 +72,28 @@ const VISIBLE_DIRS: &[&str] = &[
     "Notes", "Content", "Assets", "Exports", "Imports", "Backups",
 ];
 
+const ACTION_POLICY_CATEGORIES: &[&str] = &[
+    "read_local_app_data",
+    "read_gmail_calendar",
+    "create_local_task",
+    "create_private_markdown_note",
+    "import_migrate_data",
+    "modify_visible_non_code_file",
+    "move_rename_copy_file",
+    "bulk_file_operations",
+    "delete_trash_files",
+    "modify_code_repo_files",
+    "commit_push_merge",
+    "deploy_redeploy_rollback",
+    "send_email",
+    "publish_schedule_content",
+    "change_automation_schedule",
+    "run_existing_automation",
+    "change_credentials_settings_integrations",
+    "create_calendar_event",
+    "edit_delete_calendar_event",
+];
+
 const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -356,7 +378,9 @@ fn validate_managed_file_path(path: &Path, label: &str) -> std::io::Result<()> {
 
 fn open_foundation_database(path: &Path) -> Result<Connection, Box<dyn std::error::Error>> {
     validate_managed_file_path(path, "database")?;
-    Ok(Connection::open(path)?)
+    let connection = Connection::open(path)?;
+    enable_sqlite_foreign_keys(&connection)?;
+    Ok(connection)
 }
 
 fn ensure_foundation() -> Result<FoundationStatus, Box<dyn std::error::Error>> {
@@ -398,6 +422,8 @@ fn ensure_foundation() -> Result<FoundationStatus, Box<dyn std::error::Error>> {
 }
 
 fn run_migrations(connection: &Connection) -> rusqlite::Result<()> {
+    enable_sqlite_foreign_keys(connection)?;
+
     connection.execute_batch(
         "
         create table if not exists schema_migrations (
@@ -422,6 +448,39 @@ fn run_migrations(connection: &Connection) -> rusqlite::Result<()> {
                 params![migration.version, migration.name],
             )?;
         }
+    }
+
+    seed_action_policies(connection)?;
+
+    Ok(())
+}
+
+fn enable_sqlite_foreign_keys(connection: &Connection) -> rusqlite::Result<()> {
+    connection.pragma_update(None, "foreign_keys", "ON")
+}
+
+fn seed_action_policies(connection: &Connection) -> rusqlite::Result<()> {
+    for category in ACTION_POLICY_CATEGORIES {
+        let policy = evaluate_action_policy(category);
+        connection.execute(
+            "
+            insert into action_policies (category, policy, reviewer_required, human_confirmation, reason, updated_at)
+            values (?1, ?2, ?3, ?4, ?5, current_timestamp)
+            on conflict(category) do update set
+                policy = excluded.policy,
+                reviewer_required = excluded.reviewer_required,
+                human_confirmation = excluded.human_confirmation,
+                reason = excluded.reason,
+                updated_at = current_timestamp
+            ",
+            params![
+                policy.category,
+                action_policy_as_str(policy.policy),
+                reviewer_requirement_as_str(policy.reviewer_required),
+                human_confirmation_as_str(policy.human_confirmation),
+                policy.reason
+            ],
+        )?;
     }
 
     Ok(())
@@ -959,6 +1018,33 @@ fn decision(
     }
 }
 
+fn action_policy_as_str(policy: ActionPolicy) -> &'static str {
+    match policy {
+        ActionPolicy::Allow => "allow",
+        ActionPolicy::AskBeforeAction => "ask_before_action",
+        ActionPolicy::BlockUntilConfirmed => "block_until_confirmed",
+        ActionPolicy::RequireClearTask => "require_clear_task",
+    }
+}
+
+fn reviewer_requirement_as_str(requirement: ReviewerRequirement) -> &'static str {
+    match requirement {
+        ReviewerRequirement::None => "none",
+        ReviewerRequirement::Maybe => "maybe",
+        ReviewerRequirement::Usually => "usually",
+        ReviewerRequirement::Yes => "yes",
+    }
+}
+
+fn human_confirmation_as_str(confirmation: HumanConfirmation) -> &'static str {
+    match confirmation {
+        HumanConfirmation::None => "none",
+        HumanConfirmation::Maybe => "maybe",
+        HumanConfirmation::Yes => "yes",
+        HumanConfirmation::Always => "always",
+    }
+}
+
 fn get_migration_version(connection: &Connection) -> rusqlite::Result<i64> {
     connection.query_row(
         "select coalesce(max(version), 0) from schema_migrations",
@@ -1273,6 +1359,22 @@ mod tests {
     }
 
     #[test]
+    fn open_foundation_database_enables_foreign_keys() {
+        let home = temp_home("database-foreign-keys");
+        let paths = AppSupportPaths::for_home(&home);
+        fs::create_dir_all(&paths.database_parent).expect("create database parent");
+
+        let connection = open_foundation_database(&paths.database_path).expect("open database");
+        let foreign_keys_enabled: i64 = connection
+            .query_row("pragma foreign_keys", [], |row| row.get(0))
+            .expect("read foreign key pragma");
+        assert_eq!(foreign_keys_enabled, 1);
+
+        drop(connection);
+        fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
     fn migrations_seed_core_workspaces() {
         let connection = Connection::open_in_memory().expect("open in-memory sqlite");
         run_migrations(&connection).expect("run migrations");
@@ -1455,6 +1557,66 @@ mod tests {
             "confirmation_decisions",
             "idx_confirmation_decisions_category_created",
         );
+    }
+
+    #[test]
+    fn migrations_enable_foreign_keys_and_reject_invalid_core_references() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+
+        let foreign_keys_enabled: i64 = connection
+            .query_row("pragma foreign_keys", [], |row| row.get(0))
+            .expect("read foreign key pragma");
+        assert_eq!(foreign_keys_enabled, 1);
+
+        let invalid_event_target = connection.execute(
+            "insert into event_targets (event_id, entity_type, entity_id, relation_type) values ('evt_missing', 'workspace', 'today', 'primary')",
+            [],
+        );
+        assert!(
+            matches!(
+                invalid_event_target,
+                Err(rusqlite::Error::SqliteFailure(_, _))
+            ),
+            "missing event target FK must be rejected; got {invalid_event_target:?}"
+        );
+
+        let invalid_confirmation_decision = connection.execute(
+            "insert into confirmation_decisions (id, action_category, decision, actor_type, summary) values ('confirm_missing_category', 'not_a_policy', 'approved', 'human', 'invalid category')",
+            [],
+        );
+        assert!(
+            matches!(
+                invalid_confirmation_decision,
+                Err(rusqlite::Error::SqliteFailure(_, _))
+            ),
+            "missing action policy FK must be rejected; got {invalid_confirmation_decision:?}"
+        );
+    }
+
+    #[test]
+    fn migrations_seed_action_policies_for_confirmation_decisions() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+
+        let send_email_policy: (String, String, String, String) = connection
+            .query_row(
+                "select policy, reviewer_required, human_confirmation, reason from action_policies where category = 'send_email'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("send_email policy should be seeded");
+        assert_eq!(send_email_policy.0, "ask_before_action");
+        assert_eq!(send_email_policy.1, "maybe");
+        assert_eq!(send_email_policy.2, "always");
+        assert!(send_email_policy.3.contains("Email"));
+
+        connection
+            .execute(
+                "insert into confirmation_decisions (id, action_category, decision, actor_type, summary) values ('confirm_send_email', 'send_email', 'approved', 'human', 'approved email draft')",
+                [],
+            )
+            .expect("known action category should satisfy confirmation_decisions FK");
     }
 
     #[test]
