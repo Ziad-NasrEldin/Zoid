@@ -107,6 +107,7 @@ struct FoundationStatus {
     logs_dir: String,
     config_dir: String,
     config_path: String,
+    visible_user: VisibleUserPathStatus,
     app_support: AppSupportPathStatus,
     migration_version: i64,
     workspace_count: i64,
@@ -133,6 +134,18 @@ struct AppSupportPathStatus {
     database_path: String,
     config_dir: String,
     config_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VisibleUserPaths {
+    root: PathBuf,
+    starter_directories: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct VisibleUserPathStatus {
+    root: String,
+    starter_directories: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -246,6 +259,40 @@ impl AppSupportPaths {
     }
 }
 
+impl VisibleUserPaths {
+    fn for_home(home: &Path) -> Self {
+        let root = home.join("Zoid");
+        let starter_directories = VISIBLE_DIRS
+            .iter()
+            .map(|directory| root.join(directory))
+            .collect();
+
+        Self {
+            root,
+            starter_directories,
+        }
+    }
+
+    fn status(&self) -> VisibleUserPathStatus {
+        VisibleUserPathStatus {
+            root: display_path(&self.root),
+            starter_directories: self
+                .starter_directories
+                .iter()
+                .map(|path| display_path(path))
+                .collect(),
+        }
+    }
+}
+
+fn ensure_visible_user_paths(paths: &VisibleUserPaths) -> std::io::Result<()> {
+    ensure_directory(&paths.root)?;
+    for starter_directory in &paths.starter_directories {
+        ensure_directory(starter_directory)?;
+    }
+    Ok(())
+}
+
 fn ensure_app_support_paths(paths: &AppSupportPaths) -> std::io::Result<()> {
     ensure_directory(&paths.root)?;
     ensure_directory(&paths.logs_dir)?;
@@ -309,13 +356,10 @@ fn open_foundation_database(path: &Path) -> Result<Connection, Box<dyn std::erro
 
 fn ensure_foundation() -> Result<FoundationStatus, Box<dyn std::error::Error>> {
     let home = home_dir()?;
-    let visible_root = home.join("Zoid");
+    let visible_user_paths = VisibleUserPaths::for_home(&home);
     let app_support_paths = AppSupportPaths::for_home(&home);
 
-    fs::create_dir_all(&visible_root)?;
-    for child in VISIBLE_DIRS {
-        fs::create_dir_all(visible_root.join(child))?;
-    }
+    ensure_visible_user_paths(&visible_user_paths)?;
     ensure_app_support_paths(&app_support_paths)?;
 
     let connection = open_foundation_database(&app_support_paths.database_path)?;
@@ -332,12 +376,13 @@ fn ensure_foundation() -> Result<FoundationStatus, Box<dyn std::error::Error>> {
     let workspaces = list_workspaces(&connection)?;
 
     Ok(FoundationStatus {
-        visible_root: display_path(&visible_root),
+        visible_root: display_path(&visible_user_paths.root),
         app_support_dir: display_path(&app_support_paths.root),
         database_path: display_path(&app_support_paths.database_path),
         logs_dir: display_path(&app_support_paths.logs_dir),
         config_dir: display_path(&app_support_paths.config_dir),
         config_path: display_path(&app_support_paths.config_path),
+        visible_user: visible_user_paths.status(),
         app_support: app_support_paths.status(),
         migration_version: get_migration_version(&connection)?,
         workspace_count: workspaces.len() as i64,
@@ -965,6 +1010,116 @@ mod tests {
 
     fn temp_home(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("zoid-{name}-{}", now_millis()))
+    }
+
+    #[test]
+    fn visible_user_paths_have_expected_starter_directory_layout() {
+        let home = PathBuf::from("/Users/example");
+        let paths = VisibleUserPaths::for_home(&home);
+        let expected: Vec<PathBuf> = VISIBLE_DIRS
+            .iter()
+            .map(|directory| PathBuf::from("/Users/example/Zoid").join(directory))
+            .collect();
+
+        assert_eq!(paths.root, PathBuf::from("/Users/example/Zoid"));
+        assert_eq!(paths.starter_directories, expected);
+        assert_eq!(paths.status().root, "/Users/example/Zoid");
+        assert_eq!(paths.status().starter_directories.len(), VISIBLE_DIRS.len());
+        for path in std::iter::once(&paths.root).chain(paths.starter_directories.iter()) {
+            assert!(path.starts_with(&paths.root) || path == &paths.root);
+            assert!(!path
+                .components()
+                .any(|component| matches!(component, Component::ParentDir)));
+        }
+    }
+
+    #[test]
+    fn visible_user_creation_is_idempotent_and_non_destructive() {
+        let home = temp_home("visible-idempotent");
+        let paths = VisibleUserPaths::for_home(&home);
+        let marker_path = paths.root.join("Notes").join("existing-note.md");
+
+        ensure_visible_user_paths(&paths).expect("create visible paths");
+        fs::write(&marker_path, "preserve this note").expect("write marker file");
+        ensure_visible_user_paths(&paths).expect("create visible paths again");
+
+        assert!(paths.root.is_dir());
+        for starter_directory in &paths.starter_directories {
+            assert!(starter_directory.is_dir(), "missing {starter_directory:?}");
+        }
+        assert_eq!(
+            fs::read_to_string(marker_path).expect("read marker file"),
+            "preserve this note"
+        );
+
+        fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn visible_user_creation_fails_when_required_starter_directory_is_a_file() {
+        let home = temp_home("visible-file-conflict");
+        let paths = VisibleUserPaths::for_home(&home);
+        fs::create_dir_all(&paths.root).expect("create visible root");
+        fs::write(paths.root.join("Notes"), "not a directory")
+            .expect("write conflicting notes file");
+
+        let error = ensure_visible_user_paths(&paths)
+            .expect_err("starter directory file must block visible setup");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(error.to_string().contains("not a directory"));
+        assert!(paths.root.join("Notes").is_file());
+
+        fs::remove_dir_all(home).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn visible_user_creation_rejects_required_starter_directory_symlink() {
+        let home = temp_home("visible-symlink-conflict");
+        let paths = VisibleUserPaths::for_home(&home);
+        let target = temp_home("visible-symlink-target");
+        fs::create_dir_all(&paths.root).expect("create visible root");
+        fs::create_dir_all(&target).expect("create symlink target");
+        std::os::unix::fs::symlink(&target, paths.root.join("Notes"))
+            .expect("create notes symlink");
+
+        let error = ensure_visible_user_paths(&paths)
+            .expect_err("starter directory symlink must block visible setup");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(error.to_string().contains("symlink"));
+        assert!(fs::symlink_metadata(paths.root.join("Notes"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        fs::remove_dir_all(home).ok();
+        fs::remove_dir_all(target).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn visible_user_creation_rejects_visible_root_symlink() {
+        let home = temp_home("visible-root-symlink");
+        let paths = VisibleUserPaths::for_home(&home);
+        let target = temp_home("visible-root-symlink-target");
+        fs::create_dir_all(&home).expect("create home");
+        fs::create_dir_all(&target).expect("create target");
+        std::os::unix::fs::symlink(&target, &paths.root).expect("create visible root symlink");
+
+        let error = ensure_visible_user_paths(&paths)
+            .expect_err("visible root symlink must block visible setup");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(error.to_string().contains("symlink"));
+        assert!(fs::symlink_metadata(&paths.root)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        fs::remove_dir_all(home).ok();
+        fs::remove_dir_all(target).ok();
     }
 
     #[test]

@@ -43,11 +43,29 @@ type SecureFoundationStatus = {
   sample_policy: ActionPolicyDecision;
 };
 
+type VisibleUserPathStatus = {
+  root: string;
+  starter_directories: string[];
+};
+
+type AppSupportPathStatus = {
+  root: string;
+  logs_dir: string;
+  database_parent: string;
+  database_path: string;
+  config_dir: string;
+  config_path: string;
+};
+
 type FoundationStatus = {
   visible_root: string;
   app_support_dir: string;
   database_path: string;
   logs_dir: string;
+  config_dir: string;
+  config_path: string;
+  visible_user: VisibleUserPathStatus;
+  app_support: AppSupportPathStatus;
   migration_version: number;
   workspace_count: number;
   event_count: number;
@@ -141,10 +159,12 @@ function App() {
               <p className="error-copy">{statusError}</p>
             ) : status ? (
               <dl className="status-list">
-                <div><dt>Visible root</dt><dd>{status.visible_root}</dd></div>
-                <div><dt>App support</dt><dd>{status.app_support_dir}</dd></div>
-                <div><dt>SQLite DB</dt><dd>{status.database_path}</dd></div>
-                <div><dt>Logs</dt><dd>{status.logs_dir}</dd></div>
+                <div><dt>Visible root</dt><dd>{status.visible_user.root}</dd></div>
+                <div><dt>Starter directories</dt><dd>{status.visible_user.starter_directories.length}</dd></div>
+                <div><dt>App support</dt><dd>{status.app_support.root}</dd></div>
+                <div><dt>SQLite DB</dt><dd>{status.app_support.database_path}</dd></div>
+                <div><dt>Logs</dt><dd>{status.app_support.logs_dir}</dd></div>
+                <div><dt>Config</dt><dd>{status.app_support.config_dir}</dd></div>
                 <div><dt>Migration version</dt><dd>{status.migration_version}</dd></div>
                 <div><dt>Registered workspaces</dt><dd>{status.workspace_count}</dd></div>
                 <div><dt>Foundation events</dt><dd>{status.event_count}</dd></div>
