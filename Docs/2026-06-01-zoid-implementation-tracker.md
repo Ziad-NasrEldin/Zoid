@@ -55,7 +55,8 @@ Non-negotiable gates for every implementation slice:
   - 2026-06-01 added typed local preference and integration-status service helpers over existing `app_settings` and `integration_statuses`, with JSON validation, obvious secret/token/password/API-key rejection before DB writes, safe credential-reference validation, truthful registry-backed default integration seeding, and no Keychain writes/new Tauri commands/external probes. Final critique verdict APPROVED.
 - [ ] P1.09 Backend/security: Keychain test path/read-write-delete service or truthful blocked/unverified native status.
 - [ ] P1.10 Backend/security: secret redaction for logs, events, metadata JSON, obvious tokens/keys, nested values; JSON remains valid.
-- [ ] P1.11 Backend/security: safe log writer under app-support logs with filename/path sanitization, redaction, size/rotation basics.
+- [x] P1.11 Backend/security: safe log writer under app-support logs with filename/path sanitization, redaction, size/rotation basics.
+  - 2026-06-01 completed safe log writer with sanitized direct-child log paths, active/rotated symlink rejection, redaction before write, deterministic max-size rotation/truncation, and `log_references` upserts containing only safe relative paths/counts/metadata flags. Final critique verdict APPROVED.
 - [ ] P1.12 Backend/security: action policy evaluator for read/create/update/delete/send/publish/deploy/file/process actions.
 - [ ] P1.13 Backend: confirmation decision records/framework for consequential actions.
 - [ ] P1.14 Backend: generic event writer/reader with entity links, metadata redaction, timestamps, action type, outcome, source.
