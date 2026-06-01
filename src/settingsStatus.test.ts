@@ -42,6 +42,10 @@ const nativeStatus: FoundationStatus = {
       reviewer_required: "security_reviewer",
       human_confirmation: "always_required",
       reason: "credential access is consequential",
+      allowed_now: false,
+      requires_confirmation: true,
+      requires_reviewer: true,
+      requires_clear_task: false,
     },
   },
 };

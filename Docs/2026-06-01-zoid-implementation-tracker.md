@@ -81,7 +81,8 @@ Non-negotiable gates for every implementation slice:
   - 2026-06-01 completed Today-specific foundation/widgets UI backed by native `get_foundation_status` when available and explicit browser/checking empty/unconfigured states otherwise. Added pure Today view-model test wired into `verify:local`; browser smoke passed with no console errors; final critique verdict APPROVED.
 - [x] P1.22 Frontend: settings/status shell for paths, DB, Keychain, redaction, logging, policy, events, integrations.
   - 2026-06-01 completed inspector settings/status shell for paths, DB/migrations/events, Keychain, safeguards, policy summary, event writer, and truthful integration states. Added pure settings status view-model test wired into `test:frontend`; `npm run test:frontend`, `npm run build`, `npm run verify:local`, and browser smoke passed; final critique verdict APPROVED.
-- [ ] P1.23 Frontend: confirmation UI primitives showing policy reason and required confirmation/review.
+- [x] P1.23 Frontend: confirmation UI primitives showing policy reason and required confirmation/review.
+  - 2026-06-01 completed read-only inspector confirmation policy primitives for policy source, category, policy, reason, human confirmation, reviewer, and clear-task gates. Added pure confirmation policy view-model test wired into `test:frontend`; `npm run test:frontend`, `npm run build`, `npm run verify:local`, browser smoke, spec review, quality review, and final critique passed; final critique verdict APPROVED.
 - [ ] P1.24 Tests: Rust unit tests for redaction, logging, Keychain status, policy, events, entity links, path creation.
 - [ ] P1.25 Tests: SQLite integration tests for migrations, version, repositories, event read/write, entity links.
 - [ ] P1.26 Tests: frontend build/smoke checks for registry rendering, settings status, empty states, no fake success copy.

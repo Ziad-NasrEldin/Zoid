@@ -13,6 +13,11 @@ export type ActionPolicyDecision = {
   reviewer_required: string;
   human_confirmation: string;
   reason: string;
+  allowed_now: boolean;
+  requires_confirmation: boolean;
+  requires_reviewer: boolean;
+  requires_clear_task: boolean;
+  requires_gate?: boolean;
 };
 
 export type KeychainReadinessStatus = {

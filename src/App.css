@@ -811,6 +811,80 @@ input:focus-visible {
   font-size: 12px;
 }
 
+.confirmation-policy-panel {
+  display: grid;
+  gap: var(--space-13);
+}
+
+.confirmation-policy-panel > p {
+  margin: 0;
+}
+
+.confirmation-policy-facts {
+  display: grid;
+  gap: 0;
+  margin: 0;
+}
+
+.confirmation-policy-facts div {
+  display: grid;
+  grid-template-columns: minmax(88px, 0.4fr) minmax(0, 1fr);
+  gap: var(--space-8);
+  padding: var(--space-7) 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.confirmation-policy-facts dt {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.confirmation-policy-facts dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.confirmation-requirement-list {
+  display: grid;
+  gap: var(--space-8);
+  margin: var(--space-8) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.confirmation-requirement-list li {
+  display: grid;
+  gap: var(--space-5);
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--space-9);
+}
+
+.confirmation-requirement-list li > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-8);
+  align-items: center;
+}
+
+.confirmation-requirement-list strong {
+  font-size: 13px;
+}
+
+.confirmation-requirement-list p {
+  margin: 0;
+  font-size: 12px;
+}
+
+.confirmation-requirement-list .badge {
+  min-height: 22px;
+  padding: var(--space-3) var(--space-6);
+  font-size: 11px;
+}
+
 .settings-status-shell {
   display: grid;
   gap: var(--space-13);

@@ -3,6 +3,11 @@ import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import "./App.css";
 import {
+  buildConfirmationPolicyView,
+  type ConfirmationPolicyRequirementView,
+  type ConfirmationPolicyView,
+} from "./confirmationPolicy";
+import {
   buildSettingsStatusShellView,
   defaultIntegrationStates,
   type FoundationStatus,
@@ -321,6 +326,56 @@ function SettingsStatusShell({ view }: SettingsStatusShellProps) {
   );
 }
 
+type ConfirmationPolicyPanelProps = {
+  view: ConfirmationPolicyView;
+};
+
+function ConfirmationRequirementItem({ requirement }: { requirement: ConfirmationPolicyRequirementView }) {
+  return (
+    <li>
+      <div>
+        <strong>{requirement.label}</strong>
+        <StatusBadge tone={requirement.tone}>{requirement.status}</StatusBadge>
+      </div>
+      <p>{requirement.detail}</p>
+    </li>
+  );
+}
+
+function ConfirmationPolicyPanel({ view }: ConfirmationPolicyPanelProps) {
+  return (
+    <InspectorCard className="confirmation-policy-panel">
+      <div className="card-header compact">
+        <div>
+          <p className="eyebrow">Confirmation policy</p>
+          <h3>{view.overallStatus}</h3>
+        </div>
+        <StatusBadge tone={view.tone}>{view.mode === "native" ? "Native" : view.mode === "checking" ? "Checking" : "Preview"}</StatusBadge>
+      </div>
+
+      <p>{view.summary}</p>
+
+      <dl className="confirmation-policy-facts" aria-label="Policy reason and source">
+        <div><dt>Source</dt><dd>{view.sourceLabel}</dd></div>
+        <div><dt>Category</dt><dd>{view.category}</dd></div>
+        <div><dt>Policy</dt><dd>{view.policy}</dd></div>
+        <div><dt>Reason</dt><dd>{view.reason}</dd></div>
+      </dl>
+
+      <section className="settings-status-section" aria-label="Required confirmation and review gates">
+        <p className="eyebrow">Required gates</p>
+        <ul className="confirmation-requirement-list compact-list">
+          {view.requirements.map((requirement) => (
+            <ConfirmationRequirementItem key={requirement.label} requirement={requirement} />
+          ))}
+        </ul>
+      </section>
+
+      <EmptyState icon="!">{view.emptyActionCopy}</EmptyState>
+    </InspectorCard>
+  );
+}
+
 type TodayMetricProps = {
   label: string;
   value: string;
@@ -519,6 +574,13 @@ function App() {
     }),
     [status, statusError],
   );
+  const confirmationPolicyView = useMemo(
+    () => buildConfirmationPolicyView({
+      mode: status ? "native" : statusError ? "preview" : "checking",
+      policy: status?.secure_services.sample_policy ?? null,
+    }),
+    [status, statusError],
+  );
 
   return (
     <main className="zoid-shell">
@@ -664,6 +726,8 @@ function App() {
                 <div><dt>Visible count</dt><dd>{workspaceRegistry.countLabel}</dd></div>
               </dl>
             </InspectorCard>
+
+            <ConfirmationPolicyPanel view={confirmationPolicyView} />
 
             <SettingsStatusShell view={settingsStatusView} />
           </InspectorPanel>
