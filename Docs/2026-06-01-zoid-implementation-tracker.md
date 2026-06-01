@@ -69,7 +69,8 @@ Non-negotiable gates for every implementation slice:
   - 2026-06-01 completed backend/Tauri bridge commands for foundation status, workspace registry, local preferences, integration statuses, event create/read/list, and action-policy preview, with registered command-surface regression coverage, bridge-level event create bounds, metadata JSON validation, secret rejection/redaction, read-only policy preview, and final critique verdict APPROVED.
 - [x] P1.17 Frontend: polished macOS-first app shell with sidebar, toolbar/header, split-view content, no SaaS/cyberpunk styling.
   - 2026-06-01 completed frontend macOS-first shell with translucent sidebar/window controls, toolbar/search/status header, split primary workspace pane, inspector/details rail, truthful disabled actions, browser/native fallback labeling, and native-empty-registry handling that does not mask successful empty native state. Final critique verdict APPROVED.
-- [ ] P1.18 Frontend: Apple-style design tokens for system font, spacing, materials, shadows, light/dark, empty/error/loading states.
+- [x] P1.18 Frontend: Apple-style design tokens for system font, spacing, materials, shadows, light/dark, empty/error/loading states.
+  - 2026-06-01 completed CSS-only Apple-style token layer for system/monospace fonts, spacing, radii, text/accent colors, glass materials, borders, focus rings, shadows, light/dark variants, and ready/pending/blocked/error/empty/loading states. Final critique verdict APPROVED.
 - [ ] P1.19 Frontend: reusable base components: sidebar item, workspace header, cards, badges, empty/blocker states, inspector/panel.
 - [ ] P1.20 Frontend integration: render all workspace names from real workspace registry; no hardcoded fake connected states.
 - [ ] P1.21 Frontend integration: Today foundation/widgets from real local state or truthful empty/unconfigured states.
