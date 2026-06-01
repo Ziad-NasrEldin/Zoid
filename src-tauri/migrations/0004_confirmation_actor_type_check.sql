@@ -1,4 +1,4 @@
-drop table if exists confirmation_decisions_actor_type_upgrade;
+begin immediate;
 
 create table confirmation_decisions_actor_type_upgrade (
     id text primary key,
@@ -26,4 +26,4 @@ alter table confirmation_decisions_actor_type_upgrade rename to confirmation_dec
 create index if not exists idx_confirmation_decisions_category_created on confirmation_decisions(action_category, created_at);
 create index if not exists idx_confirmation_decisions_event on confirmation_decisions(event_id);
 
-pragma foreign_key_check;
+commit;

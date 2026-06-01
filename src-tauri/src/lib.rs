@@ -5196,10 +5196,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn migrations_upgrade_existing_v3_confirmation_decisions_actor_type_check() {
-        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
-        enable_sqlite_foreign_keys(&connection).expect("enable foreign keys");
+    fn create_old_v3_confirmation_database(connection: &Connection) {
         connection
             .execute_batch(
                 "
@@ -5262,6 +5259,13 @@ mod tests {
                 ",
             )
             .expect("create simulated old v3 database without actor_type check");
+    }
+
+    #[test]
+    fn migrations_upgrade_existing_v3_confirmation_decisions_actor_type_check() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        enable_sqlite_foreign_keys(&connection).expect("enable foreign keys");
+        create_old_v3_confirmation_database(&connection);
 
         run_migrations(&connection).expect("upgrade old v3 database");
 
@@ -5290,6 +5294,71 @@ mod tests {
             matches!(invalid_actor, Err(rusqlite::Error::SqliteFailure(_, _))),
             "upgraded old v3 schema must reject invalid actor_type; got {invalid_actor:?}"
         );
+    }
+
+    #[test]
+    fn migration_v4_sql_is_transactional_and_does_not_pre_drop_upgrade_table() {
+        let sql = include_str!("../migrations/0004_confirmation_actor_type_check.sql");
+        let normalized = sql.trim_start().to_ascii_lowercase();
+
+        assert!(
+            normalized.starts_with("begin immediate;"),
+            "migration v4 must start an explicit transaction before any rebuild DDL"
+        );
+        assert!(
+            normalized.trim_end().ends_with("commit;"),
+            "migration v4 must commit its explicit transaction"
+        );
+        assert!(
+            !normalized.contains("drop table if exists confirmation_decisions_actor_type_upgrade"),
+            "migration v4 must not drop a leftover upgrade table before preserving data"
+        );
+    }
+
+    #[test]
+    fn migration_v4_fails_closed_when_leftover_upgrade_table_exists() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        enable_sqlite_foreign_keys(&connection).expect("enable foreign keys");
+        create_old_v3_confirmation_database(&connection);
+        connection
+            .execute_batch(
+                "
+                create table confirmation_decisions_actor_type_upgrade (
+                    id text primary key,
+                    marker text not null
+                );
+                insert into confirmation_decisions_actor_type_upgrade (id, marker)
+                    values ('leftover_preserved', 'do-not-drop');
+                ",
+            )
+            .expect("create simulated leftover upgrade table");
+
+        let error = run_migrations(&connection).expect_err("leftover upgrade table must block v4");
+        assert!(
+            error
+                .to_string()
+                .contains("confirmation_decisions_actor_type_upgrade"),
+            "expected existing upgrade table to block migration; got {error:?}"
+        );
+
+        let preserved_decision: String = connection
+            .query_row(
+                "select summary from confirmation_decisions where id = 'confirm_existing'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("original confirmation_decisions row must remain");
+        assert_eq!(preserved_decision, "existing approval");
+
+        let preserved_leftover: String = connection
+            .query_row(
+                "select marker from confirmation_decisions_actor_type_upgrade where id = 'leftover_preserved'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("leftover upgrade table must not be dropped");
+        assert_eq!(preserved_leftover, "do-not-drop");
+        assert_eq!(get_migration_version(&connection).unwrap(), 3);
     }
 
     #[test]
