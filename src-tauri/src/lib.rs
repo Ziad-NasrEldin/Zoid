@@ -2119,17 +2119,6 @@ fn classify_action_request(request: &ActionRequest) -> &'static str {
         return "unknown_action";
     }
 
-    if request.bulk || target_contains(&target, &["bulk", "many", "batch", "mass"]) {
-        return "bulk_file_operations";
-    }
-
-    if request.destructive || matches!(request.consequence, Some(ActionConsequence::Destructive)) {
-        if matches!(request.scope, Some(ActionScope::External)) {
-            return "unknown_action";
-        }
-        return "delete_trash_files";
-    }
-
     if target_contains(
         &target,
         &[
@@ -2166,6 +2155,10 @@ fn classify_action_request(request: &ActionRequest) -> &'static str {
         return "send_email";
     }
 
+    if target_contains(&target, &["automation schedule", "cron", "recurring job"]) {
+        return "change_automation_schedule";
+    }
+
     if target_contains(
         &target,
         &["publish", "schedule", "social", "post", "content"],
@@ -2175,8 +2168,15 @@ fn classify_action_request(request: &ActionRequest) -> &'static str {
         return "publish_schedule_content";
     }
 
-    if target_contains(&target, &["automation schedule", "cron", "recurring job"]) {
-        return "change_automation_schedule";
+    if is_bulk_file_request(request, &target) {
+        return "bulk_file_operations";
+    }
+
+    if request.destructive || matches!(request.consequence, Some(ActionConsequence::Destructive)) {
+        if matches!(request.scope, Some(ActionScope::External)) {
+            return "unknown_action";
+        }
+        return "delete_trash_files";
     }
 
     if target_contains(
@@ -2206,7 +2206,14 @@ fn classify_action_request(request: &ActionRequest) -> &'static str {
     }
 
     if matches!(request.consequence, Some(ActionConsequence::ExternalWrite))
-        || target_contains(&target, &["external api", "api record", "remote api"])
+        || target_contains(
+            &target,
+            &["external api", "api record", "remote api", "remote record"],
+        )
+        || (matches!(
+            request.scope,
+            Some(ActionScope::External | ActionScope::Integration)
+        ) && !matches!(request.action_type, ActionType::Read))
     {
         return "external_api_write";
     }
@@ -2256,6 +2263,21 @@ fn classify_action_request(request: &ActionRequest) -> &'static str {
         ActionType::Process => "run_existing_automation",
         ActionType::Unknown => "unknown_action",
     }
+}
+
+fn is_bulk_file_request(request: &ActionRequest, target: &str) -> bool {
+    let has_bulk_hint = request.bulk || target_contains(target, &["bulk", "many", "batch", "mass"]);
+    let has_file_hint = target_contains(
+        target,
+        &[
+            "file", "files", "folder", "folders", "path", "paths", "rename", "copy", "move",
+        ],
+    );
+
+    has_bulk_hint
+        && (matches!(request.action_type, ActionType::File)
+            || matches!(request.scope, Some(ActionScope::LocalVisible))
+            || has_file_hint)
 }
 
 #[allow(dead_code)]
@@ -4189,6 +4211,85 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn action_policy_classifier_preserves_high_risk_precedence_over_generic_terms() {
+        let automation_schedule = evaluate_action_request(
+            &ActionRequest::new(ActionType::Update).target("automation schedule"),
+        );
+        assert_eq!(
+            automation_schedule.category, "change_automation_schedule",
+            "specific automation schedule changes must not be shadowed by generic publish/schedule"
+        );
+
+        for target in ["bulk email", "mass email"] {
+            let decision =
+                evaluate_action_request(&ActionRequest::new(ActionType::Send).target(target));
+            assert_eq!(
+                decision.category, "send_email",
+                "category mismatch for {target}"
+            );
+            assert_eq!(decision.human_confirmation, HumanConfirmation::Always);
+            assert!(decision.requires_confirmation);
+        }
+
+        let destructive_deploy = evaluate_action_request(
+            &ActionRequest::new(ActionType::Deploy)
+                .target("destructive bulk deploy to production")
+                .bulk(true)
+                .destructive(true),
+        );
+        assert_eq!(destructive_deploy.category, "deploy_redeploy_rollback");
+        assert_ne!(destructive_deploy.category, "bulk_file_operations");
+        assert_ne!(destructive_deploy.category, "delete_trash_files");
+
+        let bulk_process = evaluate_action_request(
+            &ActionRequest::new(ActionType::Process)
+                .target("batch process automation run")
+                .bulk(true),
+        );
+        assert_eq!(bulk_process.category, "run_existing_automation");
+        assert_ne!(bulk_process.category, "bulk_file_operations");
+
+        let destructive_send = evaluate_action_request(
+            &ActionRequest::new(ActionType::Send)
+                .target("mass email recipients")
+                .bulk(true)
+                .destructive(true),
+        );
+        assert_eq!(destructive_send.category, "send_email");
+        assert_eq!(
+            destructive_send.human_confirmation,
+            HumanConfirmation::Always
+        );
+        assert_ne!(destructive_send.category, "bulk_file_operations");
+        assert_ne!(destructive_send.category, "delete_trash_files");
+    }
+
+    #[test]
+    fn action_policy_classifier_gates_external_and_integration_creates() {
+        let external_create = evaluate_action_request(
+            &ActionRequest::new(ActionType::Create)
+                .scope(ActionScope::External)
+                .target("remote record"),
+        );
+        assert_eq!(external_create.category, "external_api_write");
+        assert_eq!(external_create.policy, ActionPolicy::AskBeforeAction);
+        assert!(!external_create.allowed_now);
+        assert!(external_create.requires_confirmation);
+        assert!(external_create.requires_gate);
+
+        let integration_create = evaluate_action_request(
+            &ActionRequest::new(ActionType::Create)
+                .scope(ActionScope::Integration)
+                .target("contact"),
+        );
+        assert_eq!(integration_create.category, "external_api_write");
+        assert_eq!(integration_create.policy, ActionPolicy::AskBeforeAction);
+        assert!(!integration_create.allowed_now);
+        assert!(integration_create.requires_confirmation);
+        assert!(integration_create.requires_gate);
     }
 
     #[test]
