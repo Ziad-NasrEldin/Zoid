@@ -5,10 +5,12 @@ use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static CONFIRMATION_DECISION_COUNTER: AtomicU64 = AtomicU64::new(0);
+static EVENT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const SAFE_LOG_MAX_BYTES: usize = 4096;
 const SAFE_LOG_ROTATED_SUFFIX: &str = "1";
@@ -674,6 +676,62 @@ struct EventInput<'a> {
     source: &'a str,
     metadata_json: &'a str,
     targets: Vec<(&'a str, &'a str, &'a str)>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EventTargetInput<'a> {
+    entity_type: &'a str,
+    entity_id: &'a str,
+    relation_type: &'a str,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EventTargetRecord {
+    entity_type: String,
+    entity_id: String,
+    relation_type: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct EventCreateInput<'a> {
+    action_type: &'a str,
+    outcome: &'a str,
+    actor_type: &'a str,
+    actor_id: Option<&'a str>,
+    workspace_key: Option<&'a str>,
+    summary: &'a str,
+    source: &'a str,
+    metadata_json: &'a str,
+    targets: Vec<EventTargetInput<'a>>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EventRecord {
+    id: String,
+    action_type: String,
+    outcome: String,
+    timestamp: String,
+    actor_type: String,
+    actor_id: Option<String>,
+    workspace_key: Option<String>,
+    summary: String,
+    source: String,
+    metadata_json: String,
+    targets: Vec<EventTargetRecord>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+struct EventListFilter<'a> {
+    workspace_key: Option<&'a str>,
+    action_type: Option<&'a str>,
+    outcome: Option<&'a str>,
+    source: Option<&'a str>,
+    limit: usize,
 }
 
 #[allow(dead_code)]
@@ -2285,36 +2343,235 @@ fn write_foundation_event(connection: &Connection) -> rusqlite::Result<()> {
 }
 
 fn write_event(connection: &Connection, input: EventInput<'_>) -> rusqlite::Result<String> {
-    let event_id = format!("evt_{}", now_millis());
+    let targets = input
+        .targets
+        .iter()
+        .map(|(entity_type, entity_id, relation_type)| EventTargetInput {
+            entity_type,
+            entity_id,
+            relation_type,
+        })
+        .collect();
+    create_event_record(
+        connection,
+        EventCreateInput {
+            action_type: input.event_type,
+            outcome: input.severity,
+            actor_type: input.actor_type,
+            actor_id: input.actor_id,
+            workspace_key: input.workspace_key,
+            summary: input.summary,
+            source: input.source,
+            metadata_json: input.metadata_json,
+            targets,
+        },
+    )
+    .map(|record| record.id)
+    .map_err(repository_error_to_rusqlite)
+}
+
+#[allow(dead_code)]
+fn create_event_record(
+    connection: &Connection,
+    input: EventCreateInput<'_>,
+) -> RepoResult<EventRecord> {
+    validate_json_field("metadata_json", input.metadata_json)?;
+
+    let event_id = next_event_id();
     let redacted_summary = redact_secrets(input.summary).text;
     let redacted_metadata = redact_metadata_json(input.metadata_json);
 
-    connection.execute(
-        "
-        insert into events (id, type, timestamp, actor_type, actor_id, workspace_key, summary, severity, source, metadata_json)
-        values (?1, ?2, current_timestamp, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-        ",
-        params![
-            event_id,
-            input.event_type,
-            input.actor_type,
-            input.actor_id,
-            input.workspace_key,
-            redacted_summary,
-            input.severity,
-            input.source,
-            redacted_metadata
-        ],
-    )?;
+    connection
+        .execute_batch("savepoint create_event_record")
+        .map_err(|error| map_repository_error("events", error))?;
 
-    for (entity_type, entity_id, relation_type) in input.targets {
-        connection.execute(
-            "insert or ignore into event_targets (event_id, entity_type, entity_id, relation_type) values (?1, ?2, ?3, ?4)",
-            params![event_id, entity_type, entity_id, relation_type],
-        )?;
+    let create_result = (|| -> RepoResult<EventRecord> {
+        connection
+            .execute(
+                "
+                insert into events (id, type, timestamp, actor_type, actor_id, workspace_key, summary, severity, source, metadata_json)
+                values (?1, ?2, current_timestamp, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                ",
+                params![
+                    event_id,
+                    input.action_type,
+                    input.actor_type,
+                    input.actor_id,
+                    input.workspace_key,
+                    redacted_summary,
+                    input.outcome,
+                    input.source,
+                    redacted_metadata
+                ],
+            )
+            .map_err(|error| map_repository_error("events", error))?;
+
+        for target in input.targets {
+            connection
+                .execute(
+                    "insert or ignore into event_targets (event_id, entity_type, entity_id, relation_type) values (?1, ?2, ?3, ?4)",
+                    params![event_id, target.entity_type, target.entity_id, target.relation_type],
+                )
+                .map_err(|error| map_repository_error("event_targets", error))?;
+        }
+
+        read_event_record(connection, &event_id)
+    })();
+
+    match create_result {
+        Ok(record) => {
+            connection
+                .execute_batch("release savepoint create_event_record")
+                .map_err(|error| map_repository_error("events", error))?;
+            Ok(record)
+        }
+        Err(error) => {
+            let _ = connection.execute_batch(
+                "rollback to savepoint create_event_record; release savepoint create_event_record",
+            );
+            Err(error)
+        }
     }
+}
 
-    Ok(event_id)
+#[allow(dead_code)]
+fn read_event_record(connection: &Connection, event_id: &str) -> RepoResult<EventRecord> {
+    let mut record = connection
+        .query_row(
+            "
+            select id, type, severity, timestamp, actor_type, actor_id, workspace_key, summary, source, metadata_json
+            from events
+            where id = ?1
+            ",
+            params![event_id],
+            event_record_from_row,
+        )
+        .optional()
+        .map_err(|error| map_repository_error("events", error))?
+        .ok_or_else(|| RepositoryError::NotFound {
+            entity: "events",
+            key: event_id.to_string(),
+        })?;
+    record.targets = read_event_targets(connection, event_id)?;
+    Ok(record)
+}
+
+#[allow(dead_code)]
+fn list_event_records(
+    connection: &Connection,
+    filter: EventListFilter<'_>,
+) -> RepoResult<Vec<EventRecord>> {
+    let limit = normalize_event_list_limit(filter.limit);
+    let mut statement = connection
+        .prepare(
+            "
+            select id, type, severity, timestamp, actor_type, actor_id, workspace_key, summary, source, metadata_json
+            from events
+            where (?1 is null or workspace_key = ?1)
+              and (?2 is null or type = ?2)
+              and (?3 is null or severity = ?3)
+              and (?4 is null or source = ?4)
+            order by rowid desc
+            limit ?5
+            ",
+        )
+        .map_err(|error| map_repository_error("events", error))?;
+    let rows = statement
+        .query_map(
+            params![
+                filter.workspace_key,
+                filter.action_type,
+                filter.outcome,
+                filter.source,
+                limit
+            ],
+            event_record_from_row,
+        )
+        .map_err(|error| map_repository_error("events", error))?;
+
+    let mut records = Vec::new();
+    for row in rows {
+        let mut record = row.map_err(|error| map_repository_error("events", error))?;
+        record.targets = read_event_targets(connection, &record.id)?;
+        records.push(record);
+    }
+    Ok(records)
+}
+
+#[allow(dead_code)]
+fn event_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRecord> {
+    Ok(EventRecord {
+        id: row.get(0)?,
+        action_type: row.get(1)?,
+        outcome: row.get(2)?,
+        timestamp: row.get(3)?,
+        actor_type: row.get(4)?,
+        actor_id: row.get(5)?,
+        workspace_key: row.get(6)?,
+        summary: row.get(7)?,
+        source: row.get(8)?,
+        metadata_json: row.get(9)?,
+        targets: Vec::new(),
+    })
+}
+
+#[allow(dead_code)]
+fn read_event_targets(
+    connection: &Connection,
+    event_id: &str,
+) -> RepoResult<Vec<EventTargetRecord>> {
+    let mut statement = connection
+        .prepare(
+            "
+            select entity_type, entity_id, relation_type
+            from event_targets
+            where event_id = ?1
+            order by
+                case relation_type when 'primary' then 0 else 1 end,
+                entity_type,
+                entity_id,
+                relation_type
+            ",
+        )
+        .map_err(|error| map_repository_error("event_targets", error))?;
+    let rows = statement
+        .query_map(params![event_id], |row| {
+            Ok(EventTargetRecord {
+                entity_type: row.get(0)?,
+                entity_id: row.get(1)?,
+                relation_type: row.get(2)?,
+            })
+        })
+        .map_err(|error| map_repository_error("event_targets", error))?;
+
+    let mut targets = Vec::new();
+    for row in rows {
+        targets.push(row.map_err(|error| map_repository_error("event_targets", error))?);
+    }
+    Ok(targets)
+}
+
+#[allow(dead_code)]
+fn normalize_event_list_limit(limit: usize) -> i64 {
+    let bounded = if limit == 0 { 50 } else { limit.min(200) };
+    i64::try_from(bounded).unwrap_or(200)
+}
+
+fn next_event_id() -> String {
+    let sequence = EVENT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "evt_{}_{:010}_{:020}",
+        now_millis(),
+        process::id(),
+        sequence
+    )
+}
+
+fn repository_error_to_rusqlite(error: RepositoryError) -> rusqlite::Error {
+    rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        format!("{error:?}"),
+    )))
 }
 
 fn secure_foundation_status(safe_log_probe: &SafeLogWrite) -> SecureFoundationStatus {
@@ -5694,5 +5951,244 @@ mod tests {
             .query_row("select count(*) from event_targets", [], |row| row.get(0))
             .unwrap();
         assert_eq!(target_count, 2);
+    }
+
+    #[test]
+    fn event_repository_writes_reads_and_lists_redacted_events_with_ordered_targets() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+
+        let older = create_event_record(
+            &connection,
+            EventCreateInput {
+                action_type: "agent.run.started",
+                outcome: "started",
+                actor_type: "agent",
+                actor_id: Some("local-agent"),
+                workspace_key: Some("agents"),
+                summary: "Started with token=sk-live-123",
+                source: "agent_service",
+                metadata_json: "{\"token\":\"abc123\",\"visible\":\"kept\"}",
+                targets: vec![
+                    EventTargetInput {
+                        entity_type: "task",
+                        entity_id: "task_2",
+                        relation_type: "secondary",
+                    },
+                    EventTargetInput {
+                        entity_type: "workspace",
+                        entity_id: "agents",
+                        relation_type: "primary",
+                    },
+                ],
+            },
+        )
+        .expect("create older event");
+        let newer = create_event_record(
+            &connection,
+            EventCreateInput {
+                action_type: "agent.run.completed",
+                outcome: "success",
+                actor_type: "agent",
+                actor_id: Some("local-agent"),
+                workspace_key: Some("agents"),
+                summary: "Completed safely",
+                source: "agent_service",
+                metadata_json: "{\"duration_ms\":15}",
+                targets: vec![EventTargetInput {
+                    entity_type: "task",
+                    entity_id: "task_2",
+                    relation_type: "result",
+                }],
+            },
+        )
+        .expect("create newer event");
+
+        assert_eq!(older.action_type, "agent.run.started");
+        assert_eq!(older.outcome, "started");
+        assert!(!older.summary.contains("sk-live-123"));
+        assert_eq!(
+            older.metadata_json,
+            "{\"token\":\"[REDACTED]\",\"visible\":\"kept\"}"
+        );
+        assert_eq!(
+            older.targets,
+            vec![
+                EventTargetRecord {
+                    entity_type: "workspace".to_string(),
+                    entity_id: "agents".to_string(),
+                    relation_type: "primary".to_string(),
+                },
+                EventTargetRecord {
+                    entity_type: "task".to_string(),
+                    entity_id: "task_2".to_string(),
+                    relation_type: "secondary".to_string(),
+                },
+            ]
+        );
+
+        let read_back = read_event_record(&connection, &older.id).expect("read event");
+        assert_eq!(read_back, older);
+
+        let newest_only = list_event_records(
+            &connection,
+            EventListFilter {
+                workspace_key: Some("agents"),
+                action_type: None,
+                outcome: None,
+                source: None,
+                limit: 1,
+            },
+        )
+        .expect("list newest event");
+        assert_eq!(newest_only, vec![newer.clone()]);
+
+        let listed = list_event_records(
+            &connection,
+            EventListFilter {
+                workspace_key: Some("agents"),
+                action_type: Some("agent.run.completed"),
+                outcome: Some("success"),
+                source: Some("agent_service"),
+                limit: 10,
+            },
+        )
+        .expect("list events");
+        assert_eq!(listed, vec![newer]);
+    }
+
+    #[test]
+    fn event_repository_rolls_back_event_when_target_insert_fails() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+        connection
+            .execute_batch(
+                "
+                create trigger force_event_target_failure
+                before insert on event_targets
+                begin
+                    select raise(abort, 'forced target failure');
+                end;
+                ",
+            )
+            .expect("install failing target trigger");
+
+        let result = create_event_record(
+            &connection,
+            EventCreateInput {
+                action_type: "agent.run.completed",
+                outcome: "success",
+                actor_type: "agent",
+                actor_id: Some("local-agent"),
+                workspace_key: Some("agents"),
+                summary: "target should fail",
+                source: "agent_service",
+                metadata_json: "{\"duration_ms\":15}",
+                targets: vec![EventTargetInput {
+                    entity_type: "task",
+                    entity_id: "task_rollback",
+                    relation_type: "result",
+                }],
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(count_table(&connection, "events").unwrap(), 0);
+        let target_count: i64 = connection
+            .query_row("select count(*) from event_targets", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(target_count, 0);
+    }
+
+    #[test]
+    fn event_repository_lists_more_than_ten_rapid_events_newest_insertion_first() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+
+        let mut created = Vec::new();
+        for index in 0..12 {
+            created.push(
+                create_event_record(
+                    &connection,
+                    EventCreateInput {
+                        action_type: "agent.run.progress",
+                        outcome: "info",
+                        actor_type: "agent",
+                        actor_id: Some("local-agent"),
+                        workspace_key: Some("agents"),
+                        summary: "rapid event",
+                        source: "agent_service",
+                        metadata_json: "{}",
+                        targets: vec![EventTargetInput {
+                            entity_type: "task",
+                            entity_id: if index % 2 == 0 {
+                                "task_even"
+                            } else {
+                                "task_odd"
+                            },
+                            relation_type: "progress",
+                        }],
+                    },
+                )
+                .expect("create rapid event"),
+            );
+        }
+
+        let listed = list_event_records(
+            &connection,
+            EventListFilter {
+                workspace_key: Some("agents"),
+                action_type: Some("agent.run.progress"),
+                outcome: Some("info"),
+                source: Some("agent_service"),
+                limit: 12,
+            },
+        )
+        .expect("list rapid events");
+        let listed_ids = listed.iter().map(|event| &event.id).collect::<Vec<_>>();
+        let expected_ids = created
+            .iter()
+            .rev()
+            .map(|event| &event.id)
+            .collect::<Vec<_>>();
+        assert_eq!(listed_ids, expected_ids);
+    }
+
+    #[test]
+    fn event_repository_rejects_invalid_metadata_before_insert_or_target_insert() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+
+        let result = create_event_record(
+            &connection,
+            EventCreateInput {
+                action_type: "agent.run.completed",
+                outcome: "success",
+                actor_type: "agent",
+                actor_id: Some("local-agent"),
+                workspace_key: Some("agents"),
+                summary: "bad metadata",
+                source: "agent_service",
+                metadata_json: "{not valid json",
+                targets: vec![EventTargetInput {
+                    entity_type: "task",
+                    entity_id: "task_3",
+                    relation_type: "result",
+                }],
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(RepositoryError::InvalidJson {
+                field: "metadata_json",
+                ..
+            })
+        ));
+        assert_eq!(count_table(&connection, "events").unwrap(), 0);
+        let target_count: i64 = connection
+            .query_row("select count(*) from event_targets", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(target_count, 0);
     }
 }
