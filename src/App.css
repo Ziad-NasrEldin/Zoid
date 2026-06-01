@@ -595,6 +595,28 @@ input:focus-visible {
   margin-top: var(--space-13);
 }
 
+.registry-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+  margin-top: var(--space-10);
+}
+
+.registry-meta span {
+  width: fit-content;
+  border-radius: var(--radius-pill);
+  padding: var(--space-4) var(--space-8);
+  color: var(--state-pending-text);
+  background: var(--state-pending-bg-strong);
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.registry-meta.native span:first-child {
+  color: var(--state-ready-text);
+  background: var(--state-ready-bg-strong);
+}
+
 .registry-chip {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-pill);

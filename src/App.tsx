@@ -83,6 +83,16 @@ type FoundationStatus = {
   secure_services: SecureFoundationStatus;
 };
 
+type WorkspaceRegistrySource = "native" | "fallback" | "checking";
+
+type WorkspaceRegistryView = {
+  countLabel: string;
+  source: WorkspaceRegistrySource;
+  sourceLabel: string;
+  truthCopy: string;
+  workspaces: WorkspaceRecord[];
+};
+
 const integrationStates = [
   { name: "CLI profiles", state: "not configured", note: "Local command wiring is disabled until a real profile is added." },
   { name: "Gmail", state: "not configured", note: "Read and send flows remain unavailable until explicitly configured." },
@@ -108,6 +118,53 @@ const workspaceGlyphs: Record<string, string> = {
 };
 
 const readinessLabel = (ready: boolean) => (ready ? "Ready" : "Blocked");
+
+function formatWorkspaceCount(count: number) {
+  return `${count} workspace${count === 1 ? "" : "s"}`;
+}
+
+function sortWorkspaces(workspaces: WorkspaceRecord[]) {
+  return [...workspaces].sort((a, b) => a.position - b.position);
+}
+
+function buildWorkspaceRegistryView(status: FoundationStatus | null, statusError: string | null): WorkspaceRegistryView {
+  if (status) {
+    const workspaces = sortWorkspaces(status.workspaces);
+    const countLabel = formatWorkspaceCount(workspaces.length);
+
+    return {
+      countLabel,
+      source: "native",
+      sourceLabel: "Native registry",
+      truthCopy: `Rendering ${countLabel} returned by get_foundation_status. Browser preview fallback is not mixed into native data.`,
+      workspaces,
+    };
+  }
+
+  if (statusError) {
+    const workspaces = sortWorkspaces(fallbackWorkspaces);
+    const countLabel = formatWorkspaceCount(workspaces.length);
+
+    return {
+      countLabel,
+      source: "fallback",
+      sourceLabel: "Browser preview fallback",
+      truthCopy: `Showing ${countLabel} from static browser preview data because native status is unavailable outside Tauri.`,
+      workspaces,
+    };
+  }
+
+  const workspaces = sortWorkspaces(fallbackWorkspaces);
+  const countLabel = formatWorkspaceCount(workspaces.length);
+
+  return {
+    countLabel,
+    source: "checking",
+    sourceLabel: "Checking native registry",
+    truthCopy: `Temporarily showing ${countLabel} from browser preview data while get_foundation_status is loading.`,
+    workspaces,
+  };
+}
 
 type StatusTone = "ready" | "blocked" | "pending";
 
@@ -240,11 +297,8 @@ function App() {
       });
   }, []);
 
-  const workspaces = useMemo(() => {
-    const workspaceRecords = status ? status.workspaces : fallbackWorkspaces;
-
-    return [...workspaceRecords].sort((a, b) => a.position - b.position);
-  }, [status]);
+  const workspaceRegistry = useMemo(() => buildWorkspaceRegistryView(status, statusError), [status, statusError]);
+  const workspaces = workspaceRegistry.workspaces;
 
   const active = useMemo(
     () => workspaces.find((workspace) => workspace.id === activeWorkspace) ?? workspaces[0] ?? null,
@@ -253,7 +307,7 @@ function App() {
 
   const nativeState = statusError ? "Preview" : status ? "Native ready" : "Checking";
   const statusTone = statusError ? "blocked" : status ? "ready" : "pending";
-  const workspaceSourceLabel = status ? "Native registry" : statusError ? "Preview fallback" : "Preview while checking native status";
+  const workspaceSourceLabel = workspaceRegistry.sourceLabel;
   const activeWorkspaceLabel = active?.label ?? "No workspaces registered";
   const activeWorkspaceDescription = active?.description ?? "The native workspace registry is empty.";
   const starterDirectoryCount = status?.visible_user.starter_directories.length ?? 0;
@@ -291,7 +345,7 @@ function App() {
           <span className={`status-dot ${statusTone}`} />
           <div>
             <strong>{nativeState}</strong>
-            <small>{status ? `${status.workspace_count} registered workspaces` : statusError ? "Browser preview fallback" : "Checking native registry"}</small>
+            <small>{workspaceRegistry.sourceLabel}: {workspaceRegistry.countLabel}</small>
           </div>
         </div>
       </aside>
@@ -333,7 +387,7 @@ function App() {
                     <div><dt>Logs</dt><dd>{status.app_support.logs_dir}</dd></div>
                     <div><dt>Config</dt><dd>{status.app_support.config_dir}</dd></div>
                     <div><dt>Migration version</dt><dd>{status.migration_version}</dd></div>
-                    <div><dt>Registered workspaces</dt><dd>{status.workspace_count}</dd></div>
+                    <div><dt>Registered workspaces</dt><dd>{workspaceRegistry.countLabel}</dd></div>
                     <div><dt>Foundation events</dt><dd>{status.event_count}</dd></div>
                   </dl>
                 ) : (
@@ -343,8 +397,12 @@ function App() {
 
               <InfoCard>
                 <p className="eyebrow">Workspace registry</p>
-                <h3>Real registry, calm preview</h3>
-                <p>The sidebar is driven by native workspace records when available, with browser preview fallbacks only outside Tauri.</p>
+                <h3>{workspaceRegistry.sourceLabel}</h3>
+                <p>{workspaceRegistry.truthCopy}</p>
+                <div className={`registry-meta ${workspaceRegistry.source}`}>
+                  <span>{workspaceRegistry.countLabel}</span>
+                  <span>{status ? "Real native registry" : "UI-only preview data"}</span>
+                </div>
                 <div className="registry-list">
                   {workspaces.length > 0 ? workspaces.map((workspace) => (
                     <button
@@ -377,6 +435,7 @@ function App() {
                 <div><dt>ID</dt><dd>{active?.id ?? "—"}</dd></div>
                 <div><dt>Position</dt><dd>{active?.position ?? "—"}</dd></div>
                 <div><dt>Source</dt><dd>{workspaceSourceLabel}</dd></div>
+                <div><dt>Visible count</dt><dd>{workspaceRegistry.countLabel}</dd></div>
               </dl>
             </InspectorCard>
 

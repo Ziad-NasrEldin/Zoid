@@ -75,7 +75,8 @@ Non-negotiable gates for every implementation slice:
   - 2026-06-01 completed CSS-only Apple-style token layer for system/monospace fonts, spacing, radii, text/accent colors, glass materials, borders, focus rings, shadows, light/dark variants, and ready/pending/blocked/error/empty/loading states. Final critique verdict APPROVED.
 - [x] P1.19 Frontend: reusable base components: sidebar item, workspace header, cards, badges, empty/blocker states, inspector/panel.
   - 2026-06-01 completed local frontend base components (`SidebarItem`, `WorkspaceHeader`, `InfoCard`, `StatusBadge`, `EmptyState`, `BlockerState`, `InspectorPanel`, `InspectorCard`) in `src/App.tsx`, preserved truthful browser/native fallback behavior, fixed the blocker-state review gap, and final critique verdict APPROVED.
-- [ ] P1.20 Frontend integration: render all workspace names from real workspace registry; no hardcoded fake connected states.
+- [x] P1.20 Frontend integration: render all workspace names from real workspace registry; no hardcoded fake connected states.
+  - 2026-06-01 completed frontend workspace-registry integration with `buildWorkspaceRegistryView`, native `status.workspaces` rendering without fallback mixing, explicit browser-preview/checking source labels, visible source/count/truth copy in sidebar/registry/inspector, preserved native-empty-registry handling, no fake connected integration states, and final critique verdict APPROVED.
 - [ ] P1.21 Frontend integration: Today foundation/widgets from real local state or truthful empty/unconfigured states.
 - [ ] P1.22 Frontend: settings/status shell for paths, DB, Keychain, redaction, logging, policy, events, integrations.
 - [ ] P1.23 Frontend: confirmation UI primitives showing policy reason and required confirmation/review.
