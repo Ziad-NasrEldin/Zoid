@@ -238,7 +238,6 @@ enum WorkspaceIntegrationState {
     Blocked,
 }
 
-#[cfg(test)]
 impl WorkspaceIntegrationState {
     fn as_str(self) -> &'static str {
         match self {
@@ -429,6 +428,10 @@ enum RepositoryError {
         field: &'static str,
         message: String,
     },
+    SecretRejected {
+        field: &'static str,
+        message: String,
+    },
     Database {
         message: String,
     },
@@ -461,6 +464,114 @@ struct AppSettingUpdate<'a> {
     value_type: &'a str,
     scope: &'a str,
     description: &'a str,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingScope {
+    App,
+    Workspace,
+}
+
+impl SettingScope {
+    fn as_str(self) -> &'static str {
+        match self {
+            SettingScope::App => "app",
+            SettingScope::Workspace => "workspace",
+        }
+    }
+
+    fn from_str(value: &str) -> RepoResult<Self> {
+        match value {
+            "app" => Ok(SettingScope::App),
+            "workspace" => Ok(SettingScope::Workspace),
+            _ => Err(RepositoryError::Constraint {
+                entity: "app_settings",
+                message: format!("unsupported local preference scope: {value}"),
+            }),
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LocalPreferenceRecord {
+    key: String,
+    value_json: String,
+    value_type: String,
+    scope: SettingScope,
+    description: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+struct LocalPreferenceInput<'a> {
+    key: &'a str,
+    value_json: &'a str,
+    value_type: &'a str,
+    scope: SettingScope,
+    description: &'a str,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IntegrationStatus {
+    NotConfigured,
+    Configured,
+    Connected,
+    Degraded,
+    Disabled,
+    Error,
+}
+
+impl IntegrationStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            IntegrationStatus::NotConfigured => "not_configured",
+            IntegrationStatus::Configured => "configured",
+            IntegrationStatus::Connected => "connected",
+            IntegrationStatus::Degraded => "degraded",
+            IntegrationStatus::Disabled => "disabled",
+            IntegrationStatus::Error => "error",
+        }
+    }
+
+    fn from_str(value: &str) -> RepoResult<Self> {
+        match value {
+            "not_configured" => Ok(IntegrationStatus::NotConfigured),
+            "configured" => Ok(IntegrationStatus::Configured),
+            "connected" => Ok(IntegrationStatus::Connected),
+            "degraded" => Ok(IntegrationStatus::Degraded),
+            "disabled" => Ok(IntegrationStatus::Disabled),
+            "error" => Ok(IntegrationStatus::Error),
+            _ => Err(RepositoryError::Constraint {
+                entity: "integration_statuses",
+                message: format!("unsupported integration status: {value}"),
+            }),
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IntegrationStatusRecord {
+    integration_key: String,
+    display_name: String,
+    status: IntegrationStatus,
+    config_json: String,
+    credential_ref: Option<String>,
+    last_checked_at: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+struct IntegrationStatusInput<'a> {
+    integration_key: &'a str,
+    display_name: &'a str,
+    status: IntegrationStatus,
+    config_json: &'a str,
+    credential_ref: Option<&'a str>,
+    last_checked_at: Option<&'a str>,
 }
 
 #[allow(dead_code)]
@@ -637,6 +748,12 @@ fn ensure_foundation() -> Result<FoundationStatus, Box<dyn std::error::Error>> {
     run_migrations(&connection)?;
     ensure_workspace_schema_compatibility(&connection)?;
     seed_workspaces(&connection)?;
+    seed_default_integration_statuses(&connection).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("failed to seed integration statuses: {error:?}"),
+        )
+    })?;
     write_foundation_event(&connection)?;
     let safe_log_probe = write_safe_log(
         &app_support_paths.logs_dir,
@@ -1045,6 +1162,299 @@ fn update_app_setting(
         entity: "app_settings",
         key: key.to_string(),
     })
+}
+
+#[allow(dead_code)]
+fn parse_json_field(field: &'static str, value: &str) -> RepoResult<Value> {
+    serde_json::from_str::<Value>(value).map_err(|error| RepositoryError::InvalidJson {
+        field,
+        message: error.to_string(),
+    })
+}
+
+#[allow(dead_code)]
+fn reject_secret(field: &'static str, message: impl Into<String>) -> RepositoryError {
+    RepositoryError::SecretRejected {
+        field,
+        message: message.into(),
+    }
+}
+
+#[allow(dead_code)]
+fn validate_no_secret_json(field: &'static str, value: &str) -> RepoResult<()> {
+    let parsed = parse_json_field(field, value)?;
+    if json_contains_secret_like_material(&parsed, None) {
+        return Err(reject_secret(
+            field,
+            "JSON contains a secret-like key or value; store raw secrets only in Keychain",
+        ));
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn json_contains_secret_like_material(value: &Value, key_hint: Option<&str>) -> bool {
+    match value {
+        Value::Object(object) => object.iter().any(|(key, child)| {
+            is_secret_key(key) || json_contains_secret_like_material(child, Some(key))
+        }),
+        Value::Array(items) => items
+            .iter()
+            .any(|item| json_contains_secret_like_material(item, key_hint)),
+        Value::String(text) => {
+            key_hint.is_some_and(is_secret_key) || looks_like_secret_material(text)
+        }
+        _ => key_hint.is_some_and(is_secret_key),
+    }
+}
+
+#[allow(dead_code)]
+fn looks_like_secret_material(value: &str) -> bool {
+    let trimmed = value.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.contains("authorization:") && lower.contains("bearer ") {
+        return true;
+    }
+    if lower.starts_with("bearer ") || lower.starts_with("sk-") || lower.starts_with("ghp_") {
+        return true;
+    }
+    false
+}
+
+#[allow(dead_code)]
+fn validate_local_preference_input(input: LocalPreferenceInput<'_>) -> RepoResult<()> {
+    if is_secret_key(input.key) {
+        return Err(reject_secret(
+            "key",
+            "local preference key is secret-like; store credentials in Keychain",
+        ));
+    }
+    validate_no_secret_json("value_json", input.value_json)
+}
+
+#[allow(dead_code)]
+fn local_preference_from_record(record: AppSettingRecord) -> RepoResult<LocalPreferenceRecord> {
+    Ok(LocalPreferenceRecord {
+        key: record.key,
+        value_json: record.value_json,
+        value_type: record.value_type,
+        scope: SettingScope::from_str(&record.scope)?,
+        description: record.description,
+    })
+}
+
+#[allow(dead_code)]
+fn upsert_local_app_preference(
+    connection: &Connection,
+    input: LocalPreferenceInput<'_>,
+) -> RepoResult<LocalPreferenceRecord> {
+    validate_local_preference_input(input)?;
+    let record = upsert_app_setting(
+        connection,
+        AppSettingInput {
+            key: input.key,
+            value_json: input.value_json,
+            value_type: input.value_type,
+            scope: input.scope.as_str(),
+            description: input.description,
+        },
+    )?;
+    local_preference_from_record(record)
+}
+
+#[allow(dead_code)]
+fn read_local_app_preference(
+    connection: &Connection,
+    key: &str,
+) -> RepoResult<Option<LocalPreferenceRecord>> {
+    read_app_setting(connection, key)?
+        .map(local_preference_from_record)
+        .transpose()
+}
+
+#[allow(dead_code)]
+fn list_local_app_preferences(connection: &Connection) -> RepoResult<Vec<LocalPreferenceRecord>> {
+    list_app_settings(connection)?
+        .into_iter()
+        .filter(|record| record.scope == "app" || record.scope == "workspace")
+        .map(local_preference_from_record)
+        .collect()
+}
+
+#[allow(dead_code)]
+fn list_local_app_preferences_by_scope(
+    connection: &Connection,
+    scope: SettingScope,
+) -> RepoResult<Vec<LocalPreferenceRecord>> {
+    list_app_settings_by_scope(connection, scope.as_str())?
+        .into_iter()
+        .map(local_preference_from_record)
+        .collect()
+}
+
+#[allow(dead_code)]
+fn integration_status_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<IntegrationStatusRecord> {
+    let status_text: String = row.get(2)?;
+    let status = IntegrationStatus::from_str(&status_text).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            2,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{error:?}"),
+            )),
+        )
+    })?;
+    Ok(IntegrationStatusRecord {
+        integration_key: row.get(0)?,
+        display_name: row.get(1)?,
+        status,
+        config_json: row.get(3)?,
+        credential_ref: row.get(4)?,
+        last_checked_at: row.get(5)?,
+    })
+}
+
+#[allow(dead_code)]
+fn validate_credential_ref(credential_ref: Option<&str>) -> RepoResult<()> {
+    if let Some(reference) = credential_ref {
+        if is_secret_key(reference) || looks_like_secret_material(reference) {
+            return Err(reject_secret(
+                "credential_ref",
+                "credential_ref must be a Keychain reference label/path/id, not raw secret material",
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn validate_integration_status_input(input: IntegrationStatusInput<'_>) -> RepoResult<()> {
+    validate_no_secret_json("config_json", input.config_json)?;
+    validate_credential_ref(input.credential_ref)
+}
+
+#[allow(dead_code)]
+fn upsert_integration_status(
+    connection: &Connection,
+    input: IntegrationStatusInput<'_>,
+) -> RepoResult<IntegrationStatusRecord> {
+    validate_integration_status_input(input)?;
+    connection
+        .execute(
+            "
+            insert into integration_statuses (
+                integration_key, display_name, status, config_json, credential_ref,
+                last_checked_at, updated_at
+            )
+            values (?1, ?2, ?3, ?4, ?5, ?6, current_timestamp)
+            on conflict(integration_key) do update set
+                display_name = excluded.display_name,
+                status = excluded.status,
+                config_json = excluded.config_json,
+                credential_ref = excluded.credential_ref,
+                last_checked_at = excluded.last_checked_at,
+                updated_at = current_timestamp
+            ",
+            params![
+                input.integration_key,
+                input.display_name,
+                input.status.as_str(),
+                input.config_json,
+                input.credential_ref,
+                input.last_checked_at
+            ],
+        )
+        .map_err(|error| map_repository_error("integration_statuses", error))?;
+    read_integration_status(connection, input.integration_key)?.ok_or_else(|| {
+        RepositoryError::NotFound {
+            entity: "integration_statuses",
+            key: input.integration_key.to_string(),
+        }
+    })
+}
+
+#[allow(dead_code)]
+fn read_integration_status(
+    connection: &Connection,
+    integration_key: &str,
+) -> RepoResult<Option<IntegrationStatusRecord>> {
+    connection
+        .query_row(
+            "
+            select integration_key, display_name, status, config_json, credential_ref, last_checked_at
+            from integration_statuses
+            where integration_key = ?1
+            ",
+            params![integration_key],
+            integration_status_from_row,
+        )
+        .optional()
+        .map_err(|error| map_repository_error("integration_statuses", error))
+}
+
+#[allow(dead_code)]
+fn list_integration_statuses(connection: &Connection) -> RepoResult<Vec<IntegrationStatusRecord>> {
+    connection
+        .prepare(
+            "
+            select integration_key, display_name, status, config_json, credential_ref, last_checked_at
+            from integration_statuses
+            order by integration_key asc
+            ",
+        )
+        .and_then(|mut statement| {
+            let rows = statement.query_map([], integration_status_from_row)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map_err(|error| map_repository_error("integration_statuses", error))
+}
+
+#[allow(dead_code)]
+fn default_status_for_registry_state(state: WorkspaceIntegrationState) -> IntegrationStatus {
+    match state {
+        WorkspaceIntegrationState::NotConfigured | WorkspaceIntegrationState::NeedsPermission => {
+            IntegrationStatus::NotConfigured
+        }
+        WorkspaceIntegrationState::Planned | WorkspaceIntegrationState::Blocked => {
+            IntegrationStatus::Disabled
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn seed_default_integration_statuses(connection: &Connection) -> RepoResult<()> {
+    for workspace in canonical_workspace_registry() {
+        for integration in workspace.integrations {
+            let config_json = serde_json::json!({
+                "workspace_key": workspace.key,
+                "registry_state": integration.state.as_str(),
+                "registry_note": integration.note,
+                "seed_source": "canonical_workspace_registry"
+            })
+            .to_string();
+            connection
+                .execute(
+                    "
+                    insert or ignore into integration_statuses (
+                        integration_key, display_name, status, config_json, credential_ref,
+                        last_checked_at, updated_at
+                    )
+                    values (?1, ?2, ?3, ?4, null, null, current_timestamp)
+                    ",
+                    params![
+                        integration.key,
+                        integration.label,
+                        default_status_for_registry_state(integration.state).as_str(),
+                        config_json
+                    ],
+                )
+                .map_err(|error| map_repository_error("integration_statuses", error))?;
+        }
+    }
+    Ok(())
 }
 
 #[allow(dead_code)]
@@ -2235,6 +2645,287 @@ mod tests {
             constraint_error,
             RepositoryError::Constraint { .. }
         ));
+    }
+
+    #[test]
+    fn settings_service_saves_reads_and_lists_local_non_secret_preferences() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+
+        let saved = upsert_local_app_preference(
+            &connection,
+            LocalPreferenceInput {
+                key: "ui.theme",
+                value_json: "\"dark\"",
+                value_type: "string",
+                scope: SettingScope::App,
+                description: "Current local theme preference",
+            },
+        )
+        .expect("save local preference");
+
+        assert_eq!(saved.key, "ui.theme");
+        assert_eq!(saved.value_json, "\"dark\"");
+        assert_eq!(saved.scope, SettingScope::App);
+
+        let read = read_local_app_preference(&connection, "ui.theme")
+            .expect("read local preference")
+            .expect("preference exists");
+        assert_eq!(read, saved);
+
+        upsert_local_app_preference(
+            &connection,
+            LocalPreferenceInput {
+                key: "workspace.sidebar.collapsed",
+                value_json: "true",
+                value_type: "boolean",
+                scope: SettingScope::Workspace,
+                description: "Sidebar state",
+            },
+        )
+        .expect("save workspace preference");
+
+        let all = list_local_app_preferences(&connection).expect("list local preferences");
+        assert_eq!(
+            all.iter()
+                .map(|setting| setting.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ui.theme", "workspace.sidebar.collapsed"]
+        );
+        let app_only = list_local_app_preferences_by_scope(&connection, SettingScope::App)
+            .expect("list app preferences");
+        assert_eq!(app_only.len(), 1);
+        assert_eq!(app_only[0].key, "ui.theme");
+
+        let db_count: i64 = connection
+            .query_row("select count(*) from app_settings", [], |row| row.get(0))
+            .expect("count app_settings rows");
+        assert_eq!(db_count, 2);
+    }
+
+    #[test]
+    fn settings_service_rejects_secret_like_local_preferences_and_invalid_json() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+
+        let secret_key_error = upsert_local_app_preference(
+            &connection,
+            LocalPreferenceInput {
+                key: "gmail.access_token",
+                value_json: "\"not-a-secret-for-test\"",
+                value_type: "string",
+                scope: SettingScope::App,
+                description: "must reject secret-like keys",
+            },
+        )
+        .expect_err("secret-like preference keys must be rejected");
+        assert!(
+            matches!(secret_key_error, RepositoryError::SecretRejected { field, .. } if field == "key")
+        );
+
+        let secret_value_error = upsert_local_app_preference(
+            &connection,
+            LocalPreferenceInput {
+                key: "integration.gmail",
+                value_json: "{\"api_key\":\"abc123\"}",
+                value_type: "json",
+                scope: SettingScope::App,
+                description: "must reject secret-like JSON",
+            },
+        )
+        .expect_err("secret-like preference JSON must be rejected");
+        assert!(
+            matches!(secret_value_error, RepositoryError::SecretRejected { field, .. } if field == "value_json")
+        );
+
+        let invalid_json_error = upsert_local_app_preference(
+            &connection,
+            LocalPreferenceInput {
+                key: "ui.bad_json",
+                value_json: "{not json}",
+                value_type: "json",
+                scope: SettingScope::App,
+                description: "must reject invalid JSON",
+            },
+        )
+        .expect_err("invalid preference JSON must be typed");
+        assert!(
+            matches!(invalid_json_error, RepositoryError::InvalidJson { field, .. } if field == "value_json")
+        );
+
+        let db_count: i64 = connection
+            .query_row("select count(*) from app_settings", [], |row| row.get(0))
+            .expect("count app_settings rows");
+        assert_eq!(db_count, 0);
+    }
+
+    #[test]
+    fn integration_status_service_seeds_truthful_registry_statuses_idempotently() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+
+        seed_default_integration_statuses(&connection).expect("seed integration statuses");
+        seed_default_integration_statuses(&connection).expect("seed integration statuses again");
+
+        let statuses = list_integration_statuses(&connection).expect("list integration statuses");
+        let gmail = statuses
+            .iter()
+            .find(|status| status.integration_key == "gmail")
+            .expect("gmail status exists");
+        let apple_calendar = statuses
+            .iter()
+            .find(|status| status.integration_key == "apple_calendar")
+            .expect("apple calendar status exists");
+        let browser = statuses
+            .iter()
+            .find(|status| status.integration_key == "browser_webview")
+            .expect("browser status exists");
+
+        assert_eq!(gmail.status, IntegrationStatus::NotConfigured);
+        assert_eq!(apple_calendar.status, IntegrationStatus::NotConfigured);
+        assert!(apple_calendar.config_json.contains("needs_permission"));
+        assert_eq!(browser.status, IntegrationStatus::Disabled);
+        assert!(statuses
+            .iter()
+            .all(|status| status.status != IntegrationStatus::Connected));
+        assert!(statuses
+            .iter()
+            .all(|status| status.credential_ref.is_none()));
+
+        let db_count: i64 = connection
+            .query_row("select count(*) from integration_statuses", [], |row| {
+                row.get(0)
+            })
+            .expect("count integration_statuses rows");
+        let registry_integration_count: usize = canonical_workspace_registry()
+            .iter()
+            .map(|workspace| workspace.integrations.len())
+            .sum();
+        assert_eq!(db_count, registry_integration_count as i64);
+    }
+
+    #[test]
+    fn integration_status_service_safely_upserts_reads_lists_and_preserves_seed_idempotence() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+        seed_default_integration_statuses(&connection).expect("seed integration statuses");
+
+        let updated = upsert_integration_status(
+            &connection,
+            IntegrationStatusInput {
+                integration_key: "gmail",
+                display_name: "Gmail",
+                status: IntegrationStatus::Configured,
+                config_json:
+                    "{\"account\":\"ziad@example.com\",\"scopes\":[\"metadata.readonly\"]}",
+                credential_ref: Some("keychain://zoid/integrations/gmail/default"),
+                last_checked_at: Some("2026-06-01T00:00:00Z"),
+            },
+        )
+        .expect("safe integration status update");
+        assert_eq!(updated.status, IntegrationStatus::Configured);
+        assert_eq!(
+            updated.credential_ref.as_deref(),
+            Some("keychain://zoid/integrations/gmail/default")
+        );
+
+        seed_default_integration_statuses(&connection)
+            .expect("seeding must not overwrite explicit status");
+        let read = read_integration_status(&connection, "gmail")
+            .expect("read integration status")
+            .expect("gmail status exists");
+        assert_eq!(read.status, IntegrationStatus::Configured);
+        assert!(read.config_json.contains("ziad@example.com"));
+
+        let statuses = list_integration_statuses(&connection).expect("list integration statuses");
+        assert_eq!(statuses.first().unwrap().integration_key, "apple_calendar");
+
+        let db_status: String = connection
+            .query_row(
+                "select status from integration_statuses where integration_key = 'gmail'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read raw integration status");
+        assert_eq!(db_status, "configured");
+    }
+
+    #[test]
+    fn integration_status_service_rejects_secret_config_invalid_json_and_raw_credential_refs() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+
+        let secret_config_error = upsert_integration_status(
+            &connection,
+            IntegrationStatusInput {
+                integration_key: "gmail",
+                display_name: "Gmail",
+                status: IntegrationStatus::Configured,
+                config_json: "{\"refresh_token\":\"abc123\"}",
+                credential_ref: None,
+                last_checked_at: None,
+            },
+        )
+        .expect_err("secret-like integration config must be rejected");
+        assert!(
+            matches!(secret_config_error, RepositoryError::SecretRejected { field, .. } if field == "config_json")
+        );
+
+        let bearer_config_error = upsert_integration_status(
+            &connection,
+            IntegrationStatusInput {
+                integration_key: "gmail",
+                display_name: "Gmail",
+                status: IntegrationStatus::Configured,
+                config_json: "{\"header\":\"Authorization: Bearer sk-live-1234567890\"}",
+                credential_ref: None,
+                last_checked_at: None,
+            },
+        )
+        .expect_err("bearer token config must be rejected");
+        assert!(matches!(
+            bearer_config_error,
+            RepositoryError::SecretRejected { .. }
+        ));
+
+        let invalid_json_error = upsert_integration_status(
+            &connection,
+            IntegrationStatusInput {
+                integration_key: "gmail",
+                display_name: "Gmail",
+                status: IntegrationStatus::NotConfigured,
+                config_json: "{not json}",
+                credential_ref: None,
+                last_checked_at: None,
+            },
+        )
+        .expect_err("invalid integration config JSON must be typed");
+        assert!(
+            matches!(invalid_json_error, RepositoryError::InvalidJson { field, .. } if field == "config_json")
+        );
+
+        let raw_credential_ref_error = upsert_integration_status(
+            &connection,
+            IntegrationStatusInput {
+                integration_key: "gmail",
+                display_name: "Gmail",
+                status: IntegrationStatus::Configured,
+                config_json: "{}",
+                credential_ref: Some("sk-live-1234567890abcdef"),
+                last_checked_at: None,
+            },
+        )
+        .expect_err("raw token-like credential refs must be rejected");
+        assert!(
+            matches!(raw_credential_ref_error, RepositoryError::SecretRejected { field, .. } if field == "credential_ref")
+        );
+
+        let db_count: i64 = connection
+            .query_row("select count(*) from integration_statuses", [], |row| {
+                row.get(0)
+            })
+            .expect("count integration_statuses rows");
+        assert_eq!(db_count, 0);
     }
 
     #[test]
