@@ -5126,6 +5126,73 @@ mod tests {
     }
 
     #[test]
+    fn tauri_bridge_policy_preview_allows_low_risk_and_rejects_invalid_parse_inputs() {
+        let low_risk = preview_action_policy(PolicyPreviewRequest {
+            category: None,
+            action_type: Some("read".to_string()),
+            target: Some("local note".to_string()),
+            scope: Some("local_private".to_string()),
+            consequence: Some("harmless_local".to_string()),
+            bulk: Some(false),
+            destructive: Some(false),
+        })
+        .expect("low-risk policy preview should parse and allow");
+
+        assert_eq!(low_risk.category, "read_local_app_data");
+        assert_eq!(low_risk.policy, ActionPolicy::Allow);
+        assert!(low_risk.allowed_now);
+        assert!(!low_risk.requires_gate);
+
+        for (field, request, expected_error) in [
+            (
+                "action_type",
+                PolicyPreviewRequest {
+                    category: None,
+                    action_type: Some("exfiltrate".to_string()),
+                    target: None,
+                    scope: None,
+                    consequence: None,
+                    bulk: None,
+                    destructive: None,
+                },
+                "unsupported action_type: exfiltrate",
+            ),
+            (
+                "scope",
+                PolicyPreviewRequest {
+                    category: None,
+                    action_type: Some("read".to_string()),
+                    target: None,
+                    scope: Some("planetary".to_string()),
+                    consequence: None,
+                    bulk: None,
+                    destructive: None,
+                },
+                "unsupported scope: planetary",
+            ),
+            (
+                "consequence",
+                PolicyPreviewRequest {
+                    category: None,
+                    action_type: Some("read".to_string()),
+                    target: None,
+                    scope: None,
+                    consequence: Some("catastrophic".to_string()),
+                    bulk: None,
+                    destructive: None,
+                },
+                "unsupported consequence: catastrophic",
+            ),
+        ] {
+            let error = match preview_action_policy(request) {
+                Ok(decision) => panic!("{field} must reject unsupported value, got {decision:?}"),
+                Err(error) => error,
+            };
+            assert_eq!(error, expected_error);
+        }
+    }
+
+    #[test]
     fn tauri_bridge_event_write_redacts_and_read_list_return_record() {
         let connection = Connection::open_in_memory().expect("open in-memory sqlite");
         run_migrations(&connection).expect("run migrations");
@@ -5171,6 +5238,19 @@ mod tests {
         )
         .expect("list events");
         assert_eq!(listed, vec![created]);
+    }
+
+    #[test]
+    fn read_event_missing_id_returns_not_found() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+
+        let error = read_event_with_connection(&connection, "event-missing".to_string())
+            .expect_err("missing event should return not found");
+
+        assert!(error.contains("NotFound"));
+        assert!(error.contains("events"));
+        assert!(error.contains("event-missing"));
     }
 
     #[test]
@@ -5824,6 +5904,58 @@ mod tests {
         );
     }
 
+    #[test]
+    fn entity_link_list_filter_rejects_invalid_or_empty_filter_fields() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+
+        for (field, filter) in [
+            (
+                "entity_type",
+                EntityLinkListFilter {
+                    entity_type: "calendar_event",
+                    entity_id: "task-001",
+                    relation_type: None,
+                    counterpart_type: None,
+                },
+            ),
+            (
+                "entity_id",
+                EntityLinkListFilter {
+                    entity_type: "task",
+                    entity_id: "   ",
+                    relation_type: None,
+                    counterpart_type: None,
+                },
+            ),
+            (
+                "relation_type",
+                EntityLinkListFilter {
+                    entity_type: "task",
+                    entity_id: "task-001",
+                    relation_type: Some(""),
+                    counterpart_type: None,
+                },
+            ),
+            (
+                "counterpart_type",
+                EntityLinkListFilter {
+                    entity_type: "task",
+                    entity_id: "task-001",
+                    relation_type: None,
+                    counterpart_type: Some("calendar_event"),
+                },
+            ),
+        ] {
+            let error = list_entity_links_by_source(&connection, filter)
+                .expect_err("invalid entity-link filter should be rejected before query");
+            assert!(
+                matches!(error, RepositoryError::Constraint { entity, ref message } if entity == "entity_links" && message.contains(field)),
+                "expected {field} constraint, got {error:?}"
+            );
+        }
+    }
+
     fn assert_table_has_columns(connection: &Connection, table: &str, expected_columns: &[&str]) {
         let columns = table_columns(connection, table).expect("read table columns");
         for expected_column in expected_columns {
@@ -6299,6 +6431,24 @@ mod tests {
     }
 
     #[test]
+    fn redact_metadata_json_invalid_json_returns_redacted_notice_and_no_raw_secret() {
+        let redacted = redact_metadata_json(
+            "not json api_key=dummy-api-key, Authorization: Bearer supersecretvalue123, visible text",
+        );
+        let parsed: Value = serde_json::from_str(&redacted)
+            .expect("invalid metadata fallback should still be valid JSON");
+
+        assert_eq!(parsed["redaction_notice"], "metadata_was_not_valid_json");
+        let redacted_text = parsed["redacted_text"]
+            .as_str()
+            .expect("notice should include redacted_text");
+        assert!(redacted_text.contains("visible text"));
+        assert!(redacted_text.contains("[REDACTED]"));
+        assert!(!redacted.contains("dummy-api-key"));
+        assert!(!redacted.contains("supers"));
+    }
+
+    #[test]
     fn event_writer_uses_common_redaction_for_nested_metadata_and_summary() {
         let connection = Connection::open_in_memory().expect("open in-memory sqlite");
         run_migrations(&connection).expect("run migrations");
@@ -6395,6 +6545,13 @@ mod tests {
         assert!(stored.contains("visible output"));
 
         fs::remove_dir_all(logs_dir).ok();
+    }
+
+    #[test]
+    fn safe_log_scope_falls_back_to_app_for_empty_or_all_unsafe_scope() {
+        for unsafe_scope in ["", "   ", "../", "***"] {
+            assert_eq!(safe_log_scope(unsafe_scope), "app");
+        }
     }
 
     #[test]
@@ -6500,6 +6657,36 @@ mod tests {
             .expect("read metadata");
         assert!(metadata_json.contains("\"rotated\":true"));
         assert!(!metadata_json.contains("raw-rotation-secret"));
+
+        fs::remove_dir_all(logs_dir).ok();
+    }
+
+    #[test]
+    fn safe_log_writer_truncates_oversized_line_and_records_truncated_metadata() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+        let logs_dir = std::env::temp_dir().join(format!("zoid-log-truncate-{}", now_millis()));
+        let oversized_content = format!("visible-start {}", "x".repeat(SAFE_LOG_MAX_BYTES + 512));
+
+        let write = write_safe_log(&connection, &logs_dir, "agent", &oversized_content)
+            .expect("write oversized safe log line");
+        let stored = fs::read_to_string(&write.path).expect("read truncated safe log");
+        let (byte_count, metadata_json): (i64, String) = connection
+            .query_row(
+                "select byte_count, metadata_json from log_references where log_scope = 'agent'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read truncated log reference");
+        let metadata: Value = serde_json::from_str(&metadata_json).expect("metadata is JSON");
+
+        assert_eq!(write.bytes_written, SAFE_LOG_MAX_BYTES);
+        assert_eq!(byte_count, SAFE_LOG_MAX_BYTES as i64);
+        assert!(stored.starts_with("visible-start"));
+        assert!(stored.ends_with("\n[TRUNCATED]\n"));
+        assert_eq!(metadata["truncated"], true);
+        assert_eq!(metadata["last_bytes_written"], SAFE_LOG_MAX_BYTES as i64);
+        assert_eq!(metadata["max_bytes"], SAFE_LOG_MAX_BYTES as i64);
 
         fs::remove_dir_all(logs_dir).ok();
     }
