@@ -5,7 +5,10 @@ use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static CONFIRMATION_DECISION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const SAFE_LOG_MAX_BYTES: usize = 4096;
 const SAFE_LOG_ROTATED_SUFFIX: &str = "1";
@@ -483,6 +486,160 @@ impl ActionRequest {
         self.destructive = destructive;
         self
     }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ConfirmationDecisionState {
+    Approved,
+    Denied,
+    Cancelled,
+    Expired,
+}
+
+#[allow(dead_code)]
+impl ConfirmationDecisionState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Approved => "approved",
+            Self::Denied => "denied",
+            Self::Cancelled => "cancelled",
+            Self::Expired => "expired",
+        }
+    }
+
+    fn from_str(value: &str) -> RepoResult<Self> {
+        match value {
+            "approved" => Ok(Self::Approved),
+            "denied" => Ok(Self::Denied),
+            "cancelled" => Ok(Self::Cancelled),
+            "expired" => Ok(Self::Expired),
+            other => Err(RepositoryError::Constraint {
+                entity: "confirmation_decisions",
+                message: format!("invalid confirmation decision: {other}"),
+            }),
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ConfirmationActorType {
+    Human,
+    Reviewer,
+    ClearTask,
+    System,
+}
+
+#[allow(dead_code)]
+impl ConfirmationActorType {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Human => "human",
+            Self::Reviewer => "reviewer",
+            Self::ClearTask => "clear_task",
+            Self::System => "system",
+        }
+    }
+
+    fn from_str(value: &str) -> RepoResult<Self> {
+        match value {
+            "human" => Ok(Self::Human),
+            "reviewer" => Ok(Self::Reviewer),
+            "clear_task" => Ok(Self::ClearTask),
+            "system" => Ok(Self::System),
+            other => Err(RepositoryError::Constraint {
+                entity: "confirmation_decisions",
+                message: format!("invalid confirmation actor_type: {other}"),
+            }),
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConfirmationActor {
+    actor_type: ConfirmationActorType,
+    actor_id: Option<String>,
+}
+
+#[allow(dead_code)]
+impl ConfirmationActor {
+    fn human(actor_id: Option<&str>) -> Self {
+        Self::new(ConfirmationActorType::Human, actor_id)
+    }
+
+    fn reviewer(actor_id: Option<&str>) -> Self {
+        Self::new(ConfirmationActorType::Reviewer, actor_id)
+    }
+
+    fn new(actor_type: ConfirmationActorType, actor_id: Option<&str>) -> Self {
+        Self {
+            actor_type,
+            actor_id: actor_id.map(str::to_string),
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct ConfirmationDecisionRequest<'a> {
+    action_category: &'a str,
+    decision: ConfirmationDecisionState,
+    actor: ConfirmationActor,
+    summary: &'a str,
+    event_id: Option<&'a str>,
+    metadata_json: &'a str,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ConfirmationDecisionRecord {
+    id: String,
+    action_category: String,
+    decision: ConfirmationDecisionState,
+    actor_type: ConfirmationActorType,
+    actor_id: Option<String>,
+    summary: String,
+    event_id: Option<String>,
+    metadata_json: String,
+    created_at: String,
+}
+
+#[allow(dead_code)]
+impl ConfirmationDecisionRecord {
+    fn new_for_test(
+        id: &str,
+        action_category: &str,
+        decision: ConfirmationDecisionState,
+        actor_type: ConfirmationActorType,
+    ) -> Self {
+        Self {
+            id: id.to_string(),
+            action_category: normalize_action_category(action_category),
+            decision,
+            actor_type,
+            actor_id: None,
+            summary: "test confirmation".to_string(),
+            event_id: None,
+            metadata_json: "{}".to_string(),
+            created_at: "test".to_string(),
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ExecutionGateResult {
+    allowed_now: bool,
+    reason: String,
+    action_category: String,
+    requires_confirmation: bool,
+    requires_reviewer: bool,
+    requires_clear_task: bool,
+    confirmation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1142,6 +1299,325 @@ fn map_repository_error(entity: &'static str, error: rusqlite::Error) -> Reposit
             message: other.to_string(),
         },
     }
+}
+
+#[allow(dead_code)]
+fn confirmation_decision_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ConfirmationDecisionRecord> {
+    let decision_text: String = row.get(2)?;
+    let actor_type_text: String = row.get(3)?;
+    let decision = ConfirmationDecisionState::from_str(&decision_text).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            2,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{error:?}"),
+            )),
+        )
+    })?;
+    let actor_type = ConfirmationActorType::from_str(&actor_type_text).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            3,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{error:?}"),
+            )),
+        )
+    })?;
+
+    Ok(ConfirmationDecisionRecord {
+        id: row.get(0)?,
+        action_category: row.get(1)?,
+        decision,
+        actor_type,
+        actor_id: row.get(4)?,
+        summary: row.get(5)?,
+        event_id: row.get(6)?,
+        metadata_json: row.get(7)?,
+        created_at: row.get(8)?,
+    })
+}
+
+#[allow(dead_code)]
+fn next_confirmation_decision_id() -> String {
+    let sequence = CONFIRMATION_DECISION_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("confirm_{}_{}", now_millis(), sequence)
+}
+
+#[allow(dead_code)]
+fn validate_seeded_action_category(connection: &Connection, category: &str) -> RepoResult<String> {
+    let normalized = normalize_action_category(category);
+    if !ACTION_POLICY_CATEGORIES.contains(&normalized.as_str()) {
+        return Err(RepositoryError::Constraint {
+            entity: "confirmation_decisions",
+            message: format!("unknown action policy category: {normalized}"),
+        });
+    }
+
+    let exists: Option<i64> = connection
+        .query_row(
+            "select 1 from action_policies where category = ?1",
+            params![normalized],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| map_repository_error("action_policies", error))?;
+
+    if exists.is_none() {
+        return Err(RepositoryError::Constraint {
+            entity: "confirmation_decisions",
+            message: format!("action policy category is not seeded: {normalized}"),
+        });
+    }
+
+    Ok(normalized)
+}
+
+#[allow(dead_code)]
+fn validate_event_link(connection: &Connection, event_id: Option<&str>) -> RepoResult<()> {
+    if let Some(event_id) = event_id {
+        let exists: Option<i64> = connection
+            .query_row(
+                "select 1 from events where id = ?1",
+                params![event_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| map_repository_error("events", error))?;
+        if exists.is_none() {
+            return Err(RepositoryError::Constraint {
+                entity: "confirmation_decisions",
+                message: format!("event_id does not reference an existing event: {event_id}"),
+            });
+        }
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn create_confirmation_decision(
+    connection: &Connection,
+    input: ConfirmationDecisionRequest<'_>,
+) -> RepoResult<ConfirmationDecisionRecord> {
+    let action_category = validate_seeded_action_category(connection, input.action_category)?;
+    validate_json_field("metadata_json", input.metadata_json)?;
+    validate_event_link(connection, input.event_id)?;
+
+    let id = next_confirmation_decision_id();
+    let summary = redact_secrets(input.summary).text;
+    let metadata_json = redact_metadata_json(input.metadata_json);
+
+    connection
+        .execute(
+            "
+            insert into confirmation_decisions (
+                id, action_category, decision, actor_type, actor_id, summary, event_id, metadata_json
+            )
+            values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ",
+            params![
+                id,
+                action_category,
+                input.decision.as_str(),
+                input.actor.actor_type.as_str(),
+                input.actor.actor_id.as_deref(),
+                summary,
+                input.event_id,
+                metadata_json
+            ],
+        )
+        .map_err(|error| map_repository_error("confirmation_decisions", error))?;
+
+    read_confirmation_decision(connection, &id)?.ok_or(RepositoryError::NotFound {
+        entity: "confirmation_decisions",
+        key: id,
+    })
+}
+
+#[allow(dead_code)]
+fn read_confirmation_decision(
+    connection: &Connection,
+    id: &str,
+) -> RepoResult<Option<ConfirmationDecisionRecord>> {
+    connection
+        .query_row(
+            "
+            select id, action_category, decision, actor_type, actor_id, summary, event_id, metadata_json, created_at
+            from confirmation_decisions
+            where id = ?1
+            ",
+            params![id],
+            confirmation_decision_from_row,
+        )
+        .optional()
+        .map_err(|error| map_repository_error("confirmation_decisions", error))
+}
+
+#[allow(dead_code)]
+fn list_confirmation_decisions(
+    connection: &Connection,
+    action_category: Option<&str>,
+    limit: i64,
+) -> RepoResult<Vec<ConfirmationDecisionRecord>> {
+    let bounded_limit = limit.clamp(1, 100);
+    let mut records = Vec::new();
+
+    if let Some(category) = action_category {
+        let normalized = validate_seeded_action_category(connection, category)?;
+        let mut statement = connection
+            .prepare(
+                "
+                select id, action_category, decision, actor_type, actor_id, summary, event_id, metadata_json, created_at
+                from confirmation_decisions
+                where action_category = ?1
+                order by created_at desc, rowid desc
+                limit ?2
+                ",
+            )
+            .map_err(|error| map_repository_error("confirmation_decisions", error))?;
+        let rows = statement
+            .query_map(
+                params![normalized, bounded_limit],
+                confirmation_decision_from_row,
+            )
+            .map_err(|error| map_repository_error("confirmation_decisions", error))?;
+        for row in rows {
+            records
+                .push(row.map_err(|error| map_repository_error("confirmation_decisions", error))?);
+        }
+    } else {
+        let mut statement = connection
+            .prepare(
+                "
+                select id, action_category, decision, actor_type, actor_id, summary, event_id, metadata_json, created_at
+                from confirmation_decisions
+                order by created_at desc, rowid desc
+                limit ?1
+                ",
+            )
+            .map_err(|error| map_repository_error("confirmation_decisions", error))?;
+        let rows = statement
+            .query_map(params![bounded_limit], confirmation_decision_from_row)
+            .map_err(|error| map_repository_error("confirmation_decisions", error))?;
+        for row in rows {
+            records
+                .push(row.map_err(|error| map_repository_error("confirmation_decisions", error))?);
+        }
+    }
+
+    Ok(records)
+}
+
+#[allow(dead_code)]
+fn policy_requires_hard_reviewer(policy: &ActionPolicyDecision) -> bool {
+    matches!(
+        policy.reviewer_required,
+        ReviewerRequirement::Usually | ReviewerRequirement::Yes
+    )
+}
+
+#[allow(dead_code)]
+fn execution_gate_result(
+    allowed_now: bool,
+    reason: &str,
+    policy: Option<&ActionPolicyDecision>,
+    confirmation: Option<&ConfirmationDecisionRecord>,
+) -> ExecutionGateResult {
+    ExecutionGateResult {
+        allowed_now,
+        reason: reason.to_string(),
+        action_category: policy
+            .map(|decision| decision.category.clone())
+            .or_else(|| confirmation.map(|decision| decision.action_category.clone()))
+            .unwrap_or_else(|| "unknown_action".to_string()),
+        requires_confirmation: policy.is_some_and(|decision| decision.requires_confirmation),
+        requires_reviewer: policy.is_some_and(policy_requires_hard_reviewer),
+        requires_clear_task: policy.is_some_and(|decision| decision.requires_clear_task),
+        confirmation_id: confirmation.map(|decision| decision.id.clone()),
+    }
+}
+
+#[allow(dead_code)]
+fn require_policy_clearance_before_execution(
+    request: &ActionRequest,
+    policy: Option<&ActionPolicyDecision>,
+    confirmation: Option<&ConfirmationDecisionRecord>,
+) -> ExecutionGateResult {
+    let Some(policy) = policy else {
+        return execution_gate_result(false, "missing_policy_decision", None, confirmation);
+    };
+
+    let request_category = normalize_action_category(classify_action_request(request));
+    let policy_category = normalize_action_category(&policy.category);
+    if policy_category == "unknown_action"
+        || !ACTION_POLICY_CATEGORIES.contains(&policy_category.as_str())
+    {
+        return execution_gate_result(false, "unknown_action_category", Some(policy), confirmation);
+    }
+    if request_category != policy_category {
+        return execution_gate_result(
+            false,
+            "policy_request_category_mismatch",
+            Some(policy),
+            confirmation,
+        );
+    }
+
+    if policy.allowed_now {
+        return execution_gate_result(
+            true,
+            "policy_allows_without_confirmation",
+            Some(policy),
+            None,
+        );
+    }
+
+    let Some(confirmation) = confirmation else {
+        return execution_gate_result(false, "confirmation_required", Some(policy), None);
+    };
+
+    if normalize_action_category(&confirmation.action_category) != policy_category {
+        return execution_gate_result(
+            false,
+            "confirmation_category_mismatch",
+            Some(policy),
+            Some(confirmation),
+        );
+    }
+
+    if confirmation.decision != ConfirmationDecisionState::Approved {
+        return execution_gate_result(
+            false,
+            &format!("confirmation_{}", confirmation.decision.as_str()),
+            Some(policy),
+            Some(confirmation),
+        );
+    }
+
+    if policy.requires_clear_task && confirmation.actor_type != ConfirmationActorType::ClearTask {
+        return execution_gate_result(
+            false,
+            "clear_task_required",
+            Some(policy),
+            Some(confirmation),
+        );
+    }
+
+    if policy_requires_hard_reviewer(policy)
+        && confirmation.actor_type != ConfirmationActorType::Reviewer
+    {
+        return execution_gate_result(false, "reviewer_required", Some(policy), Some(confirmation));
+    }
+
+    execution_gate_result(
+        true,
+        "confirmation_approved",
+        Some(policy),
+        Some(confirmation),
+    )
 }
 
 #[allow(dead_code)]
@@ -4312,6 +4788,295 @@ mod tests {
         assert!(!unsafe_delete.allowed_now);
         assert!(unsafe_delete.requires_confirmation);
         assert!(unsafe_delete.requires_reviewer);
+    }
+
+    fn migrated_confirmation_connection() -> Connection {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+        seed_action_policies(&connection).expect("seed action policies");
+        connection
+    }
+
+    #[test]
+    fn confirmation_guard_allows_low_risk_without_record() {
+        let request = ActionRequest::new(ActionType::Create)
+            .target("private markdown note")
+            .scope(ActionScope::LocalPrivate);
+        let policy = evaluate_action_request(&request);
+
+        let result = require_policy_clearance_before_execution(&request, Some(&policy), None);
+
+        assert!(
+            result.allowed_now,
+            "low-risk request should pass: {result:?}"
+        );
+        assert_eq!(result.reason, "policy_allows_without_confirmation");
+    }
+
+    #[test]
+    fn confirmation_guard_blocks_send_email_without_approval_and_allows_approved_confirmation() {
+        let connection = migrated_confirmation_connection();
+        let request = ActionRequest::new(ActionType::Send)
+            .target("send email to customer")
+            .scope(ActionScope::External)
+            .consequence(ActionConsequence::ExternalWrite);
+        let policy = evaluate_action_request(&request);
+
+        let blocked = require_policy_clearance_before_execution(&request, Some(&policy), None);
+        assert!(!blocked.allowed_now);
+        assert_eq!(blocked.reason, "confirmation_required");
+
+        let confirmation = create_confirmation_decision(
+            &connection,
+            ConfirmationDecisionRequest {
+                action_category: &policy.category,
+                decision: ConfirmationDecisionState::Approved,
+                actor: ConfirmationActor::human(Some("user-1")),
+                summary: "User approved recipient/body preview",
+                event_id: None,
+                metadata_json: "{\"preview\":\"recipient and body shown\"}",
+            },
+        )
+        .expect("store approval");
+
+        let allowed =
+            require_policy_clearance_before_execution(&request, Some(&policy), Some(&confirmation));
+        assert!(
+            allowed.allowed_now,
+            "approved email should execute: {allowed:?}"
+        );
+        assert_eq!(allowed.reason, "confirmation_approved");
+    }
+
+    #[test]
+    fn confirmation_guard_blocks_denied_cancelled_and_expired_decisions() {
+        let request = ActionRequest::new(ActionType::Send).target("send email");
+        let policy = evaluate_action_request(&request);
+
+        for state in [
+            ConfirmationDecisionState::Denied,
+            ConfirmationDecisionState::Cancelled,
+            ConfirmationDecisionState::Expired,
+        ] {
+            let decision = ConfirmationDecisionRecord::new_for_test(
+                "confirm_state",
+                &policy.category,
+                state,
+                ConfirmationActorType::Human,
+            );
+            let result =
+                require_policy_clearance_before_execution(&request, Some(&policy), Some(&decision));
+            assert!(!result.allowed_now, "{state:?} must block");
+            assert_eq!(result.reason, format!("confirmation_{}", state.as_str()));
+        }
+    }
+
+    #[test]
+    fn confirmation_guard_fails_closed_for_missing_policy_unknown_request_or_category_mismatch() {
+        let known_request = ActionRequest::new(ActionType::Send).target("send email");
+        let missing_policy = require_policy_clearance_before_execution(&known_request, None, None);
+        assert!(!missing_policy.allowed_now);
+        assert_eq!(missing_policy.reason, "missing_policy_decision");
+
+        let unknown_request = ActionRequest::new(ActionType::Unknown).target("mystery");
+        let unknown_policy = evaluate_action_request(&unknown_request);
+        let unknown_result = require_policy_clearance_before_execution(
+            &unknown_request,
+            Some(&unknown_policy),
+            None,
+        );
+        assert!(!unknown_result.allowed_now);
+        assert_eq!(unknown_result.reason, "unknown_action_category");
+
+        let wrong_decision = ConfirmationDecisionRecord::new_for_test(
+            "confirm_wrong",
+            "create_calendar_event",
+            ConfirmationDecisionState::Approved,
+            ConfirmationActorType::Human,
+        );
+        let policy = evaluate_action_request(&known_request);
+        let mismatch = require_policy_clearance_before_execution(
+            &known_request,
+            Some(&policy),
+            Some(&wrong_decision),
+        );
+        assert!(!mismatch.allowed_now);
+        assert_eq!(mismatch.reason, "confirmation_category_mismatch");
+    }
+
+    #[test]
+    fn confirmation_guard_does_not_bypass_reviewer_or_clear_task_requirements() {
+        let review_request = ActionRequest::new(ActionType::Publish).target("publish social post");
+        let review_policy = evaluate_action_request(&review_request);
+        assert!(review_policy.requires_reviewer);
+        let human_approval = ConfirmationDecisionRecord::new_for_test(
+            "confirm_publish",
+            &review_policy.category,
+            ConfirmationDecisionState::Approved,
+            ConfirmationActorType::Human,
+        );
+        let review_result = require_policy_clearance_before_execution(
+            &review_request,
+            Some(&review_policy),
+            Some(&human_approval),
+        );
+        assert!(!review_result.allowed_now);
+        assert_eq!(review_result.reason, "reviewer_required");
+
+        let code_request = ActionRequest::new(ActionType::Update)
+            .target("code repository file")
+            .scope(ActionScope::CodeRepository);
+        let code_policy = evaluate_action_request(&code_request);
+        assert!(code_policy.requires_clear_task);
+        let generic_human = ConfirmationDecisionRecord::new_for_test(
+            "confirm_code",
+            &code_policy.category,
+            ConfirmationDecisionState::Approved,
+            ConfirmationActorType::Human,
+        );
+        let code_result = require_policy_clearance_before_execution(
+            &code_request,
+            Some(&code_policy),
+            Some(&generic_human),
+        );
+        assert!(!code_result.allowed_now);
+        assert_eq!(code_result.reason, "clear_task_required");
+
+        let clear_task = ConfirmationDecisionRecord::new_for_test(
+            "confirm_code_clear",
+            &code_policy.category,
+            ConfirmationDecisionState::Approved,
+            ConfirmationActorType::ClearTask,
+        );
+        let clear_result = require_policy_clearance_before_execution(
+            &code_request,
+            Some(&code_policy),
+            Some(&clear_task),
+        );
+        assert!(!clear_result.allowed_now);
+        assert_eq!(clear_result.reason, "reviewer_required");
+    }
+
+    #[test]
+    fn confirmation_decisions_redact_validate_event_link_and_list_in_newest_order() {
+        let connection = migrated_confirmation_connection();
+        let event_id = write_event(
+            &connection,
+            EventInput {
+                event_type: "confirmation.test",
+                actor_type: "system",
+                actor_id: None,
+                workspace_key: Some("today"),
+                summary: "confirmation event",
+                severity: "info",
+                source: "test",
+                metadata_json: "{}",
+                targets: vec![],
+            },
+        )
+        .expect("write event");
+
+        let first = create_confirmation_decision(
+            &connection,
+            ConfirmationDecisionRequest {
+                action_category: "send_email",
+                decision: ConfirmationDecisionState::Approved,
+                actor: ConfirmationActor::human(Some("user-1")),
+                summary: "approved with api_key=raw-secret",
+                event_id: Some(&event_id),
+                metadata_json: "{\"token\":\"raw-token\",\"note\":\"safe\"}",
+            },
+        )
+        .expect("store first decision");
+        let second = create_confirmation_decision(
+            &connection,
+            ConfirmationDecisionRequest {
+                action_category: "send_email",
+                decision: ConfirmationDecisionState::Denied,
+                actor: ConfirmationActor::reviewer(Some("reviewer-1")),
+                summary: "denied later",
+                event_id: None,
+                metadata_json: "{\"rank\":2}",
+            },
+        )
+        .expect("store second decision");
+
+        assert_eq!(first.event_id.as_deref(), Some(event_id.as_str()));
+        assert!(first.summary.contains("[REDACTED]"));
+        assert!(!first.summary.contains("raw-secret"));
+        assert!(first.metadata_json.contains("[REDACTED]"));
+        assert!(!first.metadata_json.contains("raw-token"));
+
+        let read_back = read_confirmation_decision(&connection, &first.id)
+            .expect("read result")
+            .expect("stored decision");
+        assert_eq!(read_back, first);
+
+        let listed = list_confirmation_decisions(&connection, Some("send_email"), 10)
+            .expect("list decisions");
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].id, second.id);
+        assert_eq!(listed[1].id, first.id);
+
+        let invalid_json = create_confirmation_decision(
+            &connection,
+            ConfirmationDecisionRequest {
+                action_category: "send_email",
+                decision: ConfirmationDecisionState::Approved,
+                actor: ConfirmationActor::human(None),
+                summary: "bad json",
+                event_id: None,
+                metadata_json: "not json",
+            },
+        )
+        .expect_err("invalid metadata json should fail before persistence");
+        assert!(matches!(
+            invalid_json,
+            RepositoryError::InvalidJson {
+                field: "metadata_json",
+                ..
+            }
+        ));
+
+        let unknown_category = create_confirmation_decision(
+            &connection,
+            ConfirmationDecisionRequest {
+                action_category: "not_a_policy",
+                decision: ConfirmationDecisionState::Approved,
+                actor: ConfirmationActor::human(None),
+                summary: "bad category",
+                event_id: None,
+                metadata_json: "{}",
+            },
+        )
+        .expect_err("unknown policy category should fail");
+        assert!(matches!(
+            unknown_category,
+            RepositoryError::Constraint {
+                entity: "confirmation_decisions",
+                ..
+            }
+        ));
+
+        let missing_event = create_confirmation_decision(
+            &connection,
+            ConfirmationDecisionRequest {
+                action_category: "send_email",
+                decision: ConfirmationDecisionState::Approved,
+                actor: ConfirmationActor::human(None),
+                summary: "bad event",
+                event_id: Some("evt_missing"),
+                metadata_json: "{}",
+            },
+        )
+        .expect_err("missing event link should fail");
+        assert!(matches!(
+            missing_event,
+            RepositoryError::Constraint {
+                entity: "confirmation_decisions",
+                ..
+            }
+        ));
     }
 
     #[test]
