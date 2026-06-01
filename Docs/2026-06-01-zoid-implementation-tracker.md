@@ -59,7 +59,8 @@ Non-negotiable gates for every implementation slice:
   - 2026-06-01 completed safe log writer with sanitized direct-child log paths, active/rotated symlink rejection, redaction before write, deterministic max-size rotation/truncation, and `log_references` upserts containing only safe relative paths/counts/metadata flags. Final critique verdict APPROVED.
 - [x] P1.12 Backend/security: action policy evaluator for read/create/update/delete/send/publish/deploy/file/process actions.
   - 2026-06-01 completed typed action policy request/evaluator with read/create/update/delete/send/publish/deploy/file/process dimensions, executable gate booleans, fail-closed unknown handling, high-risk classifier precedence fixes, external/integration create gating, evaluator-backed DB seeding, and final critique verdict APPROVED.
-- [ ] P1.13 Backend: confirmation decision records/framework for consequential actions.
+- [x] P1.13 Backend: confirmation decision records/framework for consequential actions.
+  - 2026-06-01 completed backend confirmation decision models, SQLite create/read/list helpers, fail-closed execution guard requiring an `ActionPolicyDecision`, actor semantics for human/reviewer/clear-task confirmations, redacted summary/metadata persistence, fresh-schema actor type CHECK, and atomic v4 upgrade for already-applied v3 databases. Final critique verdict APPROVED.
 - [ ] P1.14 Backend: generic event writer/reader with entity links, metadata redaction, timestamps, action type, outcome, source.
 - [ ] P1.15 Backend: entity link service for tasks, notes, products, files, repos, runs, emails, events, browser captures.
 - [ ] P1.16 Tauri bridge: commands for foundation status, workspace registry, settings, event read/write, policy preview.
