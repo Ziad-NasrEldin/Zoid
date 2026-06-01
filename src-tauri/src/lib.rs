@@ -881,25 +881,19 @@ fn insert_or_get_entity_link(
 ) -> RepoResult<EntityLinkRecord> {
     match insert_entity_link(connection, input) {
         Ok(link) => Ok(link),
-        Err(RepositoryError::Constraint { .. }) => read_entity_link_by_unique(
-            connection,
-            input.source_type,
-            input.source_id,
-            input.target_type,
-            input.target_id,
-            input.relation_type,
-        )?
-        .ok_or_else(|| RepositoryError::NotFound {
-            entity: "entity_links",
-            key: format!(
-                "{}:{}:{}:{}:{}",
+        Err(constraint_error @ RepositoryError::Constraint { .. }) => {
+            match read_entity_link_by_unique(
+                connection,
                 input.source_type,
                 input.source_id,
                 input.target_type,
                 input.target_id,
-                input.relation_type
-            ),
-        }),
+                input.relation_type,
+            )? {
+                Some(link) => Ok(link),
+                None => Err(constraint_error),
+            }
+        }
         Err(error) => Err(error),
     }
 }
@@ -1958,6 +1952,46 @@ mod tests {
         )
         .expect("idempotent entity link insert");
         assert_eq!(same_link.id, "link-001");
+    }
+
+    #[test]
+    fn insert_or_get_entity_link_preserves_constraint_for_id_collision() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+
+        insert_entity_link(
+            &connection,
+            EntityLinkInput {
+                id: "link-001",
+                source_type: "workspace",
+                source_id: "today",
+                target_type: "task",
+                target_id: "task-001",
+                relation_type: "contains",
+                created_by_actor_type: "system",
+                metadata_json: "{}",
+            },
+        )
+        .expect("insert original entity link");
+
+        let error = insert_or_get_entity_link(
+            &connection,
+            EntityLinkInput {
+                id: "link-001",
+                source_type: "workspace",
+                source_id: "tomorrow",
+                target_type: "task",
+                target_id: "task-002",
+                relation_type: "contains",
+                created_by_actor_type: "system",
+                metadata_json: "{}",
+            },
+        )
+        .expect_err(
+            "primary key collision with a different logical tuple should remain a constraint",
+        );
+
+        assert!(matches!(error, RepositoryError::Constraint { .. }));
     }
 
     fn assert_table_has_columns(connection: &Connection, table: &str, expected_columns: &[&str]) {
