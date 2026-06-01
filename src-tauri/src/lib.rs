@@ -83,6 +83,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "event_schema_backfill",
         sql: include_str!("../migrations/0002_event_schema_backfill.sql"),
     },
+    Migration {
+        version: 3,
+        name: "core_schema_p105",
+        sql: include_str!("../migrations/0003_core_schema_p105.sql"),
+    },
 ];
 
 struct Migration {
@@ -1279,7 +1284,7 @@ mod tests {
             .map(|workspace| workspace.id)
             .collect();
 
-        assert_eq!(get_migration_version(&connection).unwrap(), 2);
+        assert_eq!(get_migration_version(&connection).unwrap(), 3);
         assert_eq!(
             workspace_ids,
             vec![
@@ -1299,6 +1304,245 @@ mod tests {
                 "history"
             ]
         );
+    }
+
+    fn assert_table_has_columns(connection: &Connection, table: &str, expected_columns: &[&str]) {
+        let columns = table_columns(connection, table).expect("read table columns");
+        for expected_column in expected_columns {
+            assert!(
+                columns.contains(*expected_column),
+                "missing {table}.{expected_column}; columns were {columns:?}"
+            );
+        }
+    }
+
+    fn assert_index_exists(connection: &Connection, table: &str, expected_index: &str) {
+        let mut statement = connection
+            .prepare(&format!("pragma index_list({table})"))
+            .expect("prepare index list");
+        let indexes = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query index list")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("collect index list");
+
+        assert!(
+            indexes.iter().any(|index| index == expected_index),
+            "missing index {expected_index} on {table}; indexes were {indexes:?}"
+        );
+    }
+
+    #[test]
+    fn migrations_create_p105_core_schema_tables() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+
+        assert_eq!(get_migration_version(&connection).unwrap(), 3);
+
+        assert_table_has_columns(
+            &connection,
+            "app_settings",
+            &[
+                "key",
+                "value_json",
+                "value_type",
+                "scope",
+                "description",
+                "created_at",
+                "updated_at",
+            ],
+        );
+        assert_table_has_columns(
+            &connection,
+            "integration_statuses",
+            &[
+                "integration_key",
+                "display_name",
+                "status",
+                "config_json",
+                "credential_ref",
+                "last_checked_at",
+                "created_at",
+                "updated_at",
+            ],
+        );
+        assert_table_has_columns(
+            &connection,
+            "entity_links",
+            &[
+                "id",
+                "source_type",
+                "source_id",
+                "target_type",
+                "target_id",
+                "relation_type",
+                "created_at",
+                "created_by_actor_type",
+                "metadata_json",
+            ],
+        );
+        assert_table_has_columns(
+            &connection,
+            "log_references",
+            &[
+                "id",
+                "log_scope",
+                "relative_path",
+                "redaction_count",
+                "byte_count",
+                "created_at",
+                "metadata_json",
+            ],
+        );
+        assert_table_has_columns(
+            &connection,
+            "file_references",
+            &[
+                "id",
+                "workspace_key",
+                "relative_path",
+                "display_name",
+                "mime_type",
+                "content_hash",
+                "metadata_json",
+                "created_at",
+                "updated_at",
+            ],
+        );
+        assert_table_has_columns(
+            &connection,
+            "action_policies",
+            &[
+                "category",
+                "policy",
+                "reviewer_required",
+                "human_confirmation",
+                "reason",
+                "created_at",
+                "updated_at",
+            ],
+        );
+        assert_table_has_columns(
+            &connection,
+            "confirmation_decisions",
+            &[
+                "id",
+                "action_category",
+                "decision",
+                "actor_type",
+                "actor_id",
+                "summary",
+                "event_id",
+                "metadata_json",
+                "created_at",
+            ],
+        );
+
+        assert_index_exists(&connection, "entity_links", "idx_entity_links_source");
+        assert_index_exists(&connection, "entity_links", "idx_entity_links_target");
+        assert_index_exists(
+            &connection,
+            "log_references",
+            "idx_log_references_scope_created",
+        );
+        assert_index_exists(
+            &connection,
+            "file_references",
+            "idx_file_references_workspace_path",
+        );
+        assert_index_exists(
+            &connection,
+            "confirmation_decisions",
+            "idx_confirmation_decisions_category_created",
+        );
+    }
+
+    #[test]
+    fn p105_core_schema_upgrade_from_v2_is_idempotent_and_non_secret() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        connection
+            .execute_batch(
+                "
+                create table schema_migrations (
+                    version integer primary key,
+                    name text not null,
+                    applied_at text not null default current_timestamp
+                );
+                insert into schema_migrations (version, name) values (1, 'foundation_schema');
+                insert into schema_migrations (version, name) values (2, 'event_schema_backfill');
+
+                create table workspaces (
+                    id text primary key,
+                    label text not null,
+                    description text not null default '',
+                    position integer not null,
+                    enabled integer not null default 1,
+                    created_at text not null default current_timestamp,
+                    updated_at text not null default current_timestamp
+                );
+
+                create table events (
+                    id text primary key,
+                    type text not null,
+                    timestamp text not null default current_timestamp,
+                    actor_type text not null,
+                    actor_id text,
+                    workspace_key text,
+                    summary text not null,
+                    severity text not null default 'info',
+                    source text not null,
+                    metadata_json text not null default '{}',
+                    created_at text not null default current_timestamp
+                );
+
+                create table event_targets (
+                    event_id text not null,
+                    entity_type text not null,
+                    entity_id text not null,
+                    relation_type text not null,
+                    primary key (event_id, entity_type, entity_id, relation_type),
+                    foreign key (event_id) references events(id) on delete cascade
+                );
+                ",
+            )
+            .expect("seed v2 schema");
+
+        run_migrations(&connection).expect("run p105 migration first time");
+        run_migrations(&connection).expect("run p105 migration second time");
+
+        assert_eq!(get_migration_version(&connection).unwrap(), 3);
+
+        let p105_rows: i64 = connection
+            .query_row(
+                "select count(*) from schema_migrations where version = 3",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(p105_rows, 1);
+
+        assert_table_has_columns(&connection, "app_settings", &["key", "value_json"]);
+        assert_table_has_columns(
+            &connection,
+            "integration_statuses",
+            &["integration_key", "config_json", "credential_ref"],
+        );
+
+        let forbidden_secret_columns: i64 = connection
+            .query_row(
+                "
+                select count(*)
+                from sqlite_schema as schema
+                join pragma_table_info(schema.name) as columns
+                where schema.type = 'table'
+                  and schema.name in ('app_settings', 'integration_statuses')
+                  and lower(columns.name) in ('secret', 'secret_value', 'token', 'access_token', 'refresh_token', 'api_key', 'password')
+                ",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(forbidden_secret_columns, 0);
     }
 
     #[test]
@@ -1363,7 +1607,7 @@ mod tests {
         seed_workspaces(&connection).expect("seed new workspaces");
         write_foundation_event(&connection).expect("backfill event target");
 
-        assert_eq!(get_migration_version(&connection).unwrap(), 2);
+        assert_eq!(get_migration_version(&connection).unwrap(), 3);
         assert_eq!(count_table(&connection, "workspaces").unwrap(), 14);
 
         let event_fields: (String, String, String) = connection
