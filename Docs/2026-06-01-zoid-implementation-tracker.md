@@ -49,7 +49,8 @@ Non-negotiable gates for every implementation slice:
   - 2026-06-01 added migration v3 core schema tables for app settings, integration statuses, entity_links, log_references, file_references, action_policies, and confirmation_decisions. Added migration/idempotence/no-secret/FK tests, seeded action policies from the centralized policy matrix, passed independent spec + quality reviews, and final critique verdict APPROVED.
 - [x] P1.06 Database: repository/helper primitives for insert/read/list/update with typed errors and tests.
   - 2026-06-01 added private/internal repository primitives for `app_settings` and `entity_links`, with typed `RepositoryError` classification (`NotFound`, `Constraint`, `InvalidJson`, `Database`), deterministic list/read helpers, JSON validation before writes, idempotent logical entity-link insert-or-get, and regression coverage for primary-key collision edge cases. Final critique verdict APPROVED.
-- [ ] P1.07 Backend: canonical workspace registry service listing all 14 workspaces with truthful availability/integration states.
+- [x] P1.07 Backend: canonical workspace registry service listing all 14 workspaces with truthful availability/integration states.
+  - 2026-06-01 added canonical backend workspace registry for 14 ordered workspaces with serializable availability/integration metadata; guarded integrations remain truthful (`not_configured`, `needs_permission`, or `planned`) with no external probes/secrets. DB workspace seeding/listing is registry-backed and idempotent. Final critique verdict APPROVED.
 - [ ] P1.08 Backend: settings service for local app preferences and integration statuses without secrets outside Keychain.
 - [ ] P1.09 Backend/security: Keychain test path/read-write-delete service or truthful blocked/unverified native status.
 - [ ] P1.10 Backend/security: secret redaction for logs, events, metadata JSON, obvious tokens/keys, nested values; JSON remains valid.
