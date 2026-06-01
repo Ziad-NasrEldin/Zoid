@@ -7,65 +7,168 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const WORKSPACES: &[(&str, &str, &str)] = &[
-    (
-        "today",
-        "Today",
-        "Command center, attention, and current work.",
-    ),
-    (
-        "tasks",
-        "Tasks",
-        "First-class tasks, review states, and follow-ups.",
-    ),
-    ("notes", "Notes", "Markdown notes with local metadata."),
-    (
-        "agents",
-        "Agents",
-        "CLI profiles, sessions, runs, and reviews.",
-    ),
-    ("code", "Code", "Repositories, Launch Gate, and git work."),
-    (
-        "content",
-        "Content",
-        "Planning, review, and OmniSocials publishing state.",
-    ),
-    (
-        "automations",
-        "Automations",
-        "Visible recurring jobs and run history.",
-    ),
-    (
-        "business",
-        "Business",
-        "Contacts, companies, follow-ups, and linked work.",
-    ),
-    (
-        "products",
-        "Products",
-        "First-class product hubs and timelines.",
-    ),
-    (
-        "files",
-        "Files",
-        "Local file manager and Zoid-aware attachments.",
-    ),
-    ("browser", "Browser", "Work webview/capture workspace."),
-    (
-        "inbox",
-        "Inbox",
-        "Notifications, approvals, blockers, and Gmail state.",
-    ),
-    (
-        "calendar",
-        "Calendar",
-        "Built-in calendar with Apple Calendar integration gates.",
-    ),
-    (
-        "history",
-        "History",
-        "Universal timeline and linked event history.",
-    ),
+const WORKSPACE_REGISTRY: &[WorkspaceDefinition] = &[
+    WorkspaceDefinition {
+        key: "today",
+        label: "Today",
+        description: "Command center, attention, and current work.",
+        position: 0,
+        availability: WorkspaceAvailability::Available,
+        integrations: &[],
+        status_note: "Local foundation surface is available; external integrations are surfaced through their owning workspaces.",
+    },
+    WorkspaceDefinition {
+        key: "tasks",
+        label: "Tasks",
+        description: "First-class tasks, review states, and follow-ups.",
+        position: 1,
+        availability: WorkspaceAvailability::Available,
+        integrations: &[],
+        status_note: "Local task foundation is available; later tasks will add richer task commands.",
+    },
+    WorkspaceDefinition {
+        key: "notes",
+        label: "Notes",
+        description: "Markdown notes with local metadata.",
+        position: 2,
+        availability: WorkspaceAvailability::Available,
+        integrations: &[],
+        status_note: "Local notes foundation is available in the visible Zoid directory; no remote sync is claimed.",
+    },
+    WorkspaceDefinition {
+        key: "agents",
+        label: "Agents",
+        description: "CLI profiles, sessions, runs, and reviews.",
+        position: 3,
+        availability: WorkspaceAvailability::Available,
+        integrations: &[WorkspaceIntegration {
+            key: "hermes_cli",
+            label: "Hermes CLI",
+            state: WorkspaceIntegrationState::NotConfigured,
+            note: "CLI/session discovery is not wired in this backend registry task.",
+        }],
+        status_note: "Local agent workspace shell is available; CLI integration is not configured by this service.",
+    },
+    WorkspaceDefinition {
+        key: "code",
+        label: "Code",
+        description: "Repositories, Launch Gate, and git work.",
+        position: 4,
+        availability: WorkspaceAvailability::Available,
+        integrations: &[WorkspaceIntegration {
+            key: "git_cli",
+            label: "Git CLI",
+            state: WorkspaceIntegrationState::NotConfigured,
+            note: "Repository and git probing are intentionally deferred to later backend work.",
+        }],
+        status_note: "Local code workspace shell is available; git/Launch Gate integrations are not connected here.",
+    },
+    WorkspaceDefinition {
+        key: "content",
+        label: "Content",
+        description: "Planning, review, and OmniSocials publishing state.",
+        position: 5,
+        availability: WorkspaceAvailability::Available,
+        integrations: &[WorkspaceIntegration {
+            key: "omnisocials",
+            label: "OmniSocials",
+            state: WorkspaceIntegrationState::Planned,
+            note: "Publishing integration is planned and has no OAuth/API connection in this task.",
+        }],
+        status_note: "Local content planning surface is available; publishing integrations are planned only.",
+    },
+    WorkspaceDefinition {
+        key: "automations",
+        label: "Automations",
+        description: "Visible recurring jobs and run history.",
+        position: 6,
+        availability: WorkspaceAvailability::Available,
+        integrations: &[WorkspaceIntegration {
+            key: "automation_cli",
+            label: "Automation CLI",
+            state: WorkspaceIntegrationState::NotConfigured,
+            note: "Automation runner discovery/control is not implemented in this registry task.",
+        }],
+        status_note: "Local automation workspace shell is available; runner integration remains not configured.",
+    },
+    WorkspaceDefinition {
+        key: "business",
+        label: "Business",
+        description: "Contacts, companies, follow-ups, and linked work.",
+        position: 7,
+        availability: WorkspaceAvailability::Available,
+        integrations: &[],
+        status_note: "Local business workspace foundation is available; external CRM sync is not claimed.",
+    },
+    WorkspaceDefinition {
+        key: "products",
+        label: "Products",
+        description: "First-class product hubs and timelines.",
+        position: 8,
+        availability: WorkspaceAvailability::Available,
+        integrations: &[],
+        status_note: "Local product workspace foundation is available; no external product tool integration is claimed.",
+    },
+    WorkspaceDefinition {
+        key: "files",
+        label: "Files",
+        description: "Local file manager and Zoid-aware attachments.",
+        position: 9,
+        availability: WorkspaceAvailability::Available,
+        integrations: &[],
+        status_note: "Local visible-file foundation is available; no cloud drive connection is claimed.",
+    },
+    WorkspaceDefinition {
+        key: "browser",
+        label: "Browser",
+        description: "Work webview/capture workspace.",
+        position: 10,
+        availability: WorkspaceAvailability::Planned,
+        integrations: &[WorkspaceIntegration {
+            key: "browser_webview",
+            label: "Browser Webview",
+            state: WorkspaceIntegrationState::Planned,
+            note: "Browser/web capture is planned and not implemented by this backend registry task.",
+        }],
+        status_note: "Browser workspace is listed for canonical navigation, but webview/capture functionality is planned.",
+    },
+    WorkspaceDefinition {
+        key: "inbox",
+        label: "Inbox",
+        description: "Notifications, approvals, blockers, and Gmail state.",
+        position: 11,
+        availability: WorkspaceAvailability::Available,
+        integrations: &[WorkspaceIntegration {
+            key: "gmail",
+            label: "Gmail",
+            state: WorkspaceIntegrationState::NotConfigured,
+            note: "No Gmail OAuth, token, or API check is performed in this task.",
+        }],
+        status_note: "local inbox/approval foundation is available; Gmail is not configured or connected.",
+    },
+    WorkspaceDefinition {
+        key: "calendar",
+        label: "Calendar",
+        description: "Built-in calendar with Apple Calendar integration gates.",
+        position: 12,
+        availability: WorkspaceAvailability::Available,
+        integrations: &[WorkspaceIntegration {
+            key: "apple_calendar",
+            label: "Apple Calendar",
+            state: WorkspaceIntegrationState::NeedsPermission,
+            note: "No EventKit prompt or permission check is performed in this task.",
+        }],
+        status_note: "Local calendar workspace foundation is available; Apple Calendar access needs permission and later integration work.",
+    },
+    WorkspaceDefinition {
+        key: "history",
+        label: "History",
+        description: "Universal timeline and linked event history.",
+        position: 13,
+        availability: WorkspaceAvailability::Available,
+        integrations: &[],
+        status_note: "Local history/event foundation is available from the application database.",
+    },
 ];
 
 const VISIBLE_DIRS: &[&str] = &[
@@ -118,12 +221,73 @@ struct Migration {
     sql: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum WorkspaceAvailability {
+    Available,
+    Planned,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum WorkspaceIntegrationState {
+    NotConfigured,
+    NeedsPermission,
+    Planned,
+    Blocked,
+}
+
+#[cfg(test)]
+impl WorkspaceIntegrationState {
+    fn as_str(self) -> &'static str {
+        match self {
+            WorkspaceIntegrationState::NotConfigured => "not_configured",
+            WorkspaceIntegrationState::NeedsPermission => "needs_permission",
+            WorkspaceIntegrationState::Planned => "planned",
+            WorkspaceIntegrationState::Blocked => "blocked",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+struct WorkspaceIntegration {
+    key: &'static str,
+    label: &'static str,
+    state: WorkspaceIntegrationState,
+    note: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WorkspaceDefinition {
+    key: &'static str,
+    label: &'static str,
+    description: &'static str,
+    position: i64,
+    availability: WorkspaceAvailability,
+    integrations: &'static [WorkspaceIntegration],
+    status_note: &'static str,
+}
+
 #[derive(Debug, Serialize)]
 struct WorkspaceRecord {
     id: String,
     label: String,
     description: String,
     position: i64,
+    availability: WorkspaceAvailability,
+    integrations: Vec<WorkspaceIntegration>,
+    status_note: String,
+}
+
+impl WorkspaceRecord {
+    #[cfg(test)]
+    fn integration_state(&self, key: &str) -> Option<WorkspaceIntegrationState> {
+        self.integrations
+            .iter()
+            .find(|integration| integration.key == key)
+            .map(|integration| integration.state)
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -640,8 +804,59 @@ fn ensure_workspace_schema_compatibility(connection: &Connection) -> rusqlite::R
     Ok(())
 }
 
+fn canonical_workspace_registry() -> &'static [WorkspaceDefinition] {
+    WORKSPACE_REGISTRY
+}
+
+#[cfg(test)]
+fn canonical_workspace_ids() -> Vec<String> {
+    canonical_workspace_registry()
+        .iter()
+        .map(|workspace| workspace.key.to_string())
+        .collect()
+}
+
+fn workspace_definition_by_key(key: &str) -> Option<&'static WorkspaceDefinition> {
+    canonical_workspace_registry()
+        .iter()
+        .find(|workspace| workspace.key == key)
+}
+
+fn workspace_record_from_row(
+    id: String,
+    label: String,
+    description: String,
+    position: i64,
+) -> WorkspaceRecord {
+    let definition = workspace_definition_by_key(&id);
+    WorkspaceRecord {
+        id,
+        label,
+        description,
+        position,
+        availability: definition
+            .map(|workspace| workspace.availability)
+            .unwrap_or(WorkspaceAvailability::Blocked),
+        integrations: definition
+            .map(|workspace| workspace.integrations.to_vec())
+            .unwrap_or_else(|| {
+                vec![WorkspaceIntegration {
+                    key: "registry",
+                    label: "Workspace Registry",
+                    state: WorkspaceIntegrationState::Blocked,
+                    note: "Workspace is missing from the canonical backend registry.",
+                }]
+            }),
+        status_note: definition
+            .map(|workspace| workspace.status_note.to_string())
+            .unwrap_or_else(|| {
+                "Workspace is missing from the canonical backend registry.".to_string()
+            }),
+    }
+}
+
 fn seed_workspaces(connection: &Connection) -> rusqlite::Result<()> {
-    for (position, (id, label, description)) in WORKSPACES.iter().enumerate() {
+    for workspace in canonical_workspace_registry() {
         connection.execute(
             "
             insert into workspaces (id, label, description, position)
@@ -652,7 +867,12 @@ fn seed_workspaces(connection: &Connection) -> rusqlite::Result<()> {
                 position = excluded.position,
                 updated_at = current_timestamp
             ",
-            params![id, label, description, position as i64],
+            params![
+                workspace.key,
+                workspace.label,
+                workspace.description,
+                workspace.position
+            ],
         )?;
     }
     Ok(())
@@ -663,12 +883,12 @@ fn list_workspaces(connection: &Connection) -> rusqlite::Result<Vec<WorkspaceRec
         "select id, label, description, position from workspaces where enabled = 1 order by position asc",
     )?;
     let rows = statement.query_map([], |row| {
-        Ok(WorkspaceRecord {
-            id: row.get(0)?,
-            label: row.get(1)?,
-            description: row.get(2)?,
-            position: row.get(3)?,
-        })
+        Ok(workspace_record_from_row(
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+        ))
     })?;
 
     let mut workspaces = Vec::new();
@@ -1765,8 +1985,19 @@ mod tests {
             .collect();
 
         assert_eq!(get_migration_version(&connection).unwrap(), 3);
+        assert_eq!(workspace_ids, canonical_workspace_ids());
+    }
+
+    #[test]
+    fn canonical_workspace_registry_has_exactly_fourteen_unique_workspaces_in_order() {
+        let registry = canonical_workspace_registry();
+        let ids: Vec<&str> = registry.iter().map(|workspace| workspace.key).collect();
+        let unique_ids: HashSet<&str> = ids.iter().copied().collect();
+
+        assert_eq!(registry.len(), 14);
+        assert_eq!(unique_ids.len(), 14);
         assert_eq!(
-            workspace_ids,
+            ids,
             vec![
                 "today",
                 "tasks",
@@ -1784,6 +2015,103 @@ mod tests {
                 "history"
             ]
         );
+        for (expected_position, workspace) in registry.iter().enumerate() {
+            assert_eq!(workspace.position, expected_position as i64);
+            assert!(!workspace.label.trim().is_empty());
+            assert!(!workspace.description.trim().is_empty());
+            assert!(!workspace.status_note.trim().is_empty());
+        }
+    }
+
+    #[test]
+    fn canonical_workspace_registry_does_not_claim_unbuilt_integrations_are_connected_or_ready() {
+        let guarded_integrations = [
+            "gmail",
+            "apple_calendar",
+            "omnisocials",
+            "browser_webview",
+            "hermes_cli",
+            "git_cli",
+            "automation_cli",
+        ];
+        let forbidden_states = ["connected", "ready", "functional"];
+
+        for workspace in canonical_workspace_registry() {
+            for integration in workspace.integrations {
+                if guarded_integrations.contains(&integration.key) {
+                    assert!(
+                        !forbidden_states.contains(&integration.state.as_str()),
+                        "{} incorrectly claims {} is {}",
+                        workspace.key,
+                        integration.key,
+                        integration.state.as_str()
+                    );
+                    assert!(
+                        !integration.note.trim().is_empty(),
+                        "{} integration {} must explain truthful state",
+                        workspace.key,
+                        integration.key
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn workspace_records_list_truthful_registry_metadata_for_foundation_ui() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+        seed_workspaces(&connection).expect("seed workspaces");
+
+        let workspaces = list_workspaces(&connection).expect("list workspaces");
+        let inbox = workspaces
+            .iter()
+            .find(|workspace| workspace.id == "inbox")
+            .expect("inbox workspace exists");
+        let calendar = workspaces
+            .iter()
+            .find(|workspace| workspace.id == "calendar")
+            .expect("calendar workspace exists");
+
+        assert_eq!(workspaces.len(), 14);
+        assert_eq!(inbox.availability, WorkspaceAvailability::Available);
+        assert_eq!(
+            inbox.integration_state("gmail"),
+            Some(WorkspaceIntegrationState::NotConfigured)
+        );
+        assert_eq!(
+            calendar.integration_state("apple_calendar"),
+            Some(WorkspaceIntegrationState::NeedsPermission)
+        );
+        assert!(inbox.status_note.contains("local"));
+        assert!(calendar.status_note.contains("permission"));
+    }
+
+    #[test]
+    fn workspace_seeding_is_registry_backed_and_idempotent() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+        seed_workspaces(&connection).expect("seed workspaces first time");
+        seed_workspaces(&connection).expect("seed workspaces second time");
+
+        let workspaces = list_workspaces(&connection).expect("list workspaces");
+        let ids: Vec<String> = workspaces
+            .iter()
+            .map(|workspace| workspace.id.clone())
+            .collect();
+        let db_count = count_table(&connection, "workspaces").expect("count workspaces");
+
+        assert_eq!(ids, canonical_workspace_ids());
+        assert_eq!(db_count, canonical_workspace_registry().len() as i64);
+        for (definition, record) in canonical_workspace_registry().iter().zip(workspaces.iter()) {
+            assert_eq!(record.id, definition.key);
+            assert_eq!(record.label, definition.label);
+            assert_eq!(record.description, definition.description);
+            assert_eq!(record.position, definition.position);
+            assert_eq!(record.availability, definition.availability);
+            assert_eq!(record.integrations, definition.integrations);
+            assert_eq!(record.status_note, definition.status_note);
+        }
     }
 
     #[test]
