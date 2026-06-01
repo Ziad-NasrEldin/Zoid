@@ -47,7 +47,8 @@ Non-negotiable gates for every implementation slice:
   - 2026-06-01 implemented SQLite foundation connection/migration flow with schema_migrations tracking, fresh database creation, idempotent re-run behavior, migration version reporting, and regression coverage. Follow-up P1.05 fix enforces SQLite foreign keys on foundation/migration connections.
 - [x] P1.05 Database: core schema for workspaces, settings, events, entity_links, log/file references, action confirmations/policies where needed.
   - 2026-06-01 added migration v3 core schema tables for app settings, integration statuses, entity_links, log_references, file_references, action_policies, and confirmation_decisions. Added migration/idempotence/no-secret/FK tests, seeded action policies from the centralized policy matrix, passed independent spec + quality reviews, and final critique verdict APPROVED.
-- [ ] P1.06 Database: repository/helper primitives for insert/read/list/update with typed errors and tests.
+- [x] P1.06 Database: repository/helper primitives for insert/read/list/update with typed errors and tests.
+  - 2026-06-01 added private/internal repository primitives for `app_settings` and `entity_links`, with typed `RepositoryError` classification (`NotFound`, `Constraint`, `InvalidJson`, `Database`), deterministic list/read helpers, JSON validation before writes, idempotent logical entity-link insert-or-get, and regression coverage for primary-key collision edge cases. Final critique verdict APPROVED.
 - [ ] P1.07 Backend: canonical workspace registry service listing all 14 workspaces with truthful availability/integration states.
 - [ ] P1.08 Backend: settings service for local app preferences and integration statuses without secrets outside Keychain.
 - [ ] P1.09 Backend/security: Keychain test path/read-write-delete service or truthful blocked/unverified native status.
