@@ -93,6 +93,8 @@ fi
 
 if [ "$SKIP_PACKAGE" != "1" ]; then
   need_command hdiutil
+  need_command ditto
+  need_command readlink
   [ -x /usr/libexec/PlistBuddy ] || fail "missing required executable /usr/libexec/PlistBuddy"
 fi
 
@@ -107,18 +109,39 @@ if [ "$SKIP_PACKAGE" = "1" ]; then
   exit 0
 fi
 
-npm run tauri:build
-pass "Tauri package build passed"
+npm run tauri:build -- --bundles app
+pass "Tauri app bundle build passed"
 
 APP_PATH="src-tauri/target/release/bundle/macos/Zoid.app"
 DMG_DIR="src-tauri/target/release/bundle/dmg"
 need_file "$APP_PATH"
 [ -d "$APP_PATH" ] || fail "expected app bundle is not a directory: $APP_PATH"
-[ -d "$DMG_DIR" ] || fail "expected DMG directory is missing: $DMG_DIR"
+mkdir -p "$DMG_DIR"
 
-DMG_PATH=$(find "$DMG_DIR" -maxdepth 1 -type f -name 'Zoid_*.dmg' -print | sort | tail -n 1)
-[ -n "$DMG_PATH" ] || fail "no Zoid DMG found in $DMG_DIR"
+VERSION=$(node -e "const fs=require('node:fs'); console.log(JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json','utf8')).version)")
+case "$(uname -m)" in
+  arm64) ARCH="aarch64" ;;
+  x86_64) ARCH="x64" ;;
+  *) ARCH="$(uname -m)" ;;
+esac
+
+DMG_PATH="$DMG_DIR/Zoid_${VERSION}_${ARCH}.dmg"
+DMG_STAGE=$(mktemp -d "${TMPDIR:-/tmp}/zoid-dmg-stage.XXXXXX")
+cleanup_stage() {
+  rm -rf "${DMG_STAGE:-}"
+}
+trap cleanup_stage EXIT
+
+rm -f "$DMG_PATH"
+ditto "$APP_PATH" "$DMG_STAGE/Zoid.app"
+ln -s /Applications "$DMG_STAGE/Applications"
+if ! hdiutil create -volname "Zoid" -fs HFS+ -srcfolder "$DMG_STAGE" -format UDZO -ov "$DMG_PATH" >/dev/null; then
+  fail "failed to create deterministic DMG at $DMG_PATH"
+fi
+cleanup_stage
+trap - EXIT
 need_file "$DMG_PATH"
+pass "deterministic DMG created without Finder AppleScript"
 pass "app artifact exists: $REPO_ROOT/$APP_PATH"
 pass "DMG artifact exists: $REPO_ROOT/$DMG_PATH"
 
@@ -153,12 +176,9 @@ APP_BINARY="$MOUNTED_APP/Contents/MacOS/zoid"
 [ -f "$INFO_PLIST" ] || fail "mounted app is missing Contents/Info.plist"
 [ -x "$APP_BINARY" ] || fail "mounted app binary is missing or not executable: Contents/MacOS/zoid"
 
-if [ -e "$MOUNT_POINT/Applications" ]; then
-  [ -L "$MOUNT_POINT/Applications" ] || fail "DMG Applications entry exists but is not a symlink"
-  pass "DMG Applications symlink present"
-else
-  pass "DMG Applications symlink not present; skipped optional symlink check"
-fi
+[ -L "$MOUNT_POINT/Applications" ] || fail "DMG Applications entry is missing or is not a symlink"
+[ "$(readlink "$MOUNT_POINT/Applications")" = "/Applications" ] || fail "DMG Applications symlink does not point to /Applications"
+pass "DMG Applications symlink present"
 
 plist_value() {
   /usr/libexec/PlistBuddy -c "Print :$1" "$INFO_PLIST"

@@ -6,7 +6,7 @@ This document records the release-operations path for shipping Zoid as a macOS D
 
 - GitHub Actions/CI/CD is unavailable for this GitHub account: workflows fail before jobs start with `startup_failure`.
 - Local verification scripts are the source of truth for build, packaging, and release-gate checks.
-- Local release builds currently produce unsigned DMGs from Tauri.
+- Local release builds currently produce unsigned internal DMGs from the verified Tauri `.app` bundle using deterministic `hdiutil create` packaging.
 - Unsigned and non-notarized DMGs are acceptable for internal verification, smoke testing, and artifact review.
 - Unsigned and non-notarized DMGs are not final external distribution artifacts. Public macOS distribution should use a Developer ID-signed and notarized build.
 
@@ -18,9 +18,9 @@ Run the full local release gate only when intentionally creating or refreshing a
 npm run verify:release
 ```
 
-This script runs Rust tests, the frontend build, Tauri packaging, app/DMG existence checks, and DMG inspection. It mounts the generated DMG read-only at a temporary mount point, verifies `Zoid.app`, checks key `Info.plist` values, verifies the app executable, and detaches the DMG during cleanup.
+This script runs Rust tests, the frontend build, Tauri `.app` packaging, deterministic DMG creation, and DMG/app inspection. It mounts the generated DMG read-only at a temporary mount point, verifies `Zoid.app`, checks key `Info.plist` values, verifies the app executable, and detaches the DMG during cleanup. The internal verification DMG intentionally avoids Finder/AppleScript layout automation so the CLI gate cannot hang waiting for Finder metadata.
 
-Normal development verification deliberately skips macOS packaging so it does not trigger Tauri's DMG/Finder layout step:
+Normal development verification deliberately skips macOS packaging:
 
 ```sh
 npm run verify:local
