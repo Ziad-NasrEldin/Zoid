@@ -249,7 +249,8 @@ button {
   font-weight: 700;
 }
 
-.integration-list {
+.integration-list,
+.security-list {
   display: grid;
   gap: 12px;
   margin: 14px 0 0;
@@ -257,14 +258,16 @@ button {
   list-style: none;
 }
 
-.integration-list li {
+.integration-list li,
+.security-list li {
   display: grid;
   gap: 4px;
   border-top: 1px solid rgba(15, 23, 42, 0.07);
   padding-top: 12px;
 }
 
-.integration-list span {
+.integration-list span,
+.security-list span {
   width: fit-content;
   border-radius: 999px;
   padding: 4px 8px;
@@ -272,6 +275,21 @@ button {
   background: #fef3c7;
   font-size: 11px;
   font-weight: 800;
+}
+
+.security-list span {
+  color: #166534;
+  background: #dcfce7;
+}
+
+.security-list span.warning {
+  color: #92400e;
+  background: #fef3c7;
+}
+
+.policy-note {
+  margin-bottom: 0;
+  font-size: 13px;
 }
 
 .integration-list p,

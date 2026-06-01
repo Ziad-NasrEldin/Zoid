@@ -26,6 +26,23 @@ const fallbackWorkspaces: WorkspaceRecord[] = [
   { id: "history", label: "History", description: "Universal timeline and linked event history.", position: 13 },
 ];
 
+type ActionPolicyDecision = {
+  category: string;
+  policy: string;
+  reviewer_required: string;
+  human_confirmation: string;
+  reason: string;
+};
+
+type SecureFoundationStatus = {
+  redaction_ready: boolean;
+  safe_logging_ready: boolean;
+  action_policy_ready: boolean;
+  event_writer_ready: boolean;
+  keychain_status: string;
+  sample_policy: ActionPolicyDecision;
+};
+
 type FoundationStatus = {
   visible_root: string;
   app_support_dir: string;
@@ -35,6 +52,7 @@ type FoundationStatus = {
   workspace_count: number;
   event_count: number;
   workspaces: WorkspaceRecord[];
+  secure_services: SecureFoundationStatus;
 };
 
 const integrationStates = [
@@ -144,6 +162,23 @@ function App() {
                 <span key={workspace.id}>{workspace.label}</span>
               ))}
             </div>
+          </article>
+
+          <article className="card">
+            <p className="eyebrow">Secure foundation</p>
+            <h3>Services are centralized</h3>
+            {status ? (
+              <ul className="security-list">
+                <li><strong>Redaction</strong><span>{status.secure_services.redaction_ready ? "ready" : "blocked"}</span></li>
+                <li><strong>Safe logging</strong><span>{status.secure_services.safe_logging_ready ? "ready" : "blocked"}</span></li>
+                <li><strong>Action policy</strong><span>{status.secure_services.action_policy_ready ? "ready" : "blocked"}</span></li>
+                <li><strong>Event writer</strong><span>{status.secure_services.event_writer_ready ? "ready" : "blocked"}</span></li>
+                <li><strong>Keychain</strong><span className="warning">unverified</span></li>
+              </ul>
+            ) : (
+              <p>Secure services are reported by the native app only.</p>
+            )}
+            {status ? <p className="policy-note">Sample policy: {status.secure_services.sample_policy.category} requires {status.secure_services.sample_policy.human_confirmation.replace(/_/g, " ")} confirmation.</p> : null}
           </article>
 
           <article className="card">

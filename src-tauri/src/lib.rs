@@ -1,7 +1,9 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
+use serde_json::Value;
 use std::collections::HashSet;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -107,6 +109,79 @@ struct FoundationStatus {
     workspace_count: i64,
     event_count: i64,
     workspaces: Vec<WorkspaceRecord>,
+    secure_services: SecureFoundationStatus,
+}
+
+#[derive(Debug, Serialize)]
+struct SecureFoundationStatus {
+    redaction_ready: bool,
+    safe_logging_ready: bool,
+    action_policy_ready: bool,
+    event_writer_ready: bool,
+    keychain_status: String,
+    sample_policy: ActionPolicyDecision,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ActionPolicy {
+    Allow,
+    AskBeforeAction,
+    BlockUntilConfirmed,
+    RequireClearTask,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ReviewerRequirement {
+    None,
+    Maybe,
+    Usually,
+    Yes,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum HumanConfirmation {
+    None,
+    Maybe,
+    Yes,
+    Always,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ActionPolicyDecision {
+    category: String,
+    policy: ActionPolicy,
+    reviewer_required: ReviewerRequirement,
+    human_confirmation: HumanConfirmation,
+    reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RedactionOutcome {
+    text: String,
+    redaction_count: usize,
+}
+
+#[derive(Debug)]
+struct SafeLogWrite {
+    path: PathBuf,
+    redaction_count: usize,
+    bytes_written: usize,
+}
+
+#[derive(Debug)]
+struct EventInput<'a> {
+    event_type: &'a str,
+    actor_type: &'a str,
+    actor_id: Option<&'a str>,
+    workspace_key: Option<&'a str>,
+    summary: &'a str,
+    severity: &'a str,
+    source: &'a str,
+    metadata_json: &'a str,
+    targets: Vec<(&'a str, &'a str, &'a str)>,
 }
 
 #[tauri::command]
@@ -132,6 +207,11 @@ fn ensure_foundation() -> Result<FoundationStatus, Box<dyn std::error::Error>> {
     ensure_workspace_schema_compatibility(&connection)?;
     seed_workspaces(&connection)?;
     write_foundation_event(&connection)?;
+    let safe_log_probe = write_safe_log(
+        &logs_dir,
+        "foundation",
+        "foundation.ready secure services checked",
+    )?;
 
     let workspaces = list_workspaces(&connection)?;
 
@@ -144,6 +224,7 @@ fn ensure_foundation() -> Result<FoundationStatus, Box<dyn std::error::Error>> {
         workspace_count: workspaces.len() as i64,
         event_count: count_table(&connection, "events")?,
         workspaces,
+        secure_services: secure_foundation_status(&safe_log_probe),
     })
 }
 
@@ -314,15 +395,20 @@ fn write_foundation_event(connection: &Connection) -> rusqlite::Result<()> {
         )?;
         event_id
     } else {
-        let event_id = format!("evt_{}", now_millis());
-        connection.execute(
-            "
-            insert into events (id, type, timestamp, actor_type, actor_id, workspace_key, summary, severity, source, metadata_json)
-            values (?1, 'foundation.ready', current_timestamp, 'system', 'zoid', 'today', 'Zoid foundation initialized', 'info', 'app_shell', ?2)
-            ",
-            params![event_id, "{\"phase\":\"secure_foundation\"}"],
-        )?;
-        event_id
+        write_event(
+            connection,
+            EventInput {
+                event_type: "foundation.ready",
+                actor_type: "system",
+                actor_id: Some("zoid"),
+                workspace_key: Some("today"),
+                summary: "Zoid foundation initialized",
+                severity: "info",
+                source: "app_shell",
+                metadata_json: "{\"phase\":\"secure_foundation\"}",
+                targets: vec![("workspace", "today", "primary")],
+            },
+        )?
     };
 
     connection.execute(
@@ -331,6 +417,376 @@ fn write_foundation_event(connection: &Connection) -> rusqlite::Result<()> {
     )?;
 
     Ok(())
+}
+
+fn write_event(connection: &Connection, input: EventInput<'_>) -> rusqlite::Result<String> {
+    let event_id = format!("evt_{}", now_millis());
+    let redacted_summary = redact_secrets(input.summary).text;
+    let redacted_metadata = redact_metadata_json(input.metadata_json);
+
+    connection.execute(
+        "
+        insert into events (id, type, timestamp, actor_type, actor_id, workspace_key, summary, severity, source, metadata_json)
+        values (?1, ?2, current_timestamp, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        ",
+        params![
+            event_id,
+            input.event_type,
+            input.actor_type,
+            input.actor_id,
+            input.workspace_key,
+            redacted_summary,
+            input.severity,
+            input.source,
+            redacted_metadata
+        ],
+    )?;
+
+    for (entity_type, entity_id, relation_type) in input.targets {
+        connection.execute(
+            "insert or ignore into event_targets (event_id, entity_type, entity_id, relation_type) values (?1, ?2, ?3, ?4)",
+            params![event_id, entity_type, entity_id, relation_type],
+        )?;
+    }
+
+    Ok(event_id)
+}
+
+fn secure_foundation_status(safe_log_probe: &SafeLogWrite) -> SecureFoundationStatus {
+    SecureFoundationStatus {
+        redaction_ready: redact_secrets("api_key=secret-value").redaction_count == 1,
+        safe_logging_ready: safe_log_probe.path.is_file()
+            && safe_log_probe.bytes_written > 0
+            && safe_log_probe.redaction_count == 0,
+        action_policy_ready: true,
+        event_writer_ready: true,
+        keychain_status: "blocked_unverified_native_keychain_not_tested".to_string(),
+        sample_policy: evaluate_action_policy("send_email"),
+    }
+}
+
+fn redact_secrets(input: &str) -> RedactionOutcome {
+    let mut redaction_count = 0;
+    let text = input
+        .split_inclusive('\n')
+        .map(|line| redact_line(line, &mut redaction_count))
+        .collect::<String>();
+
+    RedactionOutcome {
+        text,
+        redaction_count,
+    }
+}
+
+fn redact_metadata_json(input: &str) -> String {
+    match serde_json::from_str::<Value>(input) {
+        Ok(mut value) => {
+            redact_json_value(&mut value, None);
+            serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string())
+        }
+        Err(_) => {
+            let redacted = redact_secrets(input).text;
+            serde_json::json!({
+                "redaction_notice": "metadata_was_not_valid_json",
+                "redacted_text": redacted
+            })
+            .to_string()
+        }
+    }
+}
+
+fn redact_json_value(value: &mut Value, key_hint: Option<&str>) {
+    match value {
+        Value::Object(object) => {
+            for (key, child) in object.iter_mut() {
+                redact_json_value(child, Some(key));
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                redact_json_value(item, key_hint);
+            }
+        }
+        Value::String(text) => {
+            if key_hint.is_some_and(is_secret_key) || redact_secrets(text).redaction_count > 0 {
+                *text = "[REDACTED]".to_string();
+            }
+        }
+        _ => {
+            if key_hint.is_some_and(is_secret_key) {
+                *value = Value::String("[REDACTED]".to_string());
+            }
+        }
+    }
+}
+
+fn is_secret_key(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    [
+        "api_key",
+        "apikey",
+        "access_token",
+        "refresh_token",
+        "auth_token",
+        "token",
+        "password",
+        "secret",
+        "client_secret",
+        "authorization",
+    ]
+    .iter()
+    .any(|secret_key| lower.contains(secret_key))
+}
+
+fn redact_line(line: &str, redaction_count: &mut usize) -> String {
+    let lower = line.to_ascii_lowercase();
+    let secret_keys = [
+        "api_key",
+        "apikey",
+        "access_token",
+        "refresh_token",
+        "auth_token",
+        "token",
+        "password",
+        "secret",
+        "client_secret",
+    ];
+
+    if lower.contains("authorization: bearer ") {
+        if let Some(index) = lower.find("bearer ") {
+            *redaction_count += 1;
+            return format!("{}bearer [REDACTED]{}", &line[..index], line_suffix(line));
+        }
+    }
+
+    for key in secret_keys {
+        if let Some(key_index) = lower.find(key) {
+            let after_key = &line[key_index + key.len()..];
+            if let Some(separator_offset) = after_key.find(['=', ':']) {
+                let separator_index = key_index + key.len() + separator_offset;
+                *redaction_count += 1;
+                return format!(
+                    "{}{} [REDACTED]{}",
+                    &line[..separator_index],
+                    &line[separator_index..separator_index + 1],
+                    line_suffix(line)
+                );
+            }
+        }
+    }
+
+    line.to_string()
+}
+
+fn line_suffix(line: &str) -> &str {
+    if line.ends_with('\n') {
+        "\n"
+    } else {
+        ""
+    }
+}
+
+fn write_safe_log(logs_dir: &Path, scope: &str, content: &str) -> std::io::Result<SafeLogWrite> {
+    fs::create_dir_all(logs_dir)?;
+    let safe_scope = safe_log_scope(scope);
+    let path = logs_dir.join(format!("{}.log", safe_scope));
+    let redacted = redact_secrets(content);
+    let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+    let mut line = redacted.text;
+    if !line.ends_with('\n') {
+        line.push('\n');
+    }
+    file.write_all(line.as_bytes())?;
+
+    Ok(SafeLogWrite {
+        path,
+        redaction_count: redacted.redaction_count,
+        bytes_written: line.len(),
+    })
+}
+
+fn safe_log_scope(scope: &str) -> String {
+    let sanitized: String = scope
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+
+    if sanitized.trim_matches('_').is_empty() {
+        "app".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn evaluate_action_policy(category: &str) -> ActionPolicyDecision {
+    let normalized = category
+        .trim()
+        .to_ascii_lowercase()
+        .replace([' ', '-'], "_");
+    match normalized.as_str() {
+        "read_local_app_data" => decision(
+            category,
+            ActionPolicy::Allow,
+            ReviewerRequirement::None,
+            HumanConfirmation::None,
+            "Local reads are allowed without confirmation.",
+        ),
+        "read_gmail_calendar" => decision(
+            category,
+            ActionPolicy::Allow,
+            ReviewerRequirement::None,
+            HumanConfirmation::None,
+            "Authenticated integration reads are allowed inside granted permissions.",
+        ),
+        "create_local_task" => decision(
+            category,
+            ActionPolicy::Allow,
+            ReviewerRequirement::None,
+            HumanConfirmation::None,
+            "Simple local tasks are low risk but must write an event.",
+        ),
+        "create_private_markdown_note" => decision(
+            category,
+            ActionPolicy::Allow,
+            ReviewerRequirement::None,
+            HumanConfirmation::None,
+            "Private notes are allowed inside the current task/session context.",
+        ),
+        "import_migrate_data" => decision(
+            category,
+            ActionPolicy::AskBeforeAction,
+            ReviewerRequirement::Usually,
+            HumanConfirmation::Yes,
+            "Imports and migrations need count/source/destination preview.",
+        ),
+        "modify_visible_non_code_file" => decision(
+            category,
+            ActionPolicy::AskBeforeAction,
+            ReviewerRequirement::Maybe,
+            HumanConfirmation::Maybe,
+            "Visible non-code file edits depend on scope and destructiveness.",
+        ),
+        "move_rename_copy_file" => decision(
+            category,
+            ActionPolicy::AskBeforeAction,
+            ReviewerRequirement::None,
+            HumanConfirmation::Yes,
+            "File movement requires exact path preview; deletes should use Trash.",
+        ),
+        "bulk_file_operations" => decision(
+            category,
+            ActionPolicy::BlockUntilConfirmed,
+            ReviewerRequirement::Yes,
+            HumanConfirmation::Yes,
+            "Bulk operations need exact affected path preview.",
+        ),
+        "delete_trash_files" => decision(
+            category,
+            ActionPolicy::AskBeforeAction,
+            ReviewerRequirement::Maybe,
+            HumanConfirmation::Yes,
+            "Deletion requires confirmation and should prefer Trash.",
+        ),
+        "modify_code_repo_files" => decision(
+            category,
+            ActionPolicy::RequireClearTask,
+            ReviewerRequirement::Yes,
+            HumanConfirmation::None,
+            "Consequential code changes require a clear task, diff, verification, and review gate.",
+        ),
+        "commit_push_merge" => decision(
+            category,
+            ActionPolicy::AskBeforeAction,
+            ReviewerRequirement::Yes,
+            HumanConfirmation::Yes,
+            "Git publication requires branch/diff/remote preview.",
+        ),
+        "deploy_redeploy_rollback" => decision(
+            category,
+            ActionPolicy::AskBeforeAction,
+            ReviewerRequirement::Yes,
+            HumanConfirmation::Yes,
+            "Deployments require Launch Gate evidence.",
+        ),
+        "send_email" => decision(
+            category,
+            ActionPolicy::AskBeforeAction,
+            ReviewerRequirement::Maybe,
+            HumanConfirmation::Always,
+            "Email needs recipient/body/attachment preview.",
+        ),
+        "publish_schedule_content" => decision(
+            category,
+            ActionPolicy::AskBeforeAction,
+            ReviewerRequirement::Yes,
+            HumanConfirmation::Maybe,
+            "Publishing needs applicable review policy and sensitive-content checks.",
+        ),
+        "change_automation_schedule" => decision(
+            category,
+            ActionPolicy::AskBeforeAction,
+            ReviewerRequirement::Maybe,
+            HumanConfirmation::Yes,
+            "Automation changes require before/after preview.",
+        ),
+        "run_existing_automation" => decision(
+            category,
+            ActionPolicy::AskBeforeAction,
+            ReviewerRequirement::Maybe,
+            HumanConfirmation::Maybe,
+            "Consequential automations need policy-specific confirmation.",
+        ),
+        "change_credentials_settings_integrations" => decision(
+            category,
+            ActionPolicy::AskBeforeAction,
+            ReviewerRequirement::Maybe,
+            HumanConfirmation::Always,
+            "Credential and integration changes must never reveal raw secrets.",
+        ),
+        "create_calendar_event" => decision(
+            category,
+            ActionPolicy::AskBeforeAction,
+            ReviewerRequirement::None,
+            HumanConfirmation::Yes,
+            "Calendar writes need title/time/calendar preview.",
+        ),
+        "edit_delete_calendar_event" => decision(
+            category,
+            ActionPolicy::AskBeforeAction,
+            ReviewerRequirement::Maybe,
+            HumanConfirmation::Always,
+            "Calendar edits/deletes require before/after preview.",
+        ),
+        _ => decision(
+            category,
+            ActionPolicy::BlockUntilConfirmed,
+            ReviewerRequirement::Maybe,
+            HumanConfirmation::Yes,
+            "Unknown action categories fail closed until explicitly classified.",
+        ),
+    }
+}
+
+fn decision(
+    category: &str,
+    policy: ActionPolicy,
+    reviewer_required: ReviewerRequirement,
+    human_confirmation: HumanConfirmation,
+    reason: &str,
+) -> ActionPolicyDecision {
+    ActionPolicyDecision {
+        category: category.to_string(),
+        policy,
+        reviewer_required,
+        human_confirmation,
+        reason: reason.to_string(),
+    }
 }
 
 fn get_migration_version(connection: &Connection) -> rusqlite::Result<i64> {
@@ -505,5 +961,222 @@ mod tests {
             .query_row("select count(*) from event_targets", [], |row| row.get(0))
             .unwrap();
         assert_eq!(target_count, 1);
+    }
+
+    #[test]
+    fn secure_redaction_masks_obvious_secrets() {
+        let redacted = redact_secrets(
+            "Authorization: Bearer sk-live-123\napi_key=abc123\nclient_secret: keep-me-private\nnormal line",
+        );
+
+        assert_eq!(redacted.redaction_count, 3);
+        assert!(!redacted.text.contains("sk-live-123"));
+        assert!(!redacted.text.contains("abc123"));
+        assert!(!redacted.text.contains("keep-me-private"));
+        assert!(redacted.text.contains("[REDACTED]"));
+        assert!(redacted.text.contains("normal line"));
+    }
+
+    #[test]
+    fn safe_log_writer_sanitizes_scope_and_persists_redacted_content() {
+        let logs_dir = std::env::temp_dir().join(format!("zoid-log-test-{}", now_millis()));
+        let write = write_safe_log(&logs_dir, "../agent/run 1", "token=abc123\nvisible output")
+            .expect("write safe log");
+        let stored = fs::read_to_string(&write.path).expect("read safe log");
+
+        assert_eq!(write.path, logs_dir.join("___agent_run_1.log"));
+        assert!(write.path.starts_with(&logs_dir));
+        assert_eq!(write.redaction_count, 1);
+        assert!(write.bytes_written > 0);
+        assert!(!stored.contains("abc123"));
+        assert!(stored.contains("token= [REDACTED]"));
+        assert!(stored.contains("visible output"));
+
+        fs::remove_dir_all(logs_dir).ok();
+    }
+
+    #[test]
+    fn action_policy_matrix_matches_documented_consequential_actions() {
+        let cases = [
+            (
+                "read_local_app_data",
+                ActionPolicy::Allow,
+                ReviewerRequirement::None,
+                HumanConfirmation::None,
+            ),
+            (
+                "read_gmail_calendar",
+                ActionPolicy::Allow,
+                ReviewerRequirement::None,
+                HumanConfirmation::None,
+            ),
+            (
+                "create_local_task",
+                ActionPolicy::Allow,
+                ReviewerRequirement::None,
+                HumanConfirmation::None,
+            ),
+            (
+                "create_private_markdown_note",
+                ActionPolicy::Allow,
+                ReviewerRequirement::None,
+                HumanConfirmation::None,
+            ),
+            (
+                "import_migrate_data",
+                ActionPolicy::AskBeforeAction,
+                ReviewerRequirement::Usually,
+                HumanConfirmation::Yes,
+            ),
+            (
+                "modify_visible_non_code_file",
+                ActionPolicy::AskBeforeAction,
+                ReviewerRequirement::Maybe,
+                HumanConfirmation::Maybe,
+            ),
+            (
+                "move_rename_copy_file",
+                ActionPolicy::AskBeforeAction,
+                ReviewerRequirement::None,
+                HumanConfirmation::Yes,
+            ),
+            (
+                "bulk_file_operations",
+                ActionPolicy::BlockUntilConfirmed,
+                ReviewerRequirement::Yes,
+                HumanConfirmation::Yes,
+            ),
+            (
+                "delete_trash_files",
+                ActionPolicy::AskBeforeAction,
+                ReviewerRequirement::Maybe,
+                HumanConfirmation::Yes,
+            ),
+            (
+                "modify_code_repo_files",
+                ActionPolicy::RequireClearTask,
+                ReviewerRequirement::Yes,
+                HumanConfirmation::None,
+            ),
+            (
+                "commit_push_merge",
+                ActionPolicy::AskBeforeAction,
+                ReviewerRequirement::Yes,
+                HumanConfirmation::Yes,
+            ),
+            (
+                "deploy_redeploy_rollback",
+                ActionPolicy::AskBeforeAction,
+                ReviewerRequirement::Yes,
+                HumanConfirmation::Yes,
+            ),
+            (
+                "send_email",
+                ActionPolicy::AskBeforeAction,
+                ReviewerRequirement::Maybe,
+                HumanConfirmation::Always,
+            ),
+            (
+                "publish_schedule_content",
+                ActionPolicy::AskBeforeAction,
+                ReviewerRequirement::Yes,
+                HumanConfirmation::Maybe,
+            ),
+            (
+                "change_automation_schedule",
+                ActionPolicy::AskBeforeAction,
+                ReviewerRequirement::Maybe,
+                HumanConfirmation::Yes,
+            ),
+            (
+                "run_existing_automation",
+                ActionPolicy::AskBeforeAction,
+                ReviewerRequirement::Maybe,
+                HumanConfirmation::Maybe,
+            ),
+            (
+                "change_credentials_settings_integrations",
+                ActionPolicy::AskBeforeAction,
+                ReviewerRequirement::Maybe,
+                HumanConfirmation::Always,
+            ),
+            (
+                "create_calendar_event",
+                ActionPolicy::AskBeforeAction,
+                ReviewerRequirement::None,
+                HumanConfirmation::Yes,
+            ),
+            (
+                "edit_delete_calendar_event",
+                ActionPolicy::AskBeforeAction,
+                ReviewerRequirement::Maybe,
+                HumanConfirmation::Always,
+            ),
+        ];
+
+        for (category, policy, reviewer, confirmation) in cases {
+            let decision = evaluate_action_policy(category);
+            assert_eq!(decision.policy, policy, "policy mismatch for {category}");
+            assert_eq!(
+                decision.reviewer_required, reviewer,
+                "reviewer mismatch for {category}"
+            );
+            assert_eq!(
+                decision.human_confirmation, confirmation,
+                "confirmation mismatch for {category}"
+            );
+        }
+
+        let unknown = evaluate_action_policy("unclassified risky action");
+        assert_eq!(unknown.policy, ActionPolicy::BlockUntilConfirmed);
+        assert_eq!(unknown.human_confirmation, HumanConfirmation::Yes);
+    }
+
+    #[test]
+    fn generic_event_writer_redacts_and_links_targets() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+        let event_id = write_event(
+            &connection,
+            EventInput {
+                event_type: "agent.run.completed",
+                actor_type: "agent",
+                actor_id: Some("local-agent"),
+                workspace_key: Some("agents"),
+                summary: "Finished with token=abc123",
+                severity: "info",
+                source: "agent_service",
+                metadata_json: "{\"api_key\":\"abc123\"}",
+                targets: vec![
+                    ("workspace", "agents", "primary"),
+                    ("task", "task_1", "result"),
+                ],
+            },
+        )
+        .expect("write generic event");
+
+        let fields: (String, String) = connection
+            .query_row(
+                "select summary, metadata_json from events where id = ?1",
+                params![event_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(!fields.0.contains("abc123"));
+        assert!(!fields.1.contains("abc123"));
+        assert!(fields.0.contains("[REDACTED]"));
+
+        let parsed_metadata: Value =
+            serde_json::from_str(&fields.1).expect("metadata stays valid JSON");
+        assert_eq!(parsed_metadata["api_key"], "[REDACTED]");
+        let json_valid: i64 = connection
+            .query_row("select json_valid(?1)", params![fields.1], |row| row.get(0))
+            .unwrap();
+        assert_eq!(json_valid, 1);
+
+        let target_count: i64 = connection
+            .query_row("select count(*) from event_targets", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(target_count, 2);
     }
 }
