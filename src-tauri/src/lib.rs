@@ -7,6 +7,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const SAFE_LOG_MAX_BYTES: usize = 4096;
+const SAFE_LOG_ROTATED_SUFFIX: &str = "1";
+
 const WORKSPACE_REGISTRY: &[WorkspaceDefinition] = &[
     WorkspaceDefinition {
         key: "today",
@@ -756,6 +759,7 @@ fn ensure_foundation() -> Result<FoundationStatus, Box<dyn std::error::Error>> {
     })?;
     write_foundation_event(&connection)?;
     let safe_log_probe = write_safe_log(
+        &connection,
         &app_support_paths.logs_dir,
         "foundation",
         "foundation.ready secure services checked",
@@ -1822,24 +1826,159 @@ fn line_suffix(line: &str) -> &str {
     }
 }
 
-fn write_safe_log(logs_dir: &Path, scope: &str, content: &str) -> std::io::Result<SafeLogWrite> {
+fn write_safe_log(
+    connection: &Connection,
+    logs_dir: &Path,
+    scope: &str,
+    content: &str,
+) -> std::io::Result<SafeLogWrite> {
     ensure_directory(logs_dir)?;
     let safe_scope = safe_log_scope(scope);
-    let path = logs_dir.join(format!("{}.log", safe_scope));
+    let relative_path = format!("{}.log", safe_scope);
+    let path = logs_dir.join(&relative_path);
+    ensure_safe_log_child_path(logs_dir, &path)?;
     validate_managed_file_path(&path, "log file")?;
     let redacted = redact_secrets(content);
-    let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
     let mut line = redacted.text;
     if !line.ends_with('\n') {
         line.push('\n');
     }
+    let (line, truncated) = truncate_safe_log_line(line);
+    let rotated = rotate_safe_log_if_needed(&path, line.len())?;
+    let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
     file.write_all(line.as_bytes())?;
+
+    upsert_log_reference(
+        connection,
+        &safe_scope,
+        &relative_path,
+        redacted.redaction_count,
+        line.len(),
+        rotated,
+        truncated,
+    )?;
 
     Ok(SafeLogWrite {
         path,
         redaction_count: redacted.redaction_count,
         bytes_written: line.len(),
     })
+}
+
+fn ensure_safe_log_child_path(logs_dir: &Path, path: &Path) -> std::io::Result<()> {
+    let relative = path.strip_prefix(logs_dir).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "log file {} is outside logs directory {}",
+                display_path(path),
+                display_path(logs_dir)
+            ),
+        )
+    })?;
+
+    if relative.components().count() != 1 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("log file {} is not a direct logs child", display_path(path)),
+        ));
+    }
+
+    Ok(())
+}
+
+fn truncate_safe_log_line(mut line: String) -> (String, bool) {
+    if line.len() <= SAFE_LOG_MAX_BYTES {
+        return (line, false);
+    }
+
+    const MARKER: &str = "\n[TRUNCATED]\n";
+    let mut limit = SAFE_LOG_MAX_BYTES.saturating_sub(MARKER.len());
+    while !line.is_char_boundary(limit) {
+        limit = limit.saturating_sub(1);
+    }
+    line.truncate(limit);
+    line.push_str(MARKER);
+    (line, true)
+}
+
+fn rotate_safe_log_if_needed(path: &Path, append_len: usize) -> std::io::Result<bool> {
+    validate_managed_file_path(path, "log file")?;
+    let current_len = match fs::metadata(path) {
+        Ok(metadata) => metadata.len() as usize,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(error) => return Err(error),
+    };
+
+    if current_len == 0 || current_len + append_len <= SAFE_LOG_MAX_BYTES {
+        return Ok(false);
+    }
+
+    let rotated_path = rotated_log_path(path);
+    validate_managed_file_path(&rotated_path, "rotated log file")?;
+    if rotated_path.exists() {
+        fs::remove_file(&rotated_path)?;
+    }
+    fs::rename(path, rotated_path)?;
+    Ok(true)
+}
+
+fn rotated_log_path(path: &Path) -> PathBuf {
+    let mut extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_string();
+    if extension.is_empty() {
+        extension.push_str(SAFE_LOG_ROTATED_SUFFIX);
+    } else {
+        extension.push('.');
+        extension.push_str(SAFE_LOG_ROTATED_SUFFIX);
+    }
+    path.with_extension(extension)
+}
+
+fn upsert_log_reference(
+    connection: &Connection,
+    log_scope: &str,
+    relative_path: &str,
+    redaction_count: usize,
+    byte_count: usize,
+    rotated: bool,
+    truncated: bool,
+) -> std::io::Result<()> {
+    let metadata_json = serde_json::json!({
+        "writer": "safe_log_writer",
+        "last_bytes_written": byte_count,
+        "last_redaction_count": redaction_count,
+        "rotated": rotated,
+        "truncated": truncated,
+        "max_bytes": SAFE_LOG_MAX_BYTES,
+    })
+    .to_string();
+    let id = format!("logref_{}_{}", log_scope, now_millis());
+
+    connection
+        .execute(
+            "
+            insert into log_references (id, log_scope, relative_path, redaction_count, byte_count, metadata_json)
+            values (?1, ?2, ?3, ?4, ?5, ?6)
+            on conflict(log_scope, relative_path) do update set
+                redaction_count = log_references.redaction_count + excluded.redaction_count,
+                byte_count = log_references.byte_count + excluded.byte_count,
+                metadata_json = excluded.metadata_json
+            ",
+            params![
+                id,
+                log_scope,
+                relative_path,
+                redaction_count as i64,
+                byte_count as i64,
+                metadata_json,
+            ],
+        )
+        .map(|_| ())
+        .map_err(std::io::Error::other)
 }
 
 fn safe_log_scope(scope: &str) -> String {
@@ -3487,8 +3626,16 @@ mod tests {
     #[test]
     fn safe_log_writer_sanitizes_scope_and_persists_redacted_content() {
         let logs_dir = std::env::temp_dir().join(format!("zoid-log-test-{}", now_millis()));
-        let write = write_safe_log(&logs_dir, "../agent/run 1", "token=abc123\nvisible output")
-            .expect("write safe log");
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+
+        let write = write_safe_log(
+            &connection,
+            &logs_dir,
+            "../agent/run 1",
+            "token=abc123\nvisible output",
+        )
+        .expect("write safe log");
         let stored = fs::read_to_string(&write.path).expect("read safe log");
 
         assert_eq!(write.path, logs_dir.join("___agent_run_1.log"));
@@ -3498,6 +3645,113 @@ mod tests {
         assert!(!stored.contains("abc123"));
         assert!(stored.contains("token= [REDACTED]"));
         assert!(stored.contains("visible output"));
+
+        fs::remove_dir_all(logs_dir).ok();
+    }
+
+    #[test]
+    fn safe_log_writer_upserts_reference_without_raw_secret_metadata() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+        let logs_dir = std::env::temp_dir().join(format!("zoid-log-ref-{}", now_millis()));
+
+        let first = write_safe_log(
+            &connection,
+            &logs_dir,
+            "../../agent/secret run",
+            "Authorization: Bearer sk-live-reference\nvisible one",
+        )
+        .expect("write first safe log");
+        let second = write_safe_log(
+            &connection,
+            &logs_dir,
+            "../../agent/secret run",
+            "password=super-secret-value\nvisible two",
+        )
+        .expect("write second safe log");
+
+        assert_eq!(first.path, logs_dir.join("______agent_secret_run.log"));
+        assert_eq!(first.path, second.path);
+
+        let row_count: i64 = connection
+            .query_row("select count(*) from log_references", [], |row| row.get(0))
+            .expect("count log refs");
+        assert_eq!(row_count, 1);
+
+        let (scope, relative_path, redaction_count, byte_count, metadata_json): (
+            String,
+            String,
+            i64,
+            i64,
+            String,
+        ) = connection
+            .query_row(
+                "select log_scope, relative_path, redaction_count, byte_count, metadata_json from log_references",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .expect("read log ref");
+
+        assert_eq!(scope, "______agent_secret_run");
+        assert_eq!(relative_path, "______agent_secret_run.log");
+        assert_eq!(redaction_count, 2);
+        assert_eq!(
+            byte_count,
+            (first.bytes_written + second.bytes_written) as i64
+        );
+        assert!(!metadata_json.contains("sk-live-reference"));
+        assert!(!metadata_json.contains("super-secret-value"));
+        assert!(metadata_json.contains("last_bytes_written"));
+
+        let stored = fs::read_to_string(&first.path).expect("read safe log");
+        assert!(!stored.contains("sk-live-reference"));
+        assert!(!stored.contains("super-secret-value"));
+
+        fs::remove_dir_all(logs_dir).ok();
+    }
+
+    #[test]
+    fn safe_log_writer_rotates_before_append_and_keeps_reference_safe() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+        let logs_dir = std::env::temp_dir().join(format!("zoid-log-rotate-{}", now_millis()));
+        fs::create_dir_all(&logs_dir).expect("create logs dir");
+        let log_path = logs_dir.join("agent.log");
+        fs::write(&log_path, "x".repeat(SAFE_LOG_MAX_BYTES - 8)).expect("seed oversized log");
+
+        let write = write_safe_log(
+            &connection,
+            &logs_dir,
+            "agent",
+            "api_key=raw-rotation-secret\npost rotation content",
+        )
+        .expect("write rotating safe log");
+
+        let active = fs::read_to_string(&log_path).expect("read active rotated log");
+        let rotated = fs::read_to_string(logs_dir.join("agent.log.1")).expect("read rotated log");
+        assert_eq!(write.path, log_path);
+        assert!(rotated.starts_with('x'));
+        assert!(active.contains("post rotation content"));
+        assert!(!active.contains("raw-rotation-secret"));
+        assert!(
+            fs::metadata(&log_path).expect("active metadata").len() <= SAFE_LOG_MAX_BYTES as u64
+        );
+        assert!(
+            fs::metadata(logs_dir.join("agent.log.1"))
+                .expect("rotated metadata")
+                .len()
+                <= SAFE_LOG_MAX_BYTES as u64
+        );
+
+        let metadata_json: String = connection
+            .query_row(
+                "select metadata_json from log_references where relative_path = 'agent.log'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read metadata");
+        assert!(metadata_json.contains("\"rotated\":true"));
+        assert!(!metadata_json.contains("raw-rotation-secret"));
 
         fs::remove_dir_all(logs_dir).ok();
     }
@@ -3512,7 +3766,10 @@ mod tests {
         std::os::unix::fs::symlink(&target, logs_dir.join("agent.log"))
             .expect("create managed log symlink");
 
-        let error = write_safe_log(&logs_dir, "agent", "new content")
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+
+        let error = write_safe_log(&connection, &logs_dir, "agent", "new content")
             .expect_err("log symlink must be rejected before append");
 
         assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
