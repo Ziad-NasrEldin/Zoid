@@ -70,7 +70,7 @@ create table if not exists confirmation_decisions (
     id text primary key,
     action_category text not null,
     decision text not null check (decision in ('approved', 'denied', 'cancelled', 'expired')),
-    actor_type text not null,
+    actor_type text not null check (actor_type in ('human', 'reviewer', 'clear_task', 'reviewed_clear_task', 'system')),
     actor_id text,
     summary text not null,
     event_id text,

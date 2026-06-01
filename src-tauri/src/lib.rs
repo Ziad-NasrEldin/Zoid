@@ -530,6 +530,7 @@ enum ConfirmationActorType {
     Human,
     Reviewer,
     ClearTask,
+    ReviewedClearTask,
     System,
 }
 
@@ -540,6 +541,7 @@ impl ConfirmationActorType {
             Self::Human => "human",
             Self::Reviewer => "reviewer",
             Self::ClearTask => "clear_task",
+            Self::ReviewedClearTask => "reviewed_clear_task",
             Self::System => "system",
         }
     }
@@ -549,6 +551,7 @@ impl ConfirmationActorType {
             "human" => Ok(Self::Human),
             "reviewer" => Ok(Self::Reviewer),
             "clear_task" => Ok(Self::ClearTask),
+            "reviewed_clear_task" => Ok(Self::ReviewedClearTask),
             "system" => Ok(Self::System),
             other => Err(RepositoryError::Constraint {
                 entity: "confirmation_decisions",
@@ -1520,6 +1523,40 @@ fn policy_requires_hard_reviewer(policy: &ActionPolicyDecision) -> bool {
 }
 
 #[allow(dead_code)]
+fn policy_requires_human_actor(policy: &ActionPolicyDecision) -> bool {
+    matches!(
+        policy.human_confirmation,
+        HumanConfirmation::Yes | HumanConfirmation::Always
+    )
+}
+
+#[allow(dead_code)]
+fn actor_satisfies_human_confirmation(actor_type: ConfirmationActorType) -> bool {
+    matches!(
+        actor_type,
+        ConfirmationActorType::Human
+            | ConfirmationActorType::Reviewer
+            | ConfirmationActorType::ReviewedClearTask
+    )
+}
+
+#[allow(dead_code)]
+fn actor_satisfies_clear_task(actor_type: ConfirmationActorType) -> bool {
+    matches!(
+        actor_type,
+        ConfirmationActorType::ClearTask | ConfirmationActorType::ReviewedClearTask
+    )
+}
+
+#[allow(dead_code)]
+fn actor_satisfies_reviewer(actor_type: ConfirmationActorType) -> bool {
+    matches!(
+        actor_type,
+        ConfirmationActorType::Reviewer | ConfirmationActorType::ReviewedClearTask
+    )
+}
+
+#[allow(dead_code)]
 fn execution_gate_result(
     allowed_now: bool,
     reason: &str,
@@ -1597,7 +1634,18 @@ fn require_policy_clearance_before_execution(
         );
     }
 
-    if policy.requires_clear_task && confirmation.actor_type != ConfirmationActorType::ClearTask {
+    if policy_requires_human_actor(policy)
+        && !actor_satisfies_human_confirmation(confirmation.actor_type)
+    {
+        return execution_gate_result(
+            false,
+            "human_confirmation_required",
+            Some(policy),
+            Some(confirmation),
+        );
+    }
+
+    if policy.requires_clear_task && !actor_satisfies_clear_task(confirmation.actor_type) {
         return execution_gate_result(
             false,
             "clear_task_required",
@@ -1606,9 +1654,7 @@ fn require_policy_clearance_before_execution(
         );
     }
 
-    if policy_requires_hard_reviewer(policy)
-        && confirmation.actor_type != ConfirmationActorType::Reviewer
-    {
+    if policy_requires_hard_reviewer(policy) && !actor_satisfies_reviewer(confirmation.actor_type) {
         return execution_gate_result(false, "reviewer_required", Some(policy), Some(confirmation));
     }
 
@@ -2322,7 +2368,10 @@ fn redact_json_value(value: &mut Value, key_hint: Option<&str>) {
             }
         }
         Value::String(text) => {
-            if key_hint.is_some_and(is_secret_key) || redact_secrets(text).redaction_count > 0 {
+            if key_hint.is_some_and(is_secret_key)
+                || looks_like_secret_material(text)
+                || redact_secrets(text).redaction_count > 0
+            {
                 *text = "[REDACTED]".to_string();
             }
         }
@@ -2389,7 +2438,56 @@ fn redact_line(line: &str, redaction_count: &mut usize) -> String {
         }
     }
 
+    if line
+        .split_whitespace()
+        .any(|token| looks_like_secret_material(token.trim_matches(secret_token_boundary)))
+    {
+        *redaction_count += 1;
+        return line
+            .split_inclusive(char::is_whitespace)
+            .map(redact_standalone_secret_token)
+            .collect::<String>();
+    }
+
     line.to_string()
+}
+
+fn secret_token_boundary(character: char) -> bool {
+    matches!(
+        character,
+        ',' | ';' | ':' | ')' | ']' | '}' | '(' | '[' | '{' | '"' | '\''
+    )
+}
+
+fn redact_standalone_secret_token(token: &str) -> String {
+    let token_without_whitespace = token.trim_end_matches(char::is_whitespace);
+    let whitespace_suffix = &token[token_without_whitespace.len()..];
+    let prefix_len = token_without_whitespace
+        .find(|character: char| !secret_token_boundary(character))
+        .unwrap_or(token_without_whitespace.len());
+    let suffix_start = token_without_whitespace
+        .rfind(|character: char| !secret_token_boundary(character))
+        .map(|index| {
+            index
+                + token_without_whitespace[index..]
+                    .chars()
+                    .next()
+                    .unwrap()
+                    .len_utf8()
+        })
+        .unwrap_or(prefix_len);
+    let core = &token_without_whitespace[prefix_len..suffix_start];
+
+    if looks_like_secret_material(core) {
+        format!(
+            "{}[REDACTED]{}{}",
+            &token_without_whitespace[..prefix_len],
+            &token_without_whitespace[suffix_start..],
+            whitespace_suffix
+        )
+    } else {
+        token.to_string()
+    }
 }
 
 fn line_suffix(line: &str) -> &str {
@@ -4955,6 +5053,142 @@ mod tests {
         );
         assert!(!clear_result.allowed_now);
         assert_eq!(clear_result.reason, "reviewer_required");
+    }
+
+    #[test]
+    fn confirmation_guard_requires_human_actor_for_human_confirmation() {
+        let request = ActionRequest::new(ActionType::Send)
+            .target("send email to customer")
+            .scope(ActionScope::External)
+            .consequence(ActionConsequence::ExternalWrite);
+        let policy = evaluate_action_request(&request);
+        assert!(matches!(
+            policy.human_confirmation,
+            HumanConfirmation::Yes | HumanConfirmation::Always
+        ));
+
+        let system_approval = ConfirmationDecisionRecord::new_for_test(
+            "confirm_system_email",
+            &policy.category,
+            ConfirmationDecisionState::Approved,
+            ConfirmationActorType::System,
+        );
+        let result = require_policy_clearance_before_execution(
+            &request,
+            Some(&policy),
+            Some(&system_approval),
+        );
+
+        assert!(!result.allowed_now);
+        assert_eq!(result.reason, "human_confirmation_required");
+    }
+
+    #[test]
+    fn confirmation_guard_combined_reviewed_clear_task_actor_satisfies_code_policy() {
+        let request = ActionRequest::new(ActionType::Update)
+            .target("code repository file")
+            .scope(ActionScope::CodeRepository);
+        let policy = evaluate_action_request(&request);
+        assert!(policy.requires_clear_task);
+        assert!(policy_requires_hard_reviewer(&policy));
+
+        let plain_human = ConfirmationDecisionRecord::new_for_test(
+            "confirm_code_human",
+            &policy.category,
+            ConfirmationDecisionState::Approved,
+            ConfirmationActorType::Human,
+        );
+        let human_result =
+            require_policy_clearance_before_execution(&request, Some(&policy), Some(&plain_human));
+        assert!(!human_result.allowed_now);
+        assert_eq!(human_result.reason, "clear_task_required");
+
+        let plain_clear_task = ConfirmationDecisionRecord::new_for_test(
+            "confirm_code_clear_only",
+            &policy.category,
+            ConfirmationDecisionState::Approved,
+            ConfirmationActorType::ClearTask,
+        );
+        let clear_result = require_policy_clearance_before_execution(
+            &request,
+            Some(&policy),
+            Some(&plain_clear_task),
+        );
+        assert!(!clear_result.allowed_now);
+        assert_eq!(clear_result.reason, "reviewer_required");
+
+        let plain_reviewer = ConfirmationDecisionRecord::new_for_test(
+            "confirm_code_reviewer_only",
+            &policy.category,
+            ConfirmationDecisionState::Approved,
+            ConfirmationActorType::Reviewer,
+        );
+        let reviewer_result = require_policy_clearance_before_execution(
+            &request,
+            Some(&policy),
+            Some(&plain_reviewer),
+        );
+        assert!(!reviewer_result.allowed_now);
+        assert_eq!(reviewer_result.reason, "clear_task_required");
+
+        let reviewed_clear_task = ConfirmationDecisionRecord::new_for_test(
+            "confirm_code_reviewed_clear_task",
+            &policy.category,
+            ConfirmationDecisionState::Approved,
+            ConfirmationActorType::ReviewedClearTask,
+        );
+        let combined_result = require_policy_clearance_before_execution(
+            &request,
+            Some(&policy),
+            Some(&reviewed_clear_task),
+        );
+        assert!(
+            combined_result.allowed_now,
+            "reviewed clear task evidence should satisfy both gates: {combined_result:?}"
+        );
+        assert_eq!(combined_result.reason, "confirmation_approved");
+    }
+
+    #[test]
+    fn confirmation_decisions_redact_standalone_secret_material_in_summary_and_metadata() {
+        let connection = migrated_confirmation_connection();
+
+        let decision = create_confirmation_decision(
+            &connection,
+            ConfirmationDecisionRequest {
+                action_category: "send_email",
+                decision: ConfirmationDecisionState::Approved,
+                actor: ConfirmationActor::human(Some("user-1")),
+                summary: "approved token sk-test-standalone and ghp_standaloneSecret",
+                event_id: None,
+                metadata_json: "{\"notes\":[\"bearer standalone-token\",\"safe\"],\"nested\":{\"value\":\"ghp_nestedStandalone\"}}",
+            },
+        )
+        .expect("store redacted decision");
+
+        assert!(decision.summary.contains("[REDACTED]"));
+        assert!(!decision.summary.contains("sk-test-standalone"));
+        assert!(!decision.summary.contains("ghp_standaloneSecret"));
+        assert!(decision.metadata_json.contains("[REDACTED]"));
+        assert!(!decision.metadata_json.contains("standalone-token"));
+        assert!(!decision.metadata_json.contains("ghp_nestedStandalone"));
+        serde_json::from_str::<Value>(&decision.metadata_json)
+            .expect("redacted metadata remains valid JSON");
+    }
+
+    #[test]
+    fn migrations_reject_invalid_confirmation_actor_type() {
+        let connection = migrated_confirmation_connection();
+
+        let invalid_actor = connection.execute(
+            "insert into confirmation_decisions (id, action_category, decision, actor_type, summary) values ('confirm_invalid_actor', 'send_email', 'approved', 'robot', 'invalid actor')",
+            [],
+        );
+
+        assert!(
+            matches!(invalid_actor, Err(rusqlite::Error::SqliteFailure(_, _))),
+            "invalid actor_type must be rejected by schema; got {invalid_actor:?}"
+        );
     }
 
     #[test]
