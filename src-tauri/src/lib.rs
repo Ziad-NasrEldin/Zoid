@@ -105,11 +105,32 @@ struct FoundationStatus {
     app_support_dir: String,
     database_path: String,
     logs_dir: String,
+    config_dir: String,
+    config_path: String,
+    app_support: AppSupportPathStatus,
     migration_version: i64,
     workspace_count: i64,
     event_count: i64,
     workspaces: Vec<WorkspaceRecord>,
     secure_services: SecureFoundationStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AppSupportPaths {
+    root: PathBuf,
+    logs_dir: PathBuf,
+    database_path: PathBuf,
+    config_dir: PathBuf,
+    config_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct AppSupportPathStatus {
+    root: String,
+    logs_dir: String,
+    database_path: String,
+    config_dir: String,
+    config_path: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -189,26 +210,85 @@ fn get_foundation_status() -> Result<FoundationStatus, String> {
     ensure_foundation().map_err(|error| error.to_string())
 }
 
+impl AppSupportPaths {
+    fn for_home(home: &Path) -> Self {
+        let root = home
+            .join("Library")
+            .join("Application Support")
+            .join("Zoid");
+        let logs_dir = root.join("logs");
+        let database_path = root.join("zoid.sqlite");
+        let config_dir = root.join("config");
+        let config_path = config_dir.join("settings.json");
+
+        Self {
+            root,
+            logs_dir,
+            database_path,
+            config_dir,
+            config_path,
+        }
+    }
+
+    fn status(&self) -> AppSupportPathStatus {
+        AppSupportPathStatus {
+            root: display_path(&self.root),
+            logs_dir: display_path(&self.logs_dir),
+            database_path: display_path(&self.database_path),
+            config_dir: display_path(&self.config_dir),
+            config_path: display_path(&self.config_path),
+        }
+    }
+}
+
+fn ensure_app_support_paths(paths: &AppSupportPaths) -> std::io::Result<()> {
+    ensure_directory(&paths.root)?;
+    ensure_directory(&paths.logs_dir)?;
+    ensure_directory(database_parent(paths)?)?;
+    ensure_directory(&paths.config_dir)?;
+    Ok(())
+}
+
+fn database_parent(paths: &AppSupportPaths) -> std::io::Result<&Path> {
+    paths.database_path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "database path has no parent directory",
+        )
+    })
+}
+
+fn ensure_directory(path: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(path)?;
+    let metadata = fs::metadata(path)?;
+    if metadata.is_dir() {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("{} exists and is not a directory", display_path(path)),
+        ))
+    }
+}
+
 fn ensure_foundation() -> Result<FoundationStatus, Box<dyn std::error::Error>> {
     let home = home_dir()?;
     let visible_root = home.join("Zoid");
-    let app_support_dir = home.join("Library/Application Support/Zoid");
-    let logs_dir = app_support_dir.join("logs");
-    let database_path = app_support_dir.join("zoid.sqlite");
+    let app_support_paths = AppSupportPaths::for_home(&home);
 
     fs::create_dir_all(&visible_root)?;
     for child in VISIBLE_DIRS {
         fs::create_dir_all(visible_root.join(child))?;
     }
-    fs::create_dir_all(&logs_dir)?;
+    ensure_app_support_paths(&app_support_paths)?;
 
-    let connection = Connection::open(&database_path)?;
+    let connection = Connection::open(&app_support_paths.database_path)?;
     run_migrations(&connection)?;
     ensure_workspace_schema_compatibility(&connection)?;
     seed_workspaces(&connection)?;
     write_foundation_event(&connection)?;
     let safe_log_probe = write_safe_log(
-        &logs_dir,
+        &app_support_paths.logs_dir,
         "foundation",
         "foundation.ready secure services checked",
     )?;
@@ -217,9 +297,12 @@ fn ensure_foundation() -> Result<FoundationStatus, Box<dyn std::error::Error>> {
 
     Ok(FoundationStatus {
         visible_root: display_path(&visible_root),
-        app_support_dir: display_path(&app_support_dir),
-        database_path: display_path(&database_path),
-        logs_dir: display_path(&logs_dir),
+        app_support_dir: display_path(&app_support_paths.root),
+        database_path: display_path(&app_support_paths.database_path),
+        logs_dir: display_path(&app_support_paths.logs_dir),
+        config_dir: display_path(&app_support_paths.config_dir),
+        config_path: display_path(&app_support_paths.config_path),
+        app_support: app_support_paths.status(),
         migration_version: get_migration_version(&connection)?,
         workspace_count: workspaces.len() as i64,
         event_count: count_table(&connection, "events")?,
@@ -552,7 +635,7 @@ fn redact_line(line: &str, redaction_count: &mut usize) -> String {
         "client_secret",
     ];
 
-    if lower.contains("authorization: bearer ") {
+    if lower.contains("authorization:") && lower.contains("bearer ") {
         if let Some(index) = lower.find("bearer ") {
             *redaction_count += 1;
             return format!("{}bearer [REDACTED]{}", &line[..index], line_suffix(line));
@@ -841,6 +924,83 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Component;
+
+    fn temp_home(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("zoid-{name}-{}", now_millis()))
+    }
+
+    #[test]
+    fn app_support_paths_have_expected_layout_without_user_input_segments() {
+        let home = PathBuf::from("/Users/example");
+        let paths = AppSupportPaths::for_home(&home);
+
+        assert_eq!(
+            paths.root,
+            PathBuf::from("/Users/example/Library/Application Support/Zoid")
+        );
+        assert_eq!(paths.logs_dir, paths.root.join("logs"));
+        assert_eq!(paths.database_path, paths.root.join("zoid.sqlite"));
+        assert_eq!(paths.config_dir, paths.root.join("config"));
+        assert_eq!(paths.config_path, paths.config_dir.join("settings.json"));
+        assert!(paths.logs_dir.starts_with(&paths.root));
+        assert!(paths.database_path.starts_with(&paths.root));
+        assert!(paths.config_path.starts_with(&paths.root));
+
+        for path in [
+            &paths.root,
+            &paths.logs_dir,
+            &paths.database_path,
+            &paths.config_dir,
+            &paths.config_path,
+        ] {
+            assert!(!path
+                .components()
+                .any(|component| matches!(component, Component::ParentDir)));
+        }
+    }
+
+    #[test]
+    fn app_support_creation_is_idempotent_and_non_destructive() {
+        let home = temp_home("app-support-idempotent");
+        let paths = AppSupportPaths::for_home(&home);
+        let marker_path = paths.config_dir.join("existing-user-setting.json");
+
+        ensure_app_support_paths(&paths).expect("create app support paths");
+        fs::write(&marker_path, "preserve me").expect("write marker file");
+        ensure_app_support_paths(&paths).expect("create app support paths again");
+
+        assert!(paths.root.is_dir());
+        assert!(paths.logs_dir.is_dir());
+        assert!(paths.config_dir.is_dir());
+        assert!(database_parent(&paths).unwrap().is_dir());
+        assert!(
+            !paths.database_path.exists(),
+            "directory creation must not create the DB file"
+        );
+        assert!(
+            !paths.config_path.exists(),
+            "directory creation must not create the config file"
+        );
+        assert_eq!(fs::read_to_string(marker_path).unwrap(), "preserve me");
+
+        fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn app_support_creation_fails_when_required_directory_is_a_file() {
+        let home = temp_home("app-support-file-conflict");
+        let paths = AppSupportPaths::for_home(&home);
+        fs::create_dir_all(&paths.root).expect("create app support root");
+        fs::write(&paths.logs_dir, "not a directory").expect("write conflicting logs file");
+
+        let error =
+            ensure_app_support_paths(&paths).expect_err("logs file must block directory setup");
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(paths.logs_dir.is_file());
+
+        fs::remove_dir_all(home).ok();
+    }
 
     #[test]
     fn migrations_seed_core_workspaces() {
