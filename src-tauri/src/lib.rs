@@ -220,6 +220,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "core_schema_p105",
         sql: include_str!("../migrations/0003_core_schema_p105.sql"),
     },
+    Migration {
+        version: 4,
+        name: "confirmation_actor_type_check",
+        sql: include_str!("../migrations/0004_confirmation_actor_type_check.sql"),
+    },
 ];
 
 struct Migration {
@@ -3418,7 +3423,7 @@ mod tests {
             .map(|workspace| workspace.id)
             .collect();
 
-        assert_eq!(get_migration_version(&connection).unwrap(), 3);
+        assert_eq!(get_migration_version(&connection).unwrap(), 4);
         assert_eq!(workspace_ids, canonical_workspace_ids());
     }
 
@@ -4139,7 +4144,7 @@ mod tests {
         let connection = Connection::open_in_memory().expect("open in-memory sqlite");
         run_migrations(&connection).expect("run migrations");
 
-        assert_eq!(get_migration_version(&connection).unwrap(), 3);
+        assert_eq!(get_migration_version(&connection).unwrap(), 4);
 
         assert_table_has_columns(
             &connection,
@@ -4372,7 +4377,7 @@ mod tests {
         run_migrations(&connection).expect("run p105 migration first time");
         run_migrations(&connection).expect("run p105 migration second time");
 
-        assert_eq!(get_migration_version(&connection).unwrap(), 3);
+        assert_eq!(get_migration_version(&connection).unwrap(), 4);
 
         let p105_rows: i64 = connection
             .query_row(
@@ -4469,7 +4474,7 @@ mod tests {
         seed_workspaces(&connection).expect("seed new workspaces");
         write_foundation_event(&connection).expect("backfill event target");
 
-        assert_eq!(get_migration_version(&connection).unwrap(), 3);
+        assert_eq!(get_migration_version(&connection).unwrap(), 4);
         assert_eq!(count_table(&connection, "workspaces").unwrap(), 14);
 
         let event_fields: (String, String, String) = connection
@@ -5188,6 +5193,102 @@ mod tests {
         assert!(
             matches!(invalid_actor, Err(rusqlite::Error::SqliteFailure(_, _))),
             "invalid actor_type must be rejected by schema; got {invalid_actor:?}"
+        );
+    }
+
+    #[test]
+    fn migrations_upgrade_existing_v3_confirmation_decisions_actor_type_check() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        enable_sqlite_foreign_keys(&connection).expect("enable foreign keys");
+        connection
+            .execute_batch(
+                "
+                create table schema_migrations (
+                    version integer primary key,
+                    name text not null,
+                    applied_at text not null default current_timestamp
+                );
+
+                create table events (
+                    id text primary key,
+                    type text not null,
+                    timestamp text not null default current_timestamp,
+                    actor_type text not null,
+                    actor_id text,
+                    workspace_key text,
+                    summary text not null,
+                    severity text not null default 'info',
+                    source text not null,
+                    metadata_json text not null default '{}',
+                    created_at text not null default current_timestamp
+                );
+
+                create table action_policies (
+                    category text primary key,
+                    policy text not null check (policy in ('allow', 'ask_before_action', 'block_until_confirmed', 'require_clear_task')),
+                    reviewer_required text not null check (reviewer_required in ('none', 'maybe', 'usually', 'yes')),
+                    human_confirmation text not null check (human_confirmation in ('none', 'maybe', 'yes', 'always')),
+                    reason text not null,
+                    created_at text not null default current_timestamp,
+                    updated_at text not null default current_timestamp
+                );
+
+                create table confirmation_decisions (
+                    id text primary key,
+                    action_category text not null,
+                    decision text not null check (decision in ('approved', 'denied', 'cancelled', 'expired')),
+                    actor_type text not null,
+                    actor_id text,
+                    summary text not null,
+                    event_id text,
+                    metadata_json text not null default '{}' check (json_valid(metadata_json)),
+                    created_at text not null default current_timestamp,
+                    foreign key (action_category) references action_policies(category) on update cascade,
+                    foreign key (event_id) references events(id) on delete set null
+                );
+                create index idx_confirmation_decisions_category_created on confirmation_decisions(action_category, created_at);
+                create index idx_confirmation_decisions_event on confirmation_decisions(event_id);
+
+                insert into schema_migrations (version, name) values
+                    (1, 'foundation_schema'),
+                    (2, 'event_schema_backfill'),
+                    (3, 'core_schema_p105');
+                insert into action_policies (category, policy, reviewer_required, human_confirmation, reason)
+                    values ('send_email', 'block_until_confirmed', 'none', 'yes', 'test policy');
+                insert into events (id, type, actor_type, summary, source, metadata_json)
+                    values ('event_existing', 'confirmation.test', 'system', 'existing event', 'test', '{}');
+                insert into confirmation_decisions (id, action_category, decision, actor_type, actor_id, summary, event_id, metadata_json)
+                    values ('confirm_existing', 'send_email', 'approved', 'human', 'user-1', 'existing approval', 'event_existing', '{}');
+                ",
+            )
+            .expect("create simulated old v3 database without actor_type check");
+
+        run_migrations(&connection).expect("upgrade old v3 database");
+
+        let existing_actor: String = connection
+            .query_row(
+                "select actor_type from confirmation_decisions where id = 'confirm_existing'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("valid existing row preserved");
+        assert_eq!(existing_actor, "human");
+        let event_id: Option<String> = connection
+            .query_row(
+                "select event_id from confirmation_decisions where id = 'confirm_existing'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("event foreign key preserved");
+        assert_eq!(event_id.as_deref(), Some("event_existing"));
+
+        let invalid_actor = connection.execute(
+            "insert into confirmation_decisions (id, action_category, decision, actor_type, summary) values ('confirm_invalid_after_upgrade', 'send_email', 'approved', 'robot', 'invalid actor')",
+            [],
+        );
+        assert!(
+            matches!(invalid_actor, Err(rusqlite::Error::SqliteFailure(_, _))),
+            "upgraded old v3 schema must reject invalid actor_type; got {invalid_actor:?}"
         );
     }
 
