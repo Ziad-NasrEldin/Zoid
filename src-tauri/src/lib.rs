@@ -363,8 +363,18 @@ struct SecureFoundationStatus {
     safe_logging_ready: bool,
     action_policy_ready: bool,
     event_writer_ready: bool,
+    keychain: KeychainReadinessStatus,
     keychain_status: String,
     sample_policy: ActionPolicyDecision,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct KeychainReadinessStatus {
+    ready: bool,
+    status: String,
+    reason: String,
+    credential_storage_enabled: bool,
+    test_path_exercised: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -3196,6 +3206,7 @@ fn repository_error_to_rusqlite(error: RepositoryError) -> rusqlite::Error {
 }
 
 fn secure_foundation_status(safe_log_probe: &SafeLogWrite) -> SecureFoundationStatus {
+    let keychain = keychain_readiness_status();
     SecureFoundationStatus {
         redaction_ready: redact_secrets("api_key=secret-value").redaction_count == 1,
         safe_logging_ready: safe_log_probe.path.is_file()
@@ -3203,8 +3214,20 @@ fn secure_foundation_status(safe_log_probe: &SafeLogWrite) -> SecureFoundationSt
             && safe_log_probe.redaction_count == 0,
         action_policy_ready: true,
         event_writer_ready: true,
-        keychain_status: "blocked_unverified_native_keychain_not_tested".to_string(),
+        keychain_status: keychain.status.clone(),
+        keychain,
         sample_policy: evaluate_action_policy("send_email"),
+    }
+}
+
+fn keychain_readiness_status() -> KeychainReadinessStatus {
+    KeychainReadinessStatus {
+        ready: false,
+        status: "blocked_unverified_native_keychain_not_tested".to_string(),
+        reason: "Native macOS Keychain read/write/delete probe is not implemented in this backend slice; credential storage remains disabled rather than claiming readiness."
+            .to_string(),
+        credential_storage_enabled: false,
+        test_path_exercised: false,
     }
 }
 
@@ -6055,6 +6078,49 @@ mod tests {
         assert!(!redacted.text.contains("keep-me-private"));
         assert!(redacted.text.contains("[REDACTED]"));
         assert!(redacted.text.contains("normal line"));
+    }
+
+    #[test]
+    fn keychain_readiness_is_truthful_when_native_probe_is_not_implemented() {
+        let readiness = keychain_readiness_status();
+
+        assert_eq!(
+            readiness.status,
+            "blocked_unverified_native_keychain_not_tested"
+        );
+        assert!(!readiness.ready);
+        assert!(!readiness.credential_storage_enabled);
+        assert!(!readiness.test_path_exercised);
+        assert!(readiness.reason.contains("not implemented"));
+        assert!(!readiness.reason.contains("secret"));
+        assert!(!readiness.reason.contains("token"));
+    }
+
+    #[test]
+    fn secure_foundation_status_embeds_truthful_keychain_readiness_without_claiming_ready() {
+        let logs_dir = std::env::temp_dir().join(format!("zoid-secure-status-{}", now_millis()));
+        fs::create_dir_all(&logs_dir).expect("create logs dir");
+        let probe_path = logs_dir.join("foundation.log");
+        fs::write(&probe_path, "foundation.ready secure services checked")
+            .expect("write safe log probe");
+        let safe_log_probe = SafeLogWrite {
+            path: probe_path,
+            redaction_count: 0,
+            bytes_written: 40,
+        };
+
+        let status = secure_foundation_status(&safe_log_probe);
+
+        assert_eq!(
+            status.keychain_status, status.keychain.status,
+            "legacy string status must match typed keychain readiness"
+        );
+        assert!(!status.keychain.ready);
+        assert!(!status.keychain.credential_storage_enabled);
+        assert!(!status.keychain.test_path_exercised);
+        assert!(status.keychain.reason.contains("not implemented"));
+
+        fs::remove_dir_all(logs_dir).ok();
     }
 
     #[test]
