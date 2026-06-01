@@ -2,6 +2,14 @@ import { invoke } from "@tauri-apps/api/core";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import "./App.css";
+import {
+  buildSettingsStatusShellView,
+  defaultIntegrationStates,
+  type FoundationStatus,
+  type IntegrationState,
+  type SettingsStatusItem,
+  type SettingsStatusShellView,
+} from "./settingsStatus";
 import { buildTodayFoundationView, type TodayFoundationView, type TodayWidgetView } from "./todayFoundation";
 
 type WorkspaceRecord = {
@@ -28,62 +36,6 @@ const fallbackWorkspaces: WorkspaceRecord[] = [
   { id: "history", label: "History", description: "Universal timeline and linked event history.", position: 13 },
 ];
 
-type ActionPolicyDecision = {
-  category: string;
-  policy: string;
-  reviewer_required: string;
-  human_confirmation: string;
-  reason: string;
-};
-
-type KeychainReadinessStatus = {
-  ready: boolean;
-  status: string;
-  reason: string;
-  credential_storage_enabled: boolean;
-  test_path_exercised: boolean;
-};
-
-type SecureFoundationStatus = {
-  redaction_ready: boolean;
-  safe_logging_ready: boolean;
-  action_policy_ready: boolean;
-  event_writer_ready: boolean;
-  keychain: KeychainReadinessStatus;
-  keychain_status: string;
-  sample_policy: ActionPolicyDecision;
-};
-
-type VisibleUserPathStatus = {
-  root: string;
-  starter_directories: string[];
-};
-
-type AppSupportPathStatus = {
-  root: string;
-  logs_dir: string;
-  database_parent: string;
-  database_path: string;
-  config_dir: string;
-  config_path: string;
-};
-
-type FoundationStatus = {
-  visible_root: string;
-  app_support_dir: string;
-  database_path: string;
-  logs_dir: string;
-  config_dir: string;
-  config_path: string;
-  visible_user: VisibleUserPathStatus;
-  app_support: AppSupportPathStatus;
-  migration_version: number;
-  workspace_count: number;
-  event_count: number;
-  workspaces: WorkspaceRecord[];
-  secure_services: SecureFoundationStatus;
-};
-
 type WorkspaceRegistrySource = "native" | "fallback" | "checking";
 
 type WorkspaceRegistryView = {
@@ -94,12 +46,7 @@ type WorkspaceRegistryView = {
   workspaces: WorkspaceRecord[];
 };
 
-const integrationStates = [
-  { name: "CLI profiles", state: "not configured", note: "Local command wiring is disabled until a real profile is added." },
-  { name: "Gmail", state: "not configured", note: "Read and send flows remain unavailable until explicitly configured." },
-  { name: "Apple Calendar", state: "needs permission", note: "Calendar access is gated by native app validation and permission." },
-  { name: "OmniSocials", state: "not configured", note: "Publishing remains blocked without credentials and review policy." },
-];
+const integrationStates: IntegrationState[] = defaultIntegrationStates;
 
 const workspaceGlyphs: Record<string, string> = {
   agents: "A",
@@ -117,8 +64,6 @@ const workspaceGlyphs: Record<string, string> = {
   tasks: "✓",
   today: "•",
 };
-
-const readinessLabel = (ready: boolean) => (ready ? "Ready" : "Blocked");
 
 function formatWorkspaceCount(count: number) {
   return `${count} workspace${count === 1 ? "" : "s"}`;
@@ -283,6 +228,97 @@ type InspectorCardProps = {
 
 function InspectorCard({ children, className = "" }: InspectorCardProps) {
   return <article className={`inspector-card${className ? ` ${className}` : ""}`}>{children}</article>;
+}
+
+type SettingsStatusListProps = {
+  items: SettingsStatusItem[];
+};
+
+function SettingsStatusList({ items }: SettingsStatusListProps) {
+  return (
+    <dl className="settings-status-list">
+      {items.map((item) => (
+        <div key={`${item.label}:${item.value}`}>
+          <dt>{item.label}</dt>
+          <dd>
+            {item.tone ? <StatusBadge tone={item.tone}>{item.value}</StatusBadge> : item.value}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+type SettingsStatusShellProps = {
+  view: SettingsStatusShellView;
+};
+
+function SettingsStatusShell({ view }: SettingsStatusShellProps) {
+  return (
+    <InspectorCard className="settings-status-shell">
+      <div className="card-header compact">
+        <div>
+          <p className="eyebrow">Settings/status</p>
+          <h3>{view.modeLabel}</h3>
+        </div>
+        <StatusBadge tone={view.mode === "native" ? "ready" : view.mode === "checking" ? "pending" : "blocked"}>
+          {view.mode === "native" ? "Native" : view.mode === "checking" ? "Checking" : "Preview"}
+        </StatusBadge>
+      </div>
+      <p>{view.summary}</p>
+
+      <section className="settings-status-section" aria-label="Paths">
+        <p className="eyebrow">Paths</p>
+        <SettingsStatusList items={view.paths} />
+      </section>
+
+      <section className="settings-status-section" aria-label="Database, migrations, and events">
+        <p className="eyebrow">DB / migrations / events</p>
+        <SettingsStatusList items={view.database} />
+      </section>
+
+      <section className="settings-status-section" aria-label="Keychain readiness">
+        <p className="eyebrow">Keychain</p>
+        <SettingsStatusList items={view.keychain} />
+      </section>
+
+      <section className="settings-status-section" aria-label="Safeguards">
+        <p className="eyebrow">Safeguards</p>
+        <SettingsStatusList items={view.safeguards} />
+      </section>
+
+      <section className="settings-status-section" aria-label="Policy summary">
+        <p className="eyebrow">Policy summary</p>
+        <dl className="settings-status-list">
+          <div><dt>Category</dt><dd>{view.policy.category}</dd></div>
+          <div><dt>Policy</dt><dd>{view.policy.policy}</dd></div>
+          <div><dt>Reviewer</dt><dd>{view.policy.reviewerRequired}</dd></div>
+          <div><dt>Confirmation</dt><dd>{view.policy.humanConfirmation}</dd></div>
+          <div><dt>Reason</dt><dd>{view.policy.reason}</dd></div>
+        </dl>
+      </section>
+
+      <section className="settings-status-section" aria-label="Event writer status">
+        <p className="eyebrow">Events</p>
+        <SettingsStatusList items={view.events} />
+      </section>
+
+      <section className="settings-status-section" aria-label="Integrations">
+        <p className="eyebrow">Integrations</p>
+        <ul className="integration-list compact-list">
+          {view.integrations.map((integration) => (
+            <li key={integration.name}>
+              <div>
+                <strong>{integration.name}</strong>
+                <span>{integration.state}</span>
+              </div>
+              <p>{integration.note}</p>
+            </li>
+          ))}
+        </ul>
+      </section>
+    </InspectorCard>
+  );
 }
 
 type TodayMetricProps = {
@@ -475,6 +511,14 @@ function App() {
     }),
     [status, workspaceRegistry.countLabel, workspaceRegistry.source, workspaceRegistry.sourceLabel],
   );
+  const settingsStatusView = useMemo(
+    () => buildSettingsStatusShellView({
+      mode: status ? "native" : statusError ? "preview" : "checking",
+      status,
+      integrations: integrationStates,
+    }),
+    [status, statusError],
+  );
 
   return (
     <main className="zoid-shell">
@@ -621,42 +665,7 @@ function App() {
               </dl>
             </InspectorCard>
 
-            <InspectorCard>
-              <p className="eyebrow">Secure foundation</p>
-              <h3>Local safeguards</h3>
-              {status ? (
-                <ul className="security-list">
-                  <li><strong>Redaction</strong><span className={status.secure_services.redaction_ready ? "ready" : "blocked"}>{readinessLabel(status.secure_services.redaction_ready)}</span></li>
-                  <li><strong>Safe logging</strong><span className={status.secure_services.safe_logging_ready ? "ready" : "blocked"}>{readinessLabel(status.secure_services.safe_logging_ready)}</span></li>
-                  <li><strong>Action policy</strong><span className={status.secure_services.action_policy_ready ? "ready" : "blocked"}>{readinessLabel(status.secure_services.action_policy_ready)}</span></li>
-                  <li><strong>Event writer</strong><span className={status.secure_services.event_writer_ready ? "ready" : "blocked"}>{readinessLabel(status.secure_services.event_writer_ready)}</span></li>
-                  <li><strong>Keychain</strong><span className="neutral">{status.secure_services.keychain_status}</span></li>
-                </ul>
-              ) : (
-                <p className="muted-copy">Secure service readiness is reported by the native app only.</p>
-              )}
-              {status ? (
-                <p className="policy-note">
-                  Sample policy: {status.secure_services.sample_policy.category} requires {status.secure_services.sample_policy.human_confirmation.replace(/_/g, " ")} confirmation.
-                </p>
-              ) : null}
-            </InspectorCard>
-
-            <InspectorCard>
-              <p className="eyebrow">Integration truth</p>
-              <h3>Local status</h3>
-              <ul className="integration-list">
-                {integrationStates.map((integration) => (
-                  <li key={integration.name}>
-                    <div>
-                      <strong>{integration.name}</strong>
-                      <span>{integration.state}</span>
-                    </div>
-                    <p>{integration.note}</p>
-                  </li>
-                ))}
-              </ul>
-            </InspectorCard>
+            <SettingsStatusShell view={settingsStatusView} />
           </InspectorPanel>
         </div>
       </section>
