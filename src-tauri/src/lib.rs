@@ -1,5 +1,5 @@
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
@@ -14,6 +14,11 @@ static EVENT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const SAFE_LOG_MAX_BYTES: usize = 4096;
 const SAFE_LOG_ROTATED_SUFFIX: &str = "1";
+const EVENT_CREATE_MAX_TARGETS: usize = 25;
+const EVENT_CREATE_MAX_SUMMARY_BYTES: usize = 4096;
+const EVENT_CREATE_MAX_METADATA_JSON_BYTES: usize = 16_384;
+const EVENT_CREATE_MAX_SMALL_FIELD_BYTES: usize = 256;
+const EVENT_CREATE_MAX_SOURCE_BYTES: usize = 512;
 
 const WORKSPACE_REGISTRY: &[WorkspaceDefinition] = &[
     WorkspaceDefinition {
@@ -687,7 +692,7 @@ struct EventTargetInput<'a> {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct EventTargetRecord {
     entity_type: String,
     entity_id: String,
@@ -709,7 +714,7 @@ struct EventCreateInput<'a> {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct EventRecord {
     id: String,
     action_type: String,
@@ -762,7 +767,7 @@ enum RepositoryError {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct AppSettingRecord {
     key: String,
     value_json: String,
@@ -791,7 +796,8 @@ struct AppSettingUpdate<'a> {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 enum SettingScope {
     App,
     Workspace,
@@ -818,7 +824,7 @@ impl SettingScope {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct LocalPreferenceRecord {
     key: String,
     value_json: String,
@@ -838,7 +844,8 @@ struct LocalPreferenceInput<'a> {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 enum IntegrationStatus {
     NotConfigured,
     Configured,
@@ -877,7 +884,7 @@ impl IntegrationStatus {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct IntegrationStatusRecord {
     integration_key: String,
     display_name: String,
@@ -958,9 +965,442 @@ const ALLOWED_ENTITY_LINK_TYPES: &[&str] = &[
     "browser_capture",
 ];
 
+#[cfg(test)]
+const TAURI_BRIDGE_COMMAND_NAMES: &[&str] = &[
+    "get_foundation_status",
+    "get_workspace_registry",
+    "read_local_preference",
+    "list_local_preferences",
+    "upsert_local_preference",
+    "read_integration_status_command",
+    "list_integration_statuses_command",
+    "upsert_integration_status_command",
+    "create_event",
+    "read_event",
+    "list_events",
+    "preview_action_policy",
+];
+
+#[derive(Debug, Clone, Deserialize)]
+struct LocalPreferenceRequest {
+    key: String,
+    value_json: String,
+    value_type: String,
+    scope: String,
+    description: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct IntegrationStatusRequest {
+    integration_key: String,
+    display_name: String,
+    status: String,
+    config_json: String,
+    credential_ref: Option<String>,
+    last_checked_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct EventTargetRequest {
+    entity_type: String,
+    entity_id: String,
+    relation_type: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct EventCreateRequest {
+    action_type: String,
+    outcome: String,
+    actor_type: String,
+    actor_id: Option<String>,
+    workspace_key: Option<String>,
+    summary: String,
+    source: String,
+    metadata_json: String,
+    targets: Vec<EventTargetRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct EventListRequest {
+    workspace_key: Option<String>,
+    action_type: Option<String>,
+    outcome: Option<String>,
+    source: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PolicyPreviewRequest {
+    category: Option<String>,
+    action_type: Option<String>,
+    target: Option<String>,
+    scope: Option<String>,
+    consequence: Option<String>,
+    bulk: Option<bool>,
+    destructive: Option<bool>,
+}
+
 #[tauri::command]
 fn get_foundation_status() -> Result<FoundationStatus, String> {
     ensure_foundation().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_workspace_registry() -> Result<Vec<WorkspaceRecord>, String> {
+    let connection = open_ready_connection()?;
+    get_workspace_registry_with_connection(&connection)
+}
+
+#[tauri::command]
+fn read_local_preference(key: String) -> Result<Option<LocalPreferenceRecord>, String> {
+    let connection = open_ready_connection()?;
+    read_local_preference_with_connection(&connection, key)
+}
+
+#[tauri::command]
+fn list_local_preferences(scope: Option<String>) -> Result<Vec<LocalPreferenceRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_local_preferences_with_connection(&connection, scope)
+}
+
+#[tauri::command]
+fn upsert_local_preference(
+    request: LocalPreferenceRequest,
+) -> Result<LocalPreferenceRecord, String> {
+    let connection = open_ready_connection()?;
+    upsert_local_preference_with_connection(&connection, request)
+}
+
+#[tauri::command]
+fn read_integration_status_command(
+    integration_key: String,
+) -> Result<Option<IntegrationStatusRecord>, String> {
+    let connection = open_ready_connection()?;
+    read_integration_status_with_connection(&connection, integration_key)
+}
+
+#[tauri::command]
+fn list_integration_statuses_command() -> Result<Vec<IntegrationStatusRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_integration_statuses_with_connection(&connection)
+}
+
+#[tauri::command]
+fn upsert_integration_status_command(
+    request: IntegrationStatusRequest,
+) -> Result<IntegrationStatusRecord, String> {
+    let connection = open_ready_connection()?;
+    upsert_integration_status_with_connection(&connection, request)
+}
+
+#[tauri::command]
+fn create_event(request: EventCreateRequest) -> Result<EventRecord, String> {
+    let connection = open_ready_connection()?;
+    create_event_with_connection(&connection, request)
+}
+
+#[tauri::command]
+fn read_event(event_id: String) -> Result<EventRecord, String> {
+    let connection = open_ready_connection()?;
+    read_event_with_connection(&connection, event_id)
+}
+
+#[tauri::command]
+fn list_events(request: EventListRequest) -> Result<Vec<EventRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_events_with_connection(&connection, request)
+}
+
+#[tauri::command]
+fn preview_action_policy(request: PolicyPreviewRequest) -> Result<ActionPolicyDecision, String> {
+    if let Some(category) = request
+        .category
+        .as_deref()
+        .filter(|category| !category.trim().is_empty())
+    {
+        return Ok(evaluate_action_policy(category));
+    }
+
+    let action_request = ActionRequest {
+        action_type: parse_action_type(request.action_type.as_deref())?,
+        target: request.target,
+        scope: parse_action_scope(request.scope.as_deref())?,
+        consequence: parse_action_consequence(request.consequence.as_deref())?,
+        bulk: request.bulk.unwrap_or(false),
+        destructive: request.destructive.unwrap_or(false),
+    };
+    Ok(evaluate_action_request(&action_request))
+}
+
+fn open_ready_connection() -> Result<Connection, String> {
+    ensure_foundation().map_err(|error| error.to_string())?;
+    let database_path =
+        AppSupportPaths::for_home(&home_dir().map_err(|error| error.to_string())?).database_path;
+    open_foundation_database(&database_path).map_err(|error| error.to_string())
+}
+
+fn get_workspace_registry_with_connection(
+    connection: &Connection,
+) -> Result<Vec<WorkspaceRecord>, String> {
+    list_workspaces(connection).map_err(|error| error.to_string())
+}
+
+fn read_local_preference_with_connection(
+    connection: &Connection,
+    key: String,
+) -> Result<Option<LocalPreferenceRecord>, String> {
+    read_local_app_preference(connection, &key).map_err(repository_error_message)
+}
+
+fn list_local_preferences_with_connection(
+    connection: &Connection,
+    scope: Option<String>,
+) -> Result<Vec<LocalPreferenceRecord>, String> {
+    match scope.as_deref() {
+        Some(value) if !value.trim().is_empty() => list_local_app_preferences_by_scope(
+            connection,
+            SettingScope::from_str(value).map_err(repository_error_message)?,
+        )
+        .map_err(repository_error_message),
+        _ => list_local_app_preferences(connection).map_err(repository_error_message),
+    }
+}
+
+fn upsert_local_preference_with_connection(
+    connection: &Connection,
+    request: LocalPreferenceRequest,
+) -> Result<LocalPreferenceRecord, String> {
+    upsert_local_app_preference(
+        connection,
+        LocalPreferenceInput {
+            key: request.key.as_str(),
+            value_json: request.value_json.as_str(),
+            value_type: request.value_type.as_str(),
+            scope: SettingScope::from_str(request.scope.as_str())
+                .map_err(repository_error_message)?,
+            description: request.description.as_str(),
+        },
+    )
+    .map_err(repository_error_message)
+}
+
+fn read_integration_status_with_connection(
+    connection: &Connection,
+    integration_key: String,
+) -> Result<Option<IntegrationStatusRecord>, String> {
+    read_integration_status(connection, &integration_key).map_err(repository_error_message)
+}
+
+fn list_integration_statuses_with_connection(
+    connection: &Connection,
+) -> Result<Vec<IntegrationStatusRecord>, String> {
+    list_integration_statuses(connection).map_err(repository_error_message)
+}
+
+fn upsert_integration_status_with_connection(
+    connection: &Connection,
+    request: IntegrationStatusRequest,
+) -> Result<IntegrationStatusRecord, String> {
+    upsert_integration_status(
+        connection,
+        IntegrationStatusInput {
+            integration_key: request.integration_key.as_str(),
+            display_name: request.display_name.as_str(),
+            status: IntegrationStatus::from_str(request.status.as_str())
+                .map_err(repository_error_message)?,
+            config_json: request.config_json.as_str(),
+            credential_ref: request.credential_ref.as_deref(),
+            last_checked_at: request.last_checked_at.as_deref(),
+        },
+    )
+    .map_err(repository_error_message)
+}
+
+fn create_event_with_connection(
+    connection: &Connection,
+    request: EventCreateRequest,
+) -> Result<EventRecord, String> {
+    validate_event_create_request(&request)?;
+    validate_json_field("metadata_json", request.metadata_json.as_str())
+        .map_err(repository_error_message)?;
+    let targets = request
+        .targets
+        .iter()
+        .map(|target| EventTargetInput {
+            entity_type: target.entity_type.as_str(),
+            entity_id: target.entity_id.as_str(),
+            relation_type: target.relation_type.as_str(),
+        })
+        .collect();
+    create_event_record(
+        connection,
+        EventCreateInput {
+            action_type: request.action_type.as_str(),
+            outcome: request.outcome.as_str(),
+            actor_type: request.actor_type.as_str(),
+            actor_id: request.actor_id.as_deref(),
+            workspace_key: request.workspace_key.as_deref(),
+            summary: request.summary.as_str(),
+            source: request.source.as_str(),
+            metadata_json: request.metadata_json.as_str(),
+            targets,
+        },
+    )
+    .map_err(repository_error_message)
+}
+
+fn validate_event_create_request(request: &EventCreateRequest) -> Result<(), String> {
+    reject_over_limit(
+        "action_type",
+        request.action_type.len(),
+        EVENT_CREATE_MAX_SMALL_FIELD_BYTES,
+    )?;
+    reject_over_limit(
+        "outcome",
+        request.outcome.len(),
+        EVENT_CREATE_MAX_SMALL_FIELD_BYTES,
+    )?;
+    reject_over_limit(
+        "actor_type",
+        request.actor_type.len(),
+        EVENT_CREATE_MAX_SMALL_FIELD_BYTES,
+    )?;
+    if let Some(actor_id) = request.actor_id.as_deref() {
+        reject_over_limit("actor_id", actor_id.len(), EVENT_CREATE_MAX_SOURCE_BYTES)?;
+    }
+    if let Some(workspace_key) = request.workspace_key.as_deref() {
+        reject_over_limit(
+            "workspace_key",
+            workspace_key.len(),
+            EVENT_CREATE_MAX_SMALL_FIELD_BYTES,
+        )?;
+    }
+    reject_over_limit(
+        "summary",
+        request.summary.len(),
+        EVENT_CREATE_MAX_SUMMARY_BYTES,
+    )?;
+    reject_over_limit(
+        "source",
+        request.source.len(),
+        EVENT_CREATE_MAX_SOURCE_BYTES,
+    )?;
+    reject_over_limit(
+        "metadata_json",
+        request.metadata_json.len(),
+        EVENT_CREATE_MAX_METADATA_JSON_BYTES,
+    )?;
+    reject_over_limit("targets", request.targets.len(), EVENT_CREATE_MAX_TARGETS)?;
+
+    for target in &request.targets {
+        reject_over_limit(
+            "target.entity_type",
+            target.entity_type.len(),
+            EVENT_CREATE_MAX_SMALL_FIELD_BYTES,
+        )?;
+        reject_over_limit(
+            "target.entity_id",
+            target.entity_id.len(),
+            EVENT_CREATE_MAX_SOURCE_BYTES,
+        )?;
+        reject_over_limit(
+            "target.relation_type",
+            target.relation_type.len(),
+            EVENT_CREATE_MAX_SMALL_FIELD_BYTES,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn reject_over_limit(field: &'static str, actual: usize, limit: usize) -> Result<(), String> {
+    if actual > limit {
+        return Err(format!("event request exceeds bridge limit: {field}"));
+    }
+    Ok(())
+}
+
+fn read_event_with_connection(
+    connection: &Connection,
+    event_id: String,
+) -> Result<EventRecord, String> {
+    read_event_record(connection, &event_id).map_err(repository_error_message)
+}
+
+fn list_events_with_connection(
+    connection: &Connection,
+    request: EventListRequest,
+) -> Result<Vec<EventRecord>, String> {
+    list_event_records(
+        connection,
+        EventListFilter {
+            workspace_key: request.workspace_key.as_deref(),
+            action_type: request.action_type.as_deref(),
+            outcome: request.outcome.as_deref(),
+            source: request.source.as_deref(),
+            limit: request.limit.unwrap_or(50),
+        },
+    )
+    .map_err(repository_error_message)
+}
+
+fn parse_action_type(value: Option<&str>) -> Result<ActionType, String> {
+    match value
+        .unwrap_or("unknown")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "read" => Ok(ActionType::Read),
+        "create" => Ok(ActionType::Create),
+        "update" => Ok(ActionType::Update),
+        "delete" => Ok(ActionType::Delete),
+        "send" => Ok(ActionType::Send),
+        "publish" => Ok(ActionType::Publish),
+        "deploy" => Ok(ActionType::Deploy),
+        "file" => Ok(ActionType::File),
+        "process" | "run" | "execute" => Ok(ActionType::Process),
+        "" | "unknown" => Ok(ActionType::Unknown),
+        other => Err(format!("unsupported action_type: {other}")),
+    }
+}
+
+fn parse_action_scope(value: Option<&str>) -> Result<Option<ActionScope>, String> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok(None),
+        Some(value) => match value.to_ascii_lowercase().as_str() {
+            "local_private" => Ok(Some(ActionScope::LocalPrivate)),
+            "local_visible" => Ok(Some(ActionScope::LocalVisible)),
+            "code_repository" => Ok(Some(ActionScope::CodeRepository)),
+            "integration" => Ok(Some(ActionScope::Integration)),
+            "external" => Ok(Some(ActionScope::External)),
+            "unknown" => Ok(Some(ActionScope::Unknown)),
+            other => Err(format!("unsupported scope: {other}")),
+        },
+    }
+}
+
+fn parse_action_consequence(value: Option<&str>) -> Result<Option<ActionConsequence>, String> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok(None),
+        Some(value) => match value.to_ascii_lowercase().as_str() {
+            "harmless_local" => Ok(Some(ActionConsequence::HarmlessLocal)),
+            "local_write" => Ok(Some(ActionConsequence::LocalWrite)),
+            "external_write" => Ok(Some(ActionConsequence::ExternalWrite)),
+            "public_release" => Ok(Some(ActionConsequence::PublicRelease)),
+            "destructive" => Ok(Some(ActionConsequence::Destructive)),
+            "automation_execution" => Ok(Some(ActionConsequence::AutomationExecution)),
+            "credential_or_integration_change" => {
+                Ok(Some(ActionConsequence::CredentialOrIntegrationChange))
+            }
+            "unknown" => Ok(Some(ActionConsequence::Unknown)),
+            other => Err(format!("unsupported consequence: {other}")),
+        },
+    }
+}
+
+fn repository_error_message(error: RepositoryError) -> String {
+    format!("{error:?}")
 }
 
 impl AppSupportPaths {
@@ -3564,7 +4004,20 @@ pub fn run() {
                 .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_foundation_status])
+        .invoke_handler(tauri::generate_handler![
+            get_foundation_status,
+            get_workspace_registry,
+            read_local_preference,
+            list_local_preferences,
+            upsert_local_preference,
+            read_integration_status_command,
+            list_integration_statuses_command,
+            upsert_integration_status_command,
+            create_event,
+            read_event,
+            list_events,
+            preview_action_policy
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -3576,6 +4029,38 @@ mod tests {
 
     fn temp_home(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("zoid-{name}-{}", now_millis()))
+    }
+
+    fn valid_event_create_request() -> EventCreateRequest {
+        EventCreateRequest {
+            action_type: "create_local_task".to_string(),
+            outcome: "succeeded".to_string(),
+            actor_type: "system".to_string(),
+            actor_id: Some("tauri_bridge_test".to_string()),
+            workspace_key: Some("tasks".to_string()),
+            summary: "Created task".to_string(),
+            source: "tauri_bridge_test".to_string(),
+            metadata_json: "{}".to_string(),
+            targets: vec![EventTargetRequest {
+                entity_type: "task".to_string(),
+                entity_id: "task-1".to_string(),
+                relation_type: "primary".to_string(),
+            }],
+        }
+    }
+
+    fn parse_generate_handler_command_names(source: &str) -> Vec<&str> {
+        let block_start = source
+            .find(".invoke_handler(tauri::generate_handler![")
+            .expect("generate_handler block must exist");
+        let block = &source[block_start..];
+        let block_end = block.find("])").expect("generate_handler block must end");
+        block[..block_end]
+            .lines()
+            .skip(1)
+            .map(|line| line.trim().trim_end_matches(','))
+            .filter(|line| !line.is_empty())
+            .collect()
     }
 
     #[test]
@@ -4393,6 +4878,245 @@ mod tests {
             })
             .expect("count integration_statuses rows");
         assert_eq!(db_count, 0);
+    }
+
+    #[test]
+    fn tauri_bridge_command_surface_lists_registered_p116_commands() {
+        assert_eq!(TAURI_BRIDGE_COMMAND_NAMES.len(), 12);
+        for command_name in [
+            "get_foundation_status",
+            "get_workspace_registry",
+            "read_local_preference",
+            "list_local_preferences",
+            "upsert_local_preference",
+            "read_integration_status_command",
+            "list_integration_statuses_command",
+            "upsert_integration_status_command",
+            "create_event",
+            "read_event",
+            "list_events",
+            "preview_action_policy",
+        ] {
+            assert!(
+                TAURI_BRIDGE_COMMAND_NAMES.contains(&command_name),
+                "missing command registration marker for {command_name}"
+            );
+        }
+
+        let source_commands = parse_generate_handler_command_names(include_str!("lib.rs"));
+        assert_eq!(source_commands.len(), TAURI_BRIDGE_COMMAND_NAMES.len());
+        for command_name in TAURI_BRIDGE_COMMAND_NAMES {
+            assert!(
+                source_commands.contains(command_name),
+                "missing command in generate_handler block for {command_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn tauri_bridge_workspace_registry_command_returns_all_14_workspaces() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+        seed_workspaces(&connection).expect("seed workspaces");
+
+        let workspaces = get_workspace_registry_with_connection(&connection)
+            .expect("workspace registry command succeeds");
+
+        assert_eq!(workspaces.len(), 14);
+        assert_eq!(workspaces[0].id, "today");
+        assert_eq!(workspaces[13].id, "history");
+        assert_eq!(
+            workspaces
+                .iter()
+                .map(|workspace| workspace.id.clone())
+                .collect::<Vec<_>>(),
+            canonical_workspace_ids()
+        );
+    }
+
+    #[test]
+    fn tauri_bridge_policy_preview_is_read_only_and_gates_high_risk_action() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+        let before_count = count_table(&connection, "events").expect("count events before");
+
+        let decision = preview_action_policy(PolicyPreviewRequest {
+            category: None,
+            action_type: Some("deploy".to_string()),
+            target: Some("production deploy".to_string()),
+            scope: Some("external".to_string()),
+            consequence: Some("public_release".to_string()),
+            bulk: Some(false),
+            destructive: Some(false),
+        })
+        .expect("preview policy");
+
+        let after_count = count_table(&connection, "events").expect("count events after");
+        assert_eq!(before_count, after_count);
+        assert_eq!(decision.category, "deploy_redeploy_rollback");
+        assert!(decision.requires_gate);
+        assert!(!decision.allowed_now);
+    }
+
+    #[test]
+    fn tauri_bridge_event_write_redacts_and_read_list_return_record() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+        seed_workspaces(&connection).expect("seed workspaces");
+
+        let created = create_event_with_connection(
+            &connection,
+            EventCreateRequest {
+                action_type: "create_local_task".to_string(),
+                outcome: "succeeded".to_string(),
+                actor_type: "system".to_string(),
+                actor_id: Some("tauri_bridge_test".to_string()),
+                workspace_key: Some("tasks".to_string()),
+                summary: "Created task with api_key=super-secret".to_string(),
+                source: "tauri_bridge_test".to_string(),
+                metadata_json: "{\"token\":\"ghp_secretvalue\",\"safe\":\"kept\"}".to_string(),
+                targets: vec![EventTargetRequest {
+                    entity_type: "task".to_string(),
+                    entity_id: "task-1".to_string(),
+                    relation_type: "primary".to_string(),
+                }],
+            },
+        )
+        .expect("create event through bridge");
+
+        assert!(created.summary.contains("[REDACTED]"));
+        assert!(!created.summary.contains("super-secret"));
+        assert!(created.metadata_json.contains("[REDACTED]"));
+        assert!(!created.metadata_json.contains("ghp_secretvalue"));
+        assert_eq!(created.targets.len(), 1);
+
+        let read = read_event_with_connection(&connection, created.id.clone()).expect("read event");
+        assert_eq!(read, created);
+        let listed = list_events_with_connection(
+            &connection,
+            EventListRequest {
+                workspace_key: Some("tasks".to_string()),
+                action_type: Some("create_local_task".to_string()),
+                outcome: None,
+                source: Some("tauri_bridge_test".to_string()),
+                limit: Some(25),
+            },
+        )
+        .expect("list events");
+        assert_eq!(listed, vec![created]);
+    }
+
+    #[test]
+    fn tauri_bridge_event_write_rejects_over_limit_targets_without_persisting() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+        seed_workspaces(&connection).expect("seed workspaces");
+
+        let mut request = valid_event_create_request();
+        request.targets = (0..26)
+            .map(|index| EventTargetRequest {
+                entity_type: "task".to_string(),
+                entity_id: format!("task-{index}"),
+                relation_type: "related".to_string(),
+            })
+            .collect();
+
+        let error = create_event_with_connection(&connection, request)
+            .expect_err("over-limit targets must be rejected");
+
+        assert_eq!(error, "event request exceeds bridge limit: targets");
+        assert_eq!(
+            count_table(&connection, "events").expect("count events after rejected request"),
+            0
+        );
+    }
+
+    #[test]
+    fn tauri_bridge_event_write_rejects_over_limit_payload_without_persisting() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+        seed_workspaces(&connection).expect("seed workspaces");
+
+        for (field, over_limit_value) in [
+            ("summary", "x".repeat(4097)),
+            (
+                "metadata_json",
+                format!("{{\"payload\":\"{}\"}}", "x".repeat(16_384)),
+            ),
+        ] {
+            let mut request = valid_event_create_request();
+            if field == "summary" {
+                request.summary = over_limit_value;
+            } else {
+                request.metadata_json = over_limit_value;
+            }
+
+            let error = create_event_with_connection(&connection, request)
+                .expect_err("over-limit event payload must be rejected");
+
+            assert_eq!(
+                error,
+                format!("event request exceeds bridge limit: {field}")
+            );
+        }
+
+        assert_eq!(
+            count_table(&connection, "events").expect("count events after rejected requests"),
+            0
+        );
+    }
+
+    #[test]
+    fn tauri_bridge_settings_reject_secrets_invalid_json_and_do_not_persist() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+
+        let secret_preference = upsert_local_preference_with_connection(
+            &connection,
+            LocalPreferenceRequest {
+                key: "ui.api_key".to_string(),
+                value_json: "\"not stored\"".to_string(),
+                value_type: "string".to_string(),
+                scope: "app".to_string(),
+                description: "secret-like key".to_string(),
+            },
+        )
+        .expect_err("secret-like preference must be rejected");
+        assert!(secret_preference.contains("secret-like"));
+
+        let invalid_preference = upsert_local_preference_with_connection(
+            &connection,
+            LocalPreferenceRequest {
+                key: "ui.bad".to_string(),
+                value_json: "{not json}".to_string(),
+                value_type: "json".to_string(),
+                scope: "app".to_string(),
+                description: "invalid json".to_string(),
+            },
+        )
+        .expect_err("invalid preference JSON must be rejected");
+        assert!(invalid_preference.contains("InvalidJson"));
+
+        let secret_integration = upsert_integration_status_with_connection(
+            &connection,
+            IntegrationStatusRequest {
+                integration_key: "gmail".to_string(),
+                display_name: "Gmail".to_string(),
+                status: "configured".to_string(),
+                config_json: "{\"refresh_token\":\"abc123\"}".to_string(),
+                credential_ref: None,
+                last_checked_at: None,
+            },
+        )
+        .expect_err("secret-like integration metadata must be rejected");
+        assert!(secret_integration.contains("secret-like"));
+
+        assert!(list_local_preferences_with_connection(&connection, None)
+            .expect("list preferences")
+            .is_empty());
+        assert!(list_integration_statuses_with_connection(&connection)
+            .expect("list statuses")
+            .is_empty());
     }
 
     #[test]
