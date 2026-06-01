@@ -290,6 +290,23 @@ fn validate_existing_directory(path: &Path) -> std::io::Result<Option<std::io::R
     }
 }
 
+fn validate_managed_file_path(path: &Path, label: &str) -> std::io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("{} {} exists and is a symlink", label, display_path(path)),
+        )),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn open_foundation_database(path: &Path) -> Result<Connection, Box<dyn std::error::Error>> {
+    validate_managed_file_path(path, "database")?;
+    Ok(Connection::open(path)?)
+}
+
 fn ensure_foundation() -> Result<FoundationStatus, Box<dyn std::error::Error>> {
     let home = home_dir()?;
     let visible_root = home.join("Zoid");
@@ -301,7 +318,7 @@ fn ensure_foundation() -> Result<FoundationStatus, Box<dyn std::error::Error>> {
     }
     ensure_app_support_paths(&app_support_paths)?;
 
-    let connection = Connection::open(&app_support_paths.database_path)?;
+    let connection = open_foundation_database(&app_support_paths.database_path)?;
     run_migrations(&connection)?;
     ensure_workspace_schema_compatibility(&connection)?;
     seed_workspaces(&connection)?;
@@ -689,9 +706,10 @@ fn line_suffix(line: &str) -> &str {
 }
 
 fn write_safe_log(logs_dir: &Path, scope: &str, content: &str) -> std::io::Result<SafeLogWrite> {
-    fs::create_dir_all(logs_dir)?;
+    ensure_directory(logs_dir)?;
     let safe_scope = safe_log_scope(scope);
     let path = logs_dir.join(format!("{}.log", safe_scope));
+    validate_managed_file_path(&path, "log file")?;
     let redacted = redact_secrets(content);
     let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
     let mut line = redacted.text;
@@ -1067,6 +1085,33 @@ mod tests {
         fs::remove_dir_all(home).ok();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn foundation_database_open_rejects_symlinked_database_file_before_sqlite() {
+        let home = temp_home("foundation-db-symlink");
+        let paths = AppSupportPaths::for_home(&home);
+        let target = home.join("target.sqlite");
+        fs::create_dir_all(&paths.root).expect("create app support root");
+        fs::write(&target, "not opened by sqlite").expect("write symlink target");
+        std::os::unix::fs::symlink(&target, &paths.database_path).expect("create database symlink");
+
+        let error = open_foundation_database(&paths.database_path)
+            .expect_err("database symlink must be rejected before sqlite open");
+
+        assert!(error.to_string().contains("database"));
+        assert!(error.to_string().contains("symlink"));
+        assert_eq!(
+            fs::read_to_string(&target).expect("read target after rejected open"),
+            "not opened by sqlite"
+        );
+        assert!(fs::symlink_metadata(&paths.database_path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        fs::remove_dir_all(home).ok();
+    }
+
     #[test]
     fn migrations_seed_core_workspaces() {
         let connection = Connection::open_in_memory().expect("open in-memory sqlite");
@@ -1218,6 +1263,31 @@ mod tests {
         assert!(stored.contains("visible output"));
 
         fs::remove_dir_all(logs_dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn safe_log_writer_rejects_symlinked_log_file_before_append() {
+        let logs_dir = std::env::temp_dir().join(format!("zoid-log-symlink-{}", now_millis()));
+        let target = logs_dir.with_extension("target.log");
+        fs::create_dir_all(&logs_dir).expect("create logs dir");
+        fs::write(&target, "original target content\n").expect("write symlink target");
+        std::os::unix::fs::symlink(&target, logs_dir.join("agent.log"))
+            .expect("create managed log symlink");
+
+        let error = write_safe_log(&logs_dir, "agent", "new content")
+            .expect_err("log symlink must be rejected before append");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(error.to_string().contains("log file"));
+        assert!(error.to_string().contains("symlink"));
+        assert_eq!(
+            fs::read_to_string(&target).expect("read target after rejected append"),
+            "original target content\n"
+        );
+
+        fs::remove_dir_all(logs_dir).ok();
+        fs::remove_file(target).ok();
     }
 
     #[test]
