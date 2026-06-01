@@ -924,6 +924,40 @@ struct EntityLinkInput<'a> {
     metadata_json: &'a str,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+struct EntityLinkCreateRequest<'a> {
+    id: &'a str,
+    source_type: &'a str,
+    source_id: &'a str,
+    target_type: &'a str,
+    target_id: &'a str,
+    relation_type: &'a str,
+    created_by_actor_type: &'a str,
+    metadata_json: &'a str,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+struct EntityLinkListFilter<'a> {
+    entity_type: &'a str,
+    entity_id: &'a str,
+    relation_type: Option<&'a str>,
+    counterpart_type: Option<&'a str>,
+}
+
+const ALLOWED_ENTITY_LINK_TYPES: &[&str] = &[
+    "task",
+    "note",
+    "product",
+    "file",
+    "repo",
+    "run",
+    "email",
+    "event",
+    "browser_capture",
+];
+
 #[tauri::command]
 fn get_foundation_status() -> Result<FoundationStatus, String> {
     ensure_foundation().map_err(|error| error.to_string())
@@ -2293,6 +2327,153 @@ fn list_entity_links_for_source(
             rows.collect::<rusqlite::Result<Vec<_>>>()
         })
         .map_err(|error| map_repository_error("entity_links", error))
+}
+
+#[allow(dead_code)]
+fn create_entity_link(
+    connection: &Connection,
+    input: EntityLinkCreateRequest<'_>,
+) -> RepoResult<EntityLinkRecord> {
+    validate_entity_link_request(input)?;
+    validate_json_field("metadata_json", input.metadata_json)?;
+    let metadata_json = redact_metadata_json(input.metadata_json);
+
+    insert_or_get_entity_link(
+        connection,
+        EntityLinkInput {
+            id: input.id,
+            source_type: input.source_type,
+            source_id: input.source_id,
+            target_type: input.target_type,
+            target_id: input.target_id,
+            relation_type: input.relation_type,
+            created_by_actor_type: input.created_by_actor_type,
+            metadata_json: &metadata_json,
+        },
+    )
+}
+
+#[allow(dead_code)]
+fn get_entity_link(connection: &Connection, id: &str) -> RepoResult<Option<EntityLinkRecord>> {
+    validate_non_empty_entity_link_field("id", id)?;
+    read_entity_link(connection, id)
+}
+
+#[allow(dead_code)]
+fn list_entity_links_by_source(
+    connection: &Connection,
+    filter: EntityLinkListFilter<'_>,
+) -> RepoResult<Vec<EntityLinkRecord>> {
+    validate_entity_link_list_filter(filter)?;
+    connection
+        .prepare(
+            "
+            select id, source_type, source_id, target_type, target_id, relation_type,
+                   created_by_actor_type, metadata_json
+            from entity_links
+            where source_type = ?1
+              and source_id = ?2
+              and (?3 is null or relation_type = ?3)
+              and (?4 is null or target_type = ?4)
+            order by relation_type asc, target_type asc, target_id asc, id asc
+            ",
+        )
+        .and_then(|mut statement| {
+            let rows = statement.query_map(
+                params![
+                    filter.entity_type,
+                    filter.entity_id,
+                    filter.relation_type,
+                    filter.counterpart_type
+                ],
+                entity_link_from_row,
+            )?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map_err(|error| map_repository_error("entity_links", error))
+}
+
+#[allow(dead_code)]
+fn list_entity_links_by_target(
+    connection: &Connection,
+    filter: EntityLinkListFilter<'_>,
+) -> RepoResult<Vec<EntityLinkRecord>> {
+    validate_entity_link_list_filter(filter)?;
+    connection
+        .prepare(
+            "
+            select id, source_type, source_id, target_type, target_id, relation_type,
+                   created_by_actor_type, metadata_json
+            from entity_links
+            where target_type = ?1
+              and target_id = ?2
+              and (?3 is null or relation_type = ?3)
+              and (?4 is null or source_type = ?4)
+            order by source_type asc, source_id asc, relation_type asc, id asc
+            ",
+        )
+        .and_then(|mut statement| {
+            let rows = statement.query_map(
+                params![
+                    filter.entity_type,
+                    filter.entity_id,
+                    filter.relation_type,
+                    filter.counterpart_type
+                ],
+                entity_link_from_row,
+            )?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map_err(|error| map_repository_error("entity_links", error))
+}
+
+fn validate_entity_link_request(input: EntityLinkCreateRequest<'_>) -> RepoResult<()> {
+    validate_non_empty_entity_link_field("id", input.id)?;
+    validate_entity_link_type("source_type", input.source_type)?;
+    validate_non_empty_entity_link_field("source_id", input.source_id)?;
+    validate_entity_link_type("target_type", input.target_type)?;
+    validate_non_empty_entity_link_field("target_id", input.target_id)?;
+    validate_non_empty_entity_link_field("relation_type", input.relation_type)?;
+    validate_non_empty_entity_link_field("created_by_actor_type", input.created_by_actor_type)?;
+    Ok(())
+}
+
+fn validate_entity_link_list_filter(filter: EntityLinkListFilter<'_>) -> RepoResult<()> {
+    validate_entity_link_type("entity_type", filter.entity_type)?;
+    validate_non_empty_entity_link_field("entity_id", filter.entity_id)?;
+    if let Some(relation_type) = filter.relation_type {
+        validate_non_empty_entity_link_field("relation_type", relation_type)?;
+    }
+    if let Some(counterpart_type) = filter.counterpart_type {
+        validate_entity_link_type("counterpart_type", counterpart_type)?;
+    }
+    Ok(())
+}
+
+fn validate_entity_link_type(field: &'static str, entity_type: &str) -> RepoResult<()> {
+    validate_non_empty_entity_link_field(field, entity_type)?;
+    if ALLOWED_ENTITY_LINK_TYPES.contains(&entity_type) {
+        Ok(())
+    } else {
+        Err(entity_link_constraint(format!(
+            "unsupported {field}: {entity_type}"
+        )))
+    }
+}
+
+fn validate_non_empty_entity_link_field(field: &'static str, value: &str) -> RepoResult<()> {
+    if value.trim().is_empty() {
+        Err(entity_link_constraint(format!("{field} must not be empty")))
+    } else {
+        Ok(())
+    }
+}
+
+fn entity_link_constraint(message: String) -> RepositoryError {
+    RepositoryError::Constraint {
+        entity: "entity_links",
+        message,
+    }
 }
 
 fn write_foundation_event(connection: &Connection) -> rusqlite::Result<()> {
@@ -4368,6 +4549,388 @@ mod tests {
         );
 
         assert!(matches!(error, RepositoryError::Constraint { .. }));
+    }
+
+    #[test]
+    fn entity_link_service_creates_reads_and_lists_task_note_links() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+
+        let created = create_entity_link(
+            &connection,
+            EntityLinkCreateRequest {
+                id: "link-task-note-001",
+                source_type: "task",
+                source_id: "task-001",
+                target_type: "note",
+                target_id: "note-001",
+                relation_type: "references",
+                created_by_actor_type: "agent",
+                metadata_json: "{\"rank\":1}",
+            },
+        )
+        .expect("create task to note entity link");
+
+        assert_eq!(created.id, "link-task-note-001");
+        assert_eq!(created.source_type, "task");
+        assert_eq!(created.source_id, "task-001");
+        assert_eq!(created.target_type, "note");
+        assert_eq!(created.target_id, "note-001");
+        assert_eq!(created.relation_type, "references");
+        assert_eq!(created.created_by_actor_type, "agent");
+        assert_eq!(created.metadata_json, "{\"rank\":1}");
+
+        assert_eq!(
+            get_entity_link(&connection, "link-task-note-001")
+                .expect("read created link")
+                .expect("created link exists"),
+            created
+        );
+
+        let source_links = list_entity_links_by_source(
+            &connection,
+            EntityLinkListFilter {
+                entity_type: "task",
+                entity_id: "task-001",
+                relation_type: None,
+                counterpart_type: None,
+            },
+        )
+        .expect("list by source");
+        assert_eq!(source_links, vec![created.clone()]);
+
+        let target_links = list_entity_links_by_target(
+            &connection,
+            EntityLinkListFilter {
+                entity_type: "note",
+                entity_id: "note-001",
+                relation_type: None,
+                counterpart_type: None,
+            },
+        )
+        .expect("list by target");
+        assert_eq!(target_links, vec![created]);
+    }
+
+    #[test]
+    fn entity_link_service_is_idempotent_but_rejects_id_collision_for_different_tuple() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+
+        let first = create_entity_link(
+            &connection,
+            EntityLinkCreateRequest {
+                id: "link-idempotent-001",
+                source_type: "task",
+                source_id: "task-001",
+                target_type: "note",
+                target_id: "note-001",
+                relation_type: "references",
+                created_by_actor_type: "agent",
+                metadata_json: "{}",
+            },
+        )
+        .expect("create original link");
+
+        let duplicate = create_entity_link(
+            &connection,
+            EntityLinkCreateRequest {
+                id: "link-idempotent-002",
+                source_type: "task",
+                source_id: "task-001",
+                target_type: "note",
+                target_id: "note-001",
+                relation_type: "references",
+                created_by_actor_type: "agent",
+                metadata_json: "{\"ignored\":true}",
+            },
+        )
+        .expect("duplicate logical tuple returns existing row");
+        assert_eq!(duplicate, first);
+
+        let id_collision = create_entity_link(
+            &connection,
+            EntityLinkCreateRequest {
+                id: "link-idempotent-001",
+                source_type: "task",
+                source_id: "task-002",
+                target_type: "note",
+                target_id: "note-002",
+                relation_type: "references",
+                created_by_actor_type: "agent",
+                metadata_json: "{}",
+            },
+        )
+        .expect_err("same id with different logical tuple fails");
+        assert!(matches!(id_collision, RepositoryError::Constraint { .. }));
+    }
+
+    #[test]
+    fn entity_link_service_validates_allowed_entity_types_and_required_fields_before_persistence() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+
+        for entity_type in [
+            "task",
+            "note",
+            "product",
+            "file",
+            "repo",
+            "run",
+            "email",
+            "event",
+            "browser_capture",
+        ] {
+            create_entity_link(
+                &connection,
+                EntityLinkCreateRequest {
+                    id: &format!("link-{entity_type}"),
+                    source_type: entity_type,
+                    source_id: &format!("{entity_type}-source"),
+                    target_type: "task",
+                    target_id: "task-target",
+                    relation_type: "related_to",
+                    created_by_actor_type: "system",
+                    metadata_json: "{}",
+                },
+            )
+            .unwrap_or_else(|error| panic!("{entity_type} should be allowed: {error:?}"));
+        }
+
+        for (field_name, id, source_type, source_id, target_type, target_id, relation_type) in [
+            (
+                "source_type",
+                "bad-source-type",
+                "unknown",
+                "source",
+                "task",
+                "target",
+                "relates",
+            ),
+            (
+                "source_type",
+                "empty-source-type",
+                "",
+                "source",
+                "task",
+                "target",
+                "relates",
+            ),
+            (
+                "target_type",
+                "bad-target-type",
+                "task",
+                "source",
+                "unknown",
+                "target",
+                "relates",
+            ),
+            (
+                "target_type",
+                "empty-target-type",
+                "task",
+                "source",
+                "",
+                "target",
+                "relates",
+            ),
+            (
+                "source_id",
+                "empty-source-id",
+                "task",
+                "",
+                "note",
+                "target",
+                "relates",
+            ),
+            (
+                "target_id",
+                "empty-target-id",
+                "task",
+                "source",
+                "note",
+                "",
+                "relates",
+            ),
+            (
+                "relation_type",
+                "empty-relation",
+                "task",
+                "source",
+                "note",
+                "target",
+                "",
+            ),
+        ] {
+            let error = match create_entity_link(
+                &connection,
+                EntityLinkCreateRequest {
+                    id,
+                    source_type,
+                    source_id,
+                    target_type,
+                    target_id,
+                    relation_type,
+                    created_by_actor_type: "system",
+                    metadata_json: "{}",
+                },
+            ) {
+                Ok(_) => panic!("{field_name} should be rejected"),
+                Err(error) => error,
+            };
+            assert!(matches!(
+                error,
+                RepositoryError::Constraint {
+                    entity: "entity_links",
+                    ..
+                }
+            ));
+        }
+
+        let persisted_count: i64 = connection
+            .query_row("select count(*) from entity_links", [], |row| row.get(0))
+            .expect("count entity links");
+        assert_eq!(persisted_count, 9);
+    }
+
+    #[test]
+    fn entity_link_service_validates_and_redacts_metadata_before_persistence() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+
+        let link = create_entity_link(
+            &connection,
+            EntityLinkCreateRequest {
+                id: "link-redacted-metadata",
+                source_type: "task",
+                source_id: "task-001",
+                target_type: "note",
+                target_id: "note-001",
+                relation_type: "references",
+                created_by_actor_type: "agent",
+                metadata_json: "{\"api_key\":\"raw-secret\",\"nested\":{\"password\":\"pw\"},\"safe\":\"visible\"}",
+            },
+        )
+        .expect("create redacted metadata link");
+        let persisted_metadata: Value =
+            serde_json::from_str(&link.metadata_json).expect("metadata remains valid JSON");
+        assert_eq!(persisted_metadata["api_key"], "[REDACTED]");
+        assert_eq!(persisted_metadata["nested"]["password"], "[REDACTED]");
+        assert_eq!(persisted_metadata["safe"], "visible");
+
+        let invalid_error = create_entity_link(
+            &connection,
+            EntityLinkCreateRequest {
+                id: "link-invalid-metadata",
+                source_type: "task",
+                source_id: "task-002",
+                target_type: "note",
+                target_id: "note-002",
+                relation_type: "references",
+                created_by_actor_type: "agent",
+                metadata_json: "{not json}",
+            },
+        )
+        .expect_err("invalid metadata is rejected");
+        assert!(matches!(
+            invalid_error,
+            RepositoryError::InvalidJson {
+                field: "metadata_json",
+                ..
+            }
+        ));
+        assert!(get_entity_link(&connection, "link-invalid-metadata")
+            .expect("read invalid id")
+            .is_none());
+    }
+
+    #[test]
+    fn entity_link_service_lists_directionally_with_deterministic_filtering() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+
+        for (id, source_type, source_id, target_type, target_id, relation_type) in [
+            ("link-3", "task", "task-001", "note", "note-c", "mentions"),
+            ("link-1", "task", "task-001", "file", "file-a", "attaches"),
+            ("link-2", "task", "task-001", "note", "note-b", "references"),
+            (
+                "link-4",
+                "email",
+                "email-001",
+                "note",
+                "note-b",
+                "references",
+            ),
+        ] {
+            create_entity_link(
+                &connection,
+                EntityLinkCreateRequest {
+                    id,
+                    source_type,
+                    source_id,
+                    target_type,
+                    target_id,
+                    relation_type,
+                    created_by_actor_type: "system",
+                    metadata_json: "{}",
+                },
+            )
+            .expect("create list fixture link");
+        }
+
+        let source_links = list_entity_links_by_source(
+            &connection,
+            EntityLinkListFilter {
+                entity_type: "task",
+                entity_id: "task-001",
+                relation_type: None,
+                counterpart_type: None,
+            },
+        )
+        .expect("list task source links");
+        assert_eq!(
+            source_links
+                .iter()
+                .map(|link| link.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["link-1", "link-3", "link-2"]
+        );
+
+        let filtered_source_links = list_entity_links_by_source(
+            &connection,
+            EntityLinkListFilter {
+                entity_type: "task",
+                entity_id: "task-001",
+                relation_type: Some("references"),
+                counterpart_type: Some("note"),
+            },
+        )
+        .expect("list filtered task source links");
+        assert_eq!(
+            filtered_source_links
+                .iter()
+                .map(|link| link.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["link-2"]
+        );
+
+        let target_links = list_entity_links_by_target(
+            &connection,
+            EntityLinkListFilter {
+                entity_type: "note",
+                entity_id: "note-b",
+                relation_type: Some("references"),
+                counterpart_type: None,
+            },
+        )
+        .expect("list target links");
+        assert_eq!(
+            target_links
+                .iter()
+                .map(|link| link.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["link-4", "link-2"]
+        );
     }
 
     fn assert_table_has_columns(connection: &Connection, table: &str, expected_columns: &[&str]) {
