@@ -198,6 +198,7 @@ const ACTION_POLICY_CATEGORIES: &[&str] = &[
     "change_credentials_settings_integrations",
     "create_calendar_event",
     "edit_delete_calendar_event",
+    "external_api_write",
 ];
 
 const MIGRATIONS: &[Migration] = &[
@@ -385,6 +386,103 @@ struct ActionPolicyDecision {
     reviewer_required: ReviewerRequirement,
     human_confirmation: HumanConfirmation,
     reason: String,
+    allowed_now: bool,
+    requires_confirmation: bool,
+    requires_reviewer: bool,
+    requires_clear_task: bool,
+    requires_gate: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ActionType {
+    Read,
+    Create,
+    Update,
+    Delete,
+    Send,
+    Publish,
+    Deploy,
+    File,
+    Process,
+    Unknown,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ActionScope {
+    LocalPrivate,
+    LocalVisible,
+    CodeRepository,
+    Integration,
+    External,
+    Unknown,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ActionConsequence {
+    HarmlessLocal,
+    LocalWrite,
+    ExternalWrite,
+    PublicRelease,
+    Destructive,
+    AutomationExecution,
+    CredentialOrIntegrationChange,
+    Unknown,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ActionRequest {
+    action_type: ActionType,
+    target: Option<String>,
+    scope: Option<ActionScope>,
+    consequence: Option<ActionConsequence>,
+    bulk: bool,
+    destructive: bool,
+}
+
+#[allow(dead_code)]
+impl ActionRequest {
+    fn new(action_type: ActionType) -> Self {
+        Self {
+            action_type,
+            target: None,
+            scope: None,
+            consequence: None,
+            bulk: false,
+            destructive: false,
+        }
+    }
+
+    fn target(mut self, target: &str) -> Self {
+        self.target = Some(target.to_string());
+        self
+    }
+
+    fn scope(mut self, scope: ActionScope) -> Self {
+        self.scope = Some(scope);
+        self
+    }
+
+    fn consequence(mut self, consequence: ActionConsequence) -> Self {
+        self.consequence = Some(consequence);
+        self
+    }
+
+    fn bulk(mut self, bulk: bool) -> Self {
+        self.bulk = bulk;
+        self
+    }
+
+    fn destructive(mut self, destructive: bool) -> Self {
+        self.destructive = destructive;
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2000,11 +2098,173 @@ fn safe_log_scope(scope: &str) -> String {
     }
 }
 
+#[allow(dead_code)]
+fn evaluate_action_request(request: &ActionRequest) -> ActionPolicyDecision {
+    let category = classify_action_request(request);
+    evaluate_action_policy(category)
+}
+
+#[allow(dead_code)]
+fn classify_action_request(request: &ActionRequest) -> &'static str {
+    let target = request
+        .target
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if matches!(request.action_type, ActionType::Unknown)
+        || matches!(request.scope, Some(ActionScope::Unknown))
+        || matches!(request.consequence, Some(ActionConsequence::Unknown))
+    {
+        return "unknown_action";
+    }
+
+    if request.bulk || target_contains(&target, &["bulk", "many", "batch", "mass"]) {
+        return "bulk_file_operations";
+    }
+
+    if request.destructive || matches!(request.consequence, Some(ActionConsequence::Destructive)) {
+        if matches!(request.scope, Some(ActionScope::External)) {
+            return "unknown_action";
+        }
+        return "delete_trash_files";
+    }
+
+    if target_contains(
+        &target,
+        &[
+            "credential",
+            "credentials",
+            "secret",
+            "token",
+            "settings",
+            "integration",
+            "oauth",
+        ],
+    ) || matches!(
+        request.consequence,
+        Some(ActionConsequence::CredentialOrIntegrationChange)
+    ) {
+        return "change_credentials_settings_integrations";
+    }
+
+    if target_contains(&target, &["commit", "push", "merge", "pull request", "git"]) {
+        return "commit_push_merge";
+    }
+
+    if target_contains(
+        &target,
+        &["deploy", "redeploy", "rollback", "production", "staging"],
+    ) || matches!(request.action_type, ActionType::Deploy)
+    {
+        return "deploy_redeploy_rollback";
+    }
+
+    if target_contains(&target, &["email", "gmail", "message", "recipient"])
+        || matches!(request.action_type, ActionType::Send)
+    {
+        return "send_email";
+    }
+
+    if target_contains(
+        &target,
+        &["publish", "schedule", "social", "post", "content"],
+    ) || matches!(request.action_type, ActionType::Publish)
+        || matches!(request.consequence, Some(ActionConsequence::PublicRelease))
+    {
+        return "publish_schedule_content";
+    }
+
+    if target_contains(&target, &["automation schedule", "cron", "recurring job"]) {
+        return "change_automation_schedule";
+    }
+
+    if target_contains(
+        &target,
+        &[
+            "automation",
+            "process",
+            "script",
+            "command",
+            "execute",
+            "run",
+        ],
+    ) || matches!(request.action_type, ActionType::Process)
+        || matches!(
+            request.consequence,
+            Some(ActionConsequence::AutomationExecution)
+        )
+    {
+        return "run_existing_automation";
+    }
+
+    if target_contains(&target, &["calendar", "event"]) {
+        return match request.action_type {
+            ActionType::Delete | ActionType::Update => "edit_delete_calendar_event",
+            _ => "create_calendar_event",
+        };
+    }
+
+    if matches!(request.consequence, Some(ActionConsequence::ExternalWrite))
+        || target_contains(&target, &["external api", "api record", "remote api"])
+    {
+        return "external_api_write";
+    }
+
+    if matches!(request.scope, Some(ActionScope::CodeRepository))
+        || target_contains(
+            &target,
+            &["code repo", "repository", "source file", "code file"],
+        )
+    {
+        return "modify_code_repo_files";
+    }
+
+    match request.action_type {
+        ActionType::Read => {
+            if target_contains(&target, &["gmail", "calendar"])
+                || matches!(request.scope, Some(ActionScope::Integration))
+            {
+                "read_gmail_calendar"
+            } else {
+                "read_local_app_data"
+            }
+        }
+        ActionType::Create => {
+            if target_contains(&target, &["note", "markdown"])
+                || matches!(request.scope, Some(ActionScope::LocalPrivate))
+            {
+                "create_private_markdown_note"
+            } else {
+                "create_local_task"
+            }
+        }
+        ActionType::Update => {
+            if target_contains(&target, &["file", "visible"])
+                || matches!(request.scope, Some(ActionScope::LocalVisible))
+            {
+                "modify_visible_non_code_file"
+            } else {
+                "unknown_action"
+            }
+        }
+        ActionType::Delete => "delete_trash_files",
+        ActionType::File => "move_rename_copy_file",
+        ActionType::Send => "send_email",
+        ActionType::Publish => "publish_schedule_content",
+        ActionType::Deploy => "deploy_redeploy_rollback",
+        ActionType::Process => "run_existing_automation",
+        ActionType::Unknown => "unknown_action",
+    }
+}
+
+#[allow(dead_code)]
+fn target_contains(target: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| target.contains(needle))
+}
+
 fn evaluate_action_policy(category: &str) -> ActionPolicyDecision {
-    let normalized = category
-        .trim()
-        .to_ascii_lowercase()
-        .replace([' ', '-'], "_");
+    let normalized = normalize_action_category(category);
     match normalized.as_str() {
         "read_local_app_data" => decision(
             category,
@@ -2139,6 +2399,13 @@ fn evaluate_action_policy(category: &str) -> ActionPolicyDecision {
             HumanConfirmation::Always,
             "Calendar edits/deletes require before/after preview.",
         ),
+        "external_api_write" => decision(
+            category,
+            ActionPolicy::AskBeforeAction,
+            ReviewerRequirement::Maybe,
+            HumanConfirmation::Yes,
+            "External API writes need target/service, payload diff, and rollback preview.",
+        ),
         _ => decision(
             category,
             ActionPolicy::BlockUntilConfirmed,
@@ -2149,6 +2416,13 @@ fn evaluate_action_policy(category: &str) -> ActionPolicyDecision {
     }
 }
 
+fn normalize_action_category(category: &str) -> String {
+    category
+        .trim()
+        .to_ascii_lowercase()
+        .replace([' ', '-'], "_")
+}
+
 fn decision(
     category: &str,
     policy: ActionPolicy,
@@ -2156,12 +2430,27 @@ fn decision(
     human_confirmation: HumanConfirmation,
     reason: &str,
 ) -> ActionPolicyDecision {
+    let category = normalize_action_category(category);
+    let requires_confirmation = !matches!(human_confirmation, HumanConfirmation::None);
+    let requires_reviewer = !matches!(reviewer_required, ReviewerRequirement::None);
+    let requires_clear_task = matches!(policy, ActionPolicy::RequireClearTask);
+    let allowed_now = matches!(policy, ActionPolicy::Allow)
+        && !requires_confirmation
+        && !requires_reviewer
+        && !requires_clear_task;
+    let requires_gate = !allowed_now;
+
     ActionPolicyDecision {
-        category: category.to_string(),
+        category,
         policy,
         reviewer_required,
         human_confirmation,
         reason: reason.to_string(),
+        allowed_now,
+        requires_confirmation,
+        requires_reviewer,
+        requires_clear_task,
+        requires_gate,
     }
 }
 
@@ -3782,6 +4071,174 @@ mod tests {
 
         fs::remove_dir_all(logs_dir).ok();
         fs::remove_file(target).ok();
+    }
+
+    #[test]
+    fn action_policy_evaluates_generic_requests_into_canonical_categories_and_gates() {
+        let email = evaluate_action_request(
+            &ActionRequest::new(ActionType::Send)
+                .target("gmail")
+                .consequence(ActionConsequence::ExternalWrite),
+        );
+        assert_eq!(email.category, "send_email");
+        assert_eq!(email.policy, ActionPolicy::AskBeforeAction);
+        assert!(!email.allowed_now);
+        assert!(email.requires_confirmation);
+        assert!(email.requires_gate);
+        assert!(email.reason.contains("Email"));
+
+        let harmless_note = evaluate_action_request(
+            &ActionRequest::new(ActionType::Create)
+                .target("local markdown note")
+                .scope(ActionScope::LocalPrivate),
+        );
+        assert_eq!(harmless_note.category, "create_private_markdown_note");
+        assert_eq!(harmless_note.policy, ActionPolicy::Allow);
+        assert!(harmless_note.allowed_now);
+        assert!(!harmless_note.requires_confirmation);
+        assert!(!harmless_note.requires_reviewer);
+        assert!(!harmless_note.requires_clear_task);
+    }
+
+    #[test]
+    fn action_policy_covers_all_action_dimensions_and_consequential_hints() {
+        let cases = [
+            (
+                ActionRequest::new(ActionType::Read).target("local app data"),
+                "read_local_app_data",
+            ),
+            (
+                ActionRequest::new(ActionType::Create).target("task"),
+                "create_local_task",
+            ),
+            (
+                ActionRequest::new(ActionType::Update).target("code repo"),
+                "modify_code_repo_files",
+            ),
+            (
+                ActionRequest::new(ActionType::Delete)
+                    .target("file")
+                    .destructive(true),
+                "delete_trash_files",
+            ),
+            (
+                ActionRequest::new(ActionType::Send).target("email"),
+                "send_email",
+            ),
+            (
+                ActionRequest::new(ActionType::Publish).target("social post"),
+                "publish_schedule_content",
+            ),
+            (
+                ActionRequest::new(ActionType::Deploy).target("production"),
+                "deploy_redeploy_rollback",
+            ),
+            (
+                ActionRequest::new(ActionType::File)
+                    .target("bulk rename")
+                    .bulk(true),
+                "bulk_file_operations",
+            ),
+            (
+                ActionRequest::new(ActionType::Process).target("automation run"),
+                "run_existing_automation",
+            ),
+            (
+                ActionRequest::new(ActionType::Update).target("credentials integration"),
+                "change_credentials_settings_integrations",
+            ),
+            (
+                ActionRequest::new(ActionType::Create).target("calendar event"),
+                "create_calendar_event",
+            ),
+            (
+                ActionRequest::new(ActionType::Update)
+                    .target("external api record")
+                    .consequence(ActionConsequence::ExternalWrite),
+                "external_api_write",
+            ),
+            (
+                ActionRequest::new(ActionType::Update).target("git commit"),
+                "commit_push_merge",
+            ),
+        ];
+
+        for (request, category) in cases {
+            let decision = evaluate_action_request(&request);
+            assert_eq!(
+                decision.category, category,
+                "category mismatch for {request:?}"
+            );
+            assert!(
+                !decision.reason.trim().is_empty(),
+                "missing reason for {category}"
+            );
+            if decision.policy == ActionPolicy::Allow {
+                assert!(
+                    decision.allowed_now,
+                    "allowed policy should execute now for {category}"
+                );
+            } else {
+                assert!(
+                    !decision.allowed_now,
+                    "gated policy must not execute now for {category}"
+                );
+                assert!(
+                    decision.requires_gate,
+                    "gated policy should expose gate boolean for {category}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn action_policy_unknown_or_unsafe_requests_fail_closed() {
+        let unknown =
+            evaluate_action_request(&ActionRequest::new(ActionType::Unknown).target("mystery"));
+        assert_eq!(unknown.category, "unknown_action");
+        assert_eq!(unknown.policy, ActionPolicy::BlockUntilConfirmed);
+        assert!(!unknown.allowed_now);
+        assert!(unknown.requires_confirmation);
+        assert!(unknown.requires_gate);
+        assert!(unknown.reason.to_ascii_lowercase().contains("fail closed"));
+
+        let unsafe_delete = evaluate_action_request(
+            &ActionRequest::new(ActionType::Delete)
+                .target("unclassified production resource")
+                .destructive(true)
+                .scope(ActionScope::External),
+        );
+        assert!(!unsafe_delete.allowed_now);
+        assert!(unsafe_delete.requires_confirmation);
+        assert!(unsafe_delete.requires_reviewer);
+    }
+
+    #[test]
+    fn seeded_action_policy_rows_match_evaluator_single_source_of_truth() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+        seed_action_policies(&connection).expect("idempotent reseed");
+
+        for category in ACTION_POLICY_CATEGORIES {
+            let decision = evaluate_action_policy(category);
+            let row: (String, String, String, String) = connection
+                .query_row(
+                    "select policy, reviewer_required, human_confirmation, reason from action_policies where category = ?1",
+                    params![category],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .expect("seeded action policy row");
+            assert_eq!(row.0, action_policy_as_str(decision.policy));
+            assert_eq!(
+                row.1,
+                reviewer_requirement_as_str(decision.reviewer_required)
+            );
+            assert_eq!(
+                row.2,
+                human_confirmation_as_str(decision.human_confirmation)
+            );
+            assert_eq!(row.3, decision.reason);
+        }
     }
 
     #[test]
