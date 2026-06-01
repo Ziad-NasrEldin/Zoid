@@ -77,7 +77,8 @@ Non-negotiable gates for every implementation slice:
   - 2026-06-01 completed local frontend base components (`SidebarItem`, `WorkspaceHeader`, `InfoCard`, `StatusBadge`, `EmptyState`, `BlockerState`, `InspectorPanel`, `InspectorCard`) in `src/App.tsx`, preserved truthful browser/native fallback behavior, fixed the blocker-state review gap, and final critique verdict APPROVED.
 - [x] P1.20 Frontend integration: render all workspace names from real workspace registry; no hardcoded fake connected states.
   - 2026-06-01 completed frontend workspace-registry integration with `buildWorkspaceRegistryView`, native `status.workspaces` rendering without fallback mixing, explicit browser-preview/checking source labels, visible source/count/truth copy in sidebar/registry/inspector, preserved native-empty-registry handling, no fake connected integration states, and final critique verdict APPROVED.
-- [ ] P1.21 Frontend integration: Today foundation/widgets from real local state or truthful empty/unconfigured states.
+- [x] P1.21 Frontend integration: Today foundation/widgets from real local state or truthful empty/unconfigured states.
+  - 2026-06-01 completed Today-specific foundation/widgets UI backed by native `get_foundation_status` when available and explicit browser/checking empty/unconfigured states otherwise. Added pure Today view-model test wired into `verify:local`; browser smoke passed with no console errors; final critique verdict APPROVED.
 - [ ] P1.22 Frontend: settings/status shell for paths, DB, Keychain, redaction, logging, policy, events, integrations.
 - [ ] P1.23 Frontend: confirmation UI primitives showing policy reason and required confirmation/review.
 - [ ] P1.24 Tests: Rust unit tests for redaction, logging, Keychain status, policy, events, entity links, path creation.

@@ -101,6 +101,9 @@ fi
 npm run test:rust
 pass "Rust tests passed"
 
+npm run test:frontend
+pass "frontend tests passed"
+
 npm run build
 pass "frontend build passed"
 

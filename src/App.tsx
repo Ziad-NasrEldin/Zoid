@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import "./App.css";
+import { buildTodayFoundationView, type TodayFoundationView, type TodayWidgetView } from "./todayFoundation";
 
 type WorkspaceRecord = {
   id: string;
@@ -284,6 +285,160 @@ function InspectorCard({ children, className = "" }: InspectorCardProps) {
   return <article className={`inspector-card${className ? ` ${className}` : ""}`}>{children}</article>;
 }
 
+type TodayMetricProps = {
+  label: string;
+  value: string;
+};
+
+function TodayMetric({ label, value }: TodayMetricProps) {
+  return (
+    <div className="today-metric">
+      <dt>{label}</dt>
+      <dd>{value}</dd>
+    </div>
+  );
+}
+
+type TodayWidgetCardProps = {
+  widget: TodayWidgetView;
+};
+
+function TodayWidgetCard({ widget }: TodayWidgetCardProps) {
+  return (
+    <InfoCard className="today-widget-card">
+      <div className="card-header compact">
+        <div>
+          <p className="eyebrow">Today widget</p>
+          <h3>{widget.title}</h3>
+        </div>
+        <StatusBadge tone={widget.tone}>{widget.status}</StatusBadge>
+      </div>
+      <p>{widget.copy}</p>
+    </InfoCard>
+  );
+}
+
+type TodayWorkspaceOverviewProps = {
+  activeWorkspaceDescription: string;
+  activeWorkspaceLabel: string;
+  status: FoundationStatus | null;
+  statusError: string | null;
+  statusTone: StatusTone;
+  todayView: TodayFoundationView;
+  workspaceRegistry: WorkspaceRegistryView;
+  workspaces: WorkspaceRecord[];
+  activeWorkspaceId: string | undefined;
+  onSelectWorkspace: (workspaceId: string) => void;
+};
+
+function TodayWorkspaceOverview({
+  activeWorkspaceDescription,
+  activeWorkspaceLabel,
+  status,
+  statusError,
+  statusTone,
+  todayView,
+  workspaceRegistry,
+  workspaces,
+  activeWorkspaceId,
+  onSelectWorkspace,
+}: TodayWorkspaceOverviewProps) {
+  return (
+    <>
+      <article className="hero-card today-hero">
+        <div>
+          <p className="eyebrow">Today foundation</p>
+          <h3>{activeWorkspaceLabel}</h3>
+          <p>{todayView.heroCopy}</p>
+        </div>
+        <StatusBadge tone={statusTone}>{todayView.heroStatus}</StatusBadge>
+      </article>
+
+      <section className="dashboard-grid today-dashboard">
+        <InfoCard className="large-card today-foundation-card">
+          <div className="card-header">
+            <div>
+              <p className="eyebrow">Foundation overview</p>
+              <h3>{todayView.sourceLabel}</h3>
+            </div>
+            <StatusBadge tone={statusTone}>{statusError ? "Preview" : status ? "Native" : "Checking"}</StatusBadge>
+          </div>
+
+          <p>{activeWorkspaceDescription}</p>
+
+          <dl className="today-metric-grid">
+            <TodayMetric label="Registered workspaces" value={todayView.metrics.registeredWorkspaces} />
+            <TodayMetric label="Foundation events" value={todayView.metrics.foundationEvents} />
+            <TodayMetric label="Migration version" value={todayView.metrics.migrationVersion} />
+            <TodayMetric label="Starter directories" value={todayView.metrics.starterDirectories} />
+            <TodayMetric label="Secure safeguards" value={todayView.metrics.secureSafeguards} />
+            <TodayMetric label="Keychain status" value={todayView.metrics.keychainStatus} />
+          </dl>
+
+          {status ? (
+            <dl className="status-list today-path-list">
+              <div><dt>Visible root</dt><dd>{status.visible_user.root}</dd></div>
+              <div><dt>Starter directories</dt><dd>{status.visible_user.starter_directories.join(", ") || "—"}</dd></div>
+              <div><dt>App support</dt><dd>{status.app_support.root}</dd></div>
+              <div><dt>SQLite DB</dt><dd>{status.app_support.database_path}</dd></div>
+              <div><dt>Logs</dt><dd>{status.app_support.logs_dir}</dd></div>
+              <div><dt>Config</dt><dd>{status.app_support.config_dir}</dd></div>
+            </dl>
+          ) : (
+            <EmptyState icon="⌁">Native-only paths, migrations, events, secure readiness, and keychain status are unavailable in this browser/checking state.</EmptyState>
+          )}
+
+          <EmptyState icon="∞">Sample policy: {todayView.metrics.samplePolicy}. Consequential actions remain gated; no tasks, runs, or completions are simulated.</EmptyState>
+        </InfoCard>
+
+        <InfoCard>
+          <p className="eyebrow">Workspace registry</p>
+          <h3>{workspaceRegistry.sourceLabel}</h3>
+          <p>{workspaceRegistry.truthCopy}</p>
+          <div className={`registry-meta ${workspaceRegistry.source}`}>
+            <span>{workspaceRegistry.countLabel}</span>
+            <span>{status ? "Real native registry" : "UI-only preview data"}</span>
+          </div>
+          <div className="registry-list">
+            {workspaces.length > 0 ? workspaces.map((workspace) => (
+              <button
+                aria-current={workspace.id === activeWorkspaceId ? "page" : undefined}
+                className={workspace.id === activeWorkspaceId ? "registry-chip active" : "registry-chip"}
+                key={workspace.id}
+                onClick={() => onSelectWorkspace(workspace.id)}
+                type="button"
+              >
+                {workspace.label}
+              </button>
+            )) : <p className="muted-copy">The native registry returned no workspaces.</p>}
+          </div>
+        </InfoCard>
+
+        <TodayWidgetCard widget={todayView.widgets.tasks} />
+        <TodayWidgetCard widget={todayView.widgets.runs} />
+        <TodayWidgetCard widget={todayView.widgets.inbox} />
+        <TodayWidgetCard widget={todayView.widgets.integrations} />
+
+        <InfoCard className="today-widget-card">
+          <p className="eyebrow">Integration states</p>
+          <h3>Truthful setup</h3>
+          <ul className="integration-list compact-list">
+            {integrationStates.map((integration) => (
+              <li key={integration.name}>
+                <div>
+                  <strong>{integration.name}</strong>
+                  <span>{integration.state}</span>
+                </div>
+                <p>{integration.note}</p>
+              </li>
+            ))}
+          </ul>
+        </InfoCard>
+      </section>
+    </>
+  );
+}
+
 function App() {
   const [activeWorkspace, setActiveWorkspace] = useState("today");
   const [status, setStatus] = useState<FoundationStatus | null>(null);
@@ -311,6 +466,15 @@ function App() {
   const activeWorkspaceLabel = active?.label ?? "No workspaces registered";
   const activeWorkspaceDescription = active?.description ?? "The native workspace registry is empty.";
   const starterDirectoryCount = status?.visible_user.starter_directories.length ?? 0;
+  const todayView = useMemo(
+    () => buildTodayFoundationView({
+      countLabel: workspaceRegistry.countLabel,
+      source: workspaceRegistry.source,
+      sourceLabel: workspaceRegistry.sourceLabel,
+      status,
+    }),
+    [status, workspaceRegistry.countLabel, workspaceRegistry.source, workspaceRegistry.sourceLabel],
+  );
 
   return (
     <main className="zoid-shell">
@@ -355,7 +519,22 @@ function App() {
 
         <div className="split-view">
           <section className="primary-pane" aria-label="Workspace overview">
-            <article className="hero-card">
+            {active?.id === "today" ? (
+              <TodayWorkspaceOverview
+                activeWorkspaceDescription={activeWorkspaceDescription}
+                activeWorkspaceId={active?.id}
+                activeWorkspaceLabel={activeWorkspaceLabel}
+                onSelectWorkspace={setActiveWorkspace}
+                status={status}
+                statusError={statusError}
+                statusTone={statusTone}
+                todayView={todayView}
+                workspaceRegistry={workspaceRegistry}
+                workspaces={workspaces}
+              />
+            ) : (
+            <>
+              <article className="hero-card">
               <div>
                 <p className="eyebrow">Active workspace</p>
                 <h3>{activeWorkspaceLabel}</h3>
@@ -406,6 +585,7 @@ function App() {
                 <div className="registry-list">
                   {workspaces.length > 0 ? workspaces.map((workspace) => (
                     <button
+                      aria-current={workspace.id === active?.id ? "page" : undefined}
                       className={workspace.id === active?.id ? "registry-chip active" : "registry-chip"}
                       key={workspace.id}
                       onClick={() => setActiveWorkspace(workspace.id)}
@@ -424,6 +604,8 @@ function App() {
                 <EmptyState icon="⌘">Preview shell only. Consequential actions stay behind native status and review policy.</EmptyState>
               </InfoCard>
             </section>
+            </>
+            )}
           </section>
 
           <InspectorPanel label="Workspace details">

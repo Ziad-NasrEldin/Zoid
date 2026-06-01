@@ -556,6 +556,76 @@ input:focus-visible {
   margin-bottom: var(--space-12);
 }
 
+.card-header.compact {
+  margin-bottom: var(--space-8);
+}
+
+.today-hero {
+  align-items: flex-start;
+}
+
+.today-hero .badge {
+  flex: 0 0 auto;
+}
+
+.today-dashboard {
+  grid-template-columns: minmax(0, 1.05fr) minmax(240px, 0.95fr);
+}
+
+.today-foundation-card > p {
+  margin-top: 0;
+}
+
+.today-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-8);
+  margin: var(--space-13) 0 0;
+}
+
+.today-metric {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-9);
+  background: var(--material-subtle);
+}
+
+.today-metric dt {
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 730;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.today-metric dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.today-widget-card {
+  min-height: 178px;
+}
+
+.today-widget-card p:last-child {
+  margin-bottom: 0;
+}
+
+.today-path-list {
+  margin-top: var(--space-13);
+}
+
+.compact-list {
+  margin-top: var(--space-8);
+}
+
 .status-list,
 .active-summary dl {
   display: grid;
@@ -779,7 +849,9 @@ input:focus-visible {
   }
 
   .dashboard-grid,
-  .inspector-pane {
+  .inspector-pane,
+  .today-dashboard,
+  .today-metric-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 
