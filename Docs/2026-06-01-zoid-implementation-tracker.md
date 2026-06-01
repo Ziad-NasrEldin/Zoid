@@ -35,7 +35,8 @@ Non-negotiable gates for every implementation slice:
 
 - [x] P1.00 Git hygiene: preserve and commit already-approved Secure Foundation Services v1 working-tree changes.
   - 2026-06-01 preserved in commit after inspecting diff/review artifacts and rerunning `npm run verify:local` successfully.
-- [ ] P1.01 Discovery: inspect current app foundation, Tauri commands, UI state, package scripts, tests, review artifacts, DB/app-support behavior.
+- [x] P1.01 Discovery: inspect current app foundation, Tauri commands, UI state, package scripts, tests, review artifacts, DB/app-support behavior.
+  - 2026-06-01 inventory: `src-tauri/src/lib.rs` owns current foundation command, app-support/visible-folder creation, migrations, workspace seed, event writer, redaction, safe logging, action policy, and Rust tests. `src/App.tsx` is a single-shell React UI with fallback workspace registry and truthful native-status preview behavior. `scripts/verify-local.sh --skip-package` is the routine gate behind `npm run verify:local`; release/DMG gate remains `npm run verify:release`. Review artifacts include approved `secure-foundation-services-v1` plus earlier app/packaging/local-verification reviews. Current DB schema is only foundation workspaces/events/event_targets; deeper Phase 1 repository/settings/entity-link services remain pending.
 - [ ] P1.02 Backend/native: app-support path service for `~/Library/Application Support/Zoid` with logs, database, config, safe directory creation.
 - [ ] P1.03 Backend/native: visible user folder creation at `~/Zoid` with starter directories and non-destructive behavior.
 - [ ] P1.04 Database: SQLite connection management, migration runner, migration version tracking, fresh DB creation, idempotent re-run behavior.
