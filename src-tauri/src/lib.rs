@@ -4198,6 +4198,12 @@ mod tests {
         std::env::temp_dir().join(format!("zoid-{name}-{}", now_millis()))
     }
 
+    fn count_rows(connection: &Connection, sql: &str) -> i64 {
+        connection
+            .query_row(sql, [], |row| row.get(0))
+            .expect("count rows")
+    }
+
     fn valid_event_create_request() -> EventCreateRequest {
         EventCreateRequest {
             action_type: "create_local_task".to_string(),
@@ -4498,6 +4504,198 @@ mod tests {
         assert_eq!(foreign_keys_enabled, 1);
 
         drop(connection);
+        fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn file_backed_sqlite_migrations_seed_counts_and_foreign_keys_are_reenabled_after_reopen() {
+        let home = temp_home("sqlite-migrations-reopen");
+        let paths = AppSupportPaths::for_home(&home);
+        fs::create_dir_all(&paths.database_parent).expect("create database parent");
+        let expected_migration_version = MIGRATIONS
+            .last()
+            .expect("at least one migration is registered")
+            .version;
+        let expected_integration_statuses = canonical_workspace_registry()
+            .iter()
+            .map(|workspace| workspace.integrations.len() as i64)
+            .sum::<i64>();
+
+        {
+            let connection = open_foundation_database(&paths.database_path).expect("open database");
+            run_migrations(&connection).expect("run migrations");
+            seed_workspaces(&connection).expect("seed workspaces");
+            seed_default_integration_statuses(&connection).expect("seed integration statuses");
+
+            assert_eq!(
+                get_migration_version(&connection).unwrap(),
+                expected_migration_version
+            );
+            assert_eq!(
+                count_rows(&connection, "select count(*) from schema_migrations"),
+                MIGRATIONS.len() as i64
+            );
+            assert_eq!(
+                count_rows(&connection, "select count(*) from action_policies"),
+                ACTION_POLICY_CATEGORIES.len() as i64
+            );
+            assert_eq!(
+                count_rows(&connection, "select count(*) from workspaces"),
+                canonical_workspace_registry().len() as i64
+            );
+            assert_eq!(
+                count_rows(&connection, "select count(*) from integration_statuses"),
+                expected_integration_statuses
+            );
+        }
+
+        {
+            let reopened = open_foundation_database(&paths.database_path).expect("reopen database");
+
+            let foreign_keys_enabled: i64 = reopened
+                .query_row("pragma foreign_keys", [], |row| row.get(0))
+                .expect("read foreign key pragma after reopen");
+            assert_eq!(foreign_keys_enabled, 1);
+            assert_eq!(
+                get_migration_version(&reopened).unwrap(),
+                expected_migration_version
+            );
+            assert_eq!(
+                count_rows(&reopened, "select count(*) from schema_migrations"),
+                MIGRATIONS.len() as i64
+            );
+            assert_eq!(
+                count_rows(&reopened, "select count(*) from action_policies"),
+                ACTION_POLICY_CATEGORIES.len() as i64
+            );
+            assert_eq!(
+                count_rows(&reopened, "select count(*) from workspaces"),
+                canonical_workspace_registry().len() as i64
+            );
+            assert_eq!(
+                count_rows(&reopened, "select count(*) from integration_statuses"),
+                expected_integration_statuses
+            );
+
+            run_migrations(&reopened).expect("rerun migrations");
+            seed_workspaces(&reopened).expect("reseed workspaces");
+            seed_default_integration_statuses(&reopened).expect("reseed integration statuses");
+            assert_eq!(
+                get_migration_version(&reopened).unwrap(),
+                expected_migration_version
+            );
+            assert_eq!(
+                count_rows(&reopened, "select count(*) from schema_migrations"),
+                MIGRATIONS.len() as i64
+            );
+            assert_eq!(
+                count_rows(&reopened, "select count(*) from action_policies"),
+                ACTION_POLICY_CATEGORIES.len() as i64
+            );
+            assert_eq!(
+                count_rows(&reopened, "select count(*) from workspaces"),
+                canonical_workspace_registry().len() as i64
+            );
+            assert_eq!(
+                count_rows(&reopened, "select count(*) from integration_statuses"),
+                expected_integration_statuses
+            );
+        }
+
+        fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn file_backed_repository_event_and_entity_links_persist_across_reopen() {
+        let home = temp_home("sqlite-repository-reopen");
+        let paths = AppSupportPaths::for_home(&home);
+        fs::create_dir_all(&paths.database_parent).expect("create database parent");
+        let created_event_id;
+
+        {
+            let connection = open_foundation_database(&paths.database_path).expect("open database");
+            run_migrations(&connection).expect("run migrations");
+            seed_workspaces(&connection).expect("seed workspaces");
+
+            upsert_app_setting(
+                &connection,
+                AppSettingInput {
+                    key: "p1.25.persistence",
+                    value_json: "{\"enabled\":true}",
+                    value_type: "json",
+                    scope: "app",
+                    description: "P1.25 file-backed persistence probe",
+                },
+            )
+            .expect("write app setting");
+
+            let created_event = create_event_record(
+                &connection,
+                EventCreateInput {
+                    action_type: "p1_25_file_backed_roundtrip",
+                    outcome: "succeeded",
+                    actor_type: "system",
+                    actor_id: Some("sqlite_integration_test"),
+                    workspace_key: Some("tasks"),
+                    summary: "Persist event across file-backed reopen",
+                    source: "p1.25.sqlite.integration_test",
+                    metadata_json: "{\"probe\":\"event\"}",
+                    targets: vec![EventTargetInput {
+                        entity_type: "task",
+                        entity_id: "task-p1-25",
+                        relation_type: "primary",
+                    }],
+                },
+            )
+            .expect("write event");
+            created_event_id = created_event.id.clone();
+
+            create_entity_link(
+                &connection,
+                EntityLinkCreateRequest {
+                    id: "link-p1-25-task-event",
+                    source_type: "task",
+                    source_id: "task-p1-25",
+                    target_type: "event",
+                    target_id: &created_event_id,
+                    relation_type: "emitted_event",
+                    created_by_actor_type: "system",
+                    metadata_json: "{\"probe\":\"entity_link\"}",
+                },
+            )
+            .expect("write entity link");
+        }
+
+        {
+            let reopened = open_foundation_database(&paths.database_path).expect("reopen database");
+            run_migrations(&reopened).expect("rerun migrations");
+
+            let setting = read_app_setting(&reopened, "p1.25.persistence")
+                .expect("read app setting after reopen")
+                .expect("app setting persisted");
+            assert_eq!(setting.value_json, "{\"enabled\":true}");
+            assert_eq!(setting.scope, "app");
+
+            let event =
+                read_event_record(&reopened, &created_event_id).expect("read event after reopen");
+            assert_eq!(event.action_type, "p1_25_file_backed_roundtrip");
+            assert_eq!(event.outcome, "succeeded");
+            assert_eq!(event.workspace_key.as_deref(), Some("tasks"));
+            assert_eq!(event.targets.len(), 1);
+            assert_eq!(event.targets[0].entity_type, "task");
+            assert_eq!(event.targets[0].entity_id, "task-p1-25");
+            assert_eq!(event.targets[0].relation_type, "primary");
+
+            let link = get_entity_link(&reopened, "link-p1-25-task-event")
+                .expect("read entity link after reopen")
+                .expect("entity link persisted");
+            assert_eq!(link.source_type, "task");
+            assert_eq!(link.source_id, "task-p1-25");
+            assert_eq!(link.target_type, "event");
+            assert_eq!(link.target_id, created_event_id);
+            assert_eq!(link.relation_type, "emitted_event");
+        }
+
         fs::remove_dir_all(home).ok();
     }
 
