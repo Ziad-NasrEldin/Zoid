@@ -7648,3 +7648,212 @@ fn p219_p230_history_bridge_commands_query_task_run_notification_and_entity_with
     assert!(!serialized.contains("raw_log"));
     assert!(!serialized.contains("stdout:"));
 }
+
+#[test]
+#[ignore]
+fn p232_native_app_support_flow_creates_run_review_notification_history_and_persists() {
+    if std::env::var("ZOID_P232_REAL_DB").as_deref() != Ok("1") {
+        panic!("set ZOID_P232_REAL_DB=1 to run the real app-support P2.32 verification harness");
+    }
+    if let Ok(pid) = std::env::var("ZOID_P232_NATIVE_PID") {
+        let status = std::process::Command::new("/bin/ps")
+            .args(["-p", pid.as_str()])
+            .status()
+            .expect("check native app pid");
+        assert!(
+            status.success(),
+            "native Zoid app pid must be running before verification"
+        );
+    }
+
+    let home = PathBuf::from(std::env::var("HOME").expect("HOME must be set"));
+    let app_paths = AppSupportPaths::for_home(&home);
+    assert!(
+        app_paths.database_path.exists(),
+        "native app-support database must exist before P2.32 verification: {}",
+        display_path(&app_paths.database_path)
+    );
+    ensure_directory(&app_paths.logs_dir).expect("ensure app-support logs dir");
+
+    let connection = open_foundation_database(&app_paths.database_path)
+        .expect("open native app-support sqlite database");
+    let marker = format!("p232-native-verification-{}", now_millis());
+    let profile = upsert_agent_profile(
+        &connection,
+        AgentProfileInput {
+            id: format!("profile-{marker}"),
+            label: "P2.32 Native Verification Shell".to_string(),
+            configured: true,
+            command: Some("/bin/sh".to_string()),
+            config_json: "{\"mode\":\"local_command\"}".to_string(),
+            capabilities_json:
+                "{\"local_cli\":true,\"safe_command\":true,\"p232_verification\":true}".to_string(),
+            credential_ref: None,
+            env_refs_json: "[]".to_string(),
+            metadata_json: format!("{{\"p232_marker\":\"{}\"}}", marker),
+        },
+    )
+    .expect("upsert P2.32 verification profile");
+
+    let task = create_task_command_with_connection(
+        &connection,
+        TaskCommandCreateRequest {
+            title: format!("P2.32 native verification {marker}"),
+            detail: Some(
+                "Native app-support verification task created by explicit P2.32 harness."
+                    .to_string(),
+            ),
+            priority: Some("normal".to_string()),
+            workspace_key: Some("tasks".to_string()),
+            metadata_json: Some(format!(
+                "{{\"p232_marker\":\"{}\",\"source\":\"native_app_support_harness\"}}",
+                marker
+            )),
+        },
+    )
+    .expect("create P2.32 task through native bridge helper");
+
+    let outcome = start_agent_run_command_with_connection(
+        &connection,
+        AgentRunCommandStartRequest {
+            task_id: task.id.clone(),
+            profile_id: profile.id.clone(),
+            cwd: "/tmp".to_string(),
+            argv: vec![
+                "-lc".to_string(),
+                format!("printf 'P2.32 native verification output: {}\\n'", marker),
+            ],
+            stdin: None,
+            timeout_ms: Some(5_000),
+            logs_dir: app_paths.logs_dir.clone(),
+            metadata_json: Some(format!("{{\"p232_marker\":\"{}\"}}", marker)),
+        },
+    )
+    .expect("start P2.32 native command run");
+
+    let mut final_chunk = None;
+    for _ in 0..80 {
+        let chunk = stream_run_output_command_with_connection(
+            &connection,
+            AgentRunCommandStreamRequest {
+                run_id: outcome.run.id.clone(),
+                logs_dir: app_paths.logs_dir.clone(),
+                offset: Some(0),
+                max_bytes: Some(16 * 1024),
+            },
+        )
+        .expect("stream P2.32 run output");
+        if chunk.eof && chunk.content.contains(&marker) {
+            final_chunk = Some(chunk);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let final_chunk = final_chunk.expect("P2.32 run output should stream and reach EOF");
+    assert!(final_chunk
+        .content
+        .contains("P2.32 native verification output"));
+    assert_eq!(final_chunk.status, AgentRunStatus::Completed);
+
+    let review = create_manual_review_command_with_connection(
+        &connection,
+        ManualReviewCommandCreateRequest {
+            task_id: task.id.clone(),
+            run_id: Some(outcome.run.id.clone()),
+            reviewer_profile_id: Some(profile.id.clone()),
+            verdict: "approved".to_string(),
+            evidence_summary: format!("P2.32 native verification observed streamed output and persisted run marker {marker}."),
+            required_fixes_json: "[]".to_string(),
+            metadata_json: Some(format!("{{\"p232_marker\":\"{}\"}}", marker)),
+        },
+    )
+    .expect("create P2.32 manual review through native bridge helper");
+
+    let notification = create_notification_command_with_connection(
+        &connection,
+        NotificationCommandCreateRequest {
+            notification_type: "completion".to_string(),
+            title: "P2.32 native verification completed".to_string(),
+            message: format!("Native verification marker {marker} completed and persisted."),
+            severity: "success".to_string(),
+            action_route: Some(format!("zoid://tasks/{}", task.id)),
+            task_id: Some(task.id.clone()),
+            run_id: Some(outcome.run.id.clone()),
+            review_record_id: Some(review.id.clone()),
+            metadata_json: Some(format!("{{\"p232_marker\":\"{}\"}}", marker)),
+        },
+    )
+    .expect("create P2.32 notification through native bridge helper");
+
+    let inbox = list_inbox_notifications_command_with_connection(
+        &connection,
+        InboxNotificationCommandListRequest {
+            active_only: Some(true),
+            limit: Some(50),
+        },
+    )
+    .expect("list active inbox notifications");
+    assert!(inbox.iter().any(|item| item.id == notification.id));
+
+    let task_history = list_task_history_command_with_connection(
+        &connection,
+        task.id.clone(),
+        HistoryCommandListRequest {
+            limit: Some(100),
+            before: None,
+        },
+    )
+    .expect("list P2.32 task history");
+    assert!(task_history
+        .iter()
+        .any(|item| item.event.action_type == "task.created"));
+    assert!(task_history
+        .iter()
+        .any(|item| item.event.action_type == "review.created"));
+    assert!(task_history
+        .iter()
+        .any(|item| item.event.action_type == "notification.created"));
+
+    let run_history = list_run_history_command_with_connection(
+        &connection,
+        outcome.run.id.clone(),
+        HistoryCommandListRequest {
+            limit: Some(100),
+            before: None,
+        },
+    )
+    .expect("list P2.32 run history");
+    assert!(run_history
+        .iter()
+        .any(|item| item.event.action_type == "run.completed"));
+    assert!(run_history
+        .iter()
+        .any(|item| item.event.action_type == "review.created"));
+
+    drop(connection);
+
+    let reopened = open_foundation_database(&app_paths.database_path)
+        .expect("reopen app-support sqlite after P2.32 flow");
+    let persisted_task = read_task_command_with_connection(&reopened, task.id.clone())
+        .expect("read persisted P2.32 task after reopen");
+    assert_eq!(persisted_task.id, task.id);
+    let persisted_run = read_run_status_command_with_connection(&reopened, outcome.run.id.clone())
+        .expect("read persisted P2.32 run after reopen");
+    assert_eq!(persisted_run.status, AgentRunStatus::Completed);
+    let persisted_review = read_review_record_command_with_connection(&reopened, review.id.clone())
+        .expect("read persisted P2.32 review after reopen");
+    assert_eq!(persisted_review.id, review.id);
+    let persisted_notification =
+        read_notification_command_with_connection(&reopened, notification.id.clone())
+            .expect("read persisted P2.32 notification after reopen");
+    assert_eq!(persisted_notification.id, notification.id);
+
+    println!("P2.32_NATIVE_VERIFICATION marker={marker}");
+    println!("task_id={}", task.id);
+    println!("run_id={}", outcome.run.id);
+    println!("session_id={}", outcome.session_id);
+    println!("review_id={}", review.id);
+    println!("notification_id={}", notification.id);
+    println!("log_path={}", outcome.log_path);
+    println!("database_path={}", display_path(&app_paths.database_path));
+}

@@ -6548,25 +6548,50 @@ fn create_event_record(
         .map_err(|error| map_repository_error("events", error))?;
 
     let create_result = (|| -> RepoResult<EventRecord> {
-        connection
-            .execute(
-                "
-                insert into events (id, type, timestamp, actor_type, actor_id, workspace_key, summary, severity, source, metadata_json)
-                values (?1, ?2, current_timestamp, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-                ",
-                params![
-                    event_id,
-                    input.action_type,
-                    input.actor_type,
-                    input.actor_id,
-                    input.workspace_key,
-                    redacted_summary,
-                    input.outcome,
-                    input.source,
-                    redacted_metadata
-                ],
-            )
+        let event_columns = table_columns(connection, "events")
             .map_err(|error| map_repository_error("events", error))?;
+        if event_columns.contains("actor") {
+            connection
+                .execute(
+                    "
+                    insert into events (id, type, timestamp, actor, actor_type, actor_id, workspace_key, summary, severity, source, metadata_json)
+                    values (?1, ?2, current_timestamp, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                    ",
+                    params![
+                        event_id,
+                        input.action_type,
+                        input.actor_id.unwrap_or(input.actor_type),
+                        input.actor_type,
+                        input.actor_id,
+                        input.workspace_key,
+                        redacted_summary,
+                        input.outcome,
+                        input.source,
+                        redacted_metadata
+                    ],
+                )
+                .map_err(|error| map_repository_error("events", error))?;
+        } else {
+            connection
+                .execute(
+                    "
+                    insert into events (id, type, timestamp, actor_type, actor_id, workspace_key, summary, severity, source, metadata_json)
+                    values (?1, ?2, current_timestamp, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                    ",
+                    params![
+                        event_id,
+                        input.action_type,
+                        input.actor_type,
+                        input.actor_id,
+                        input.workspace_key,
+                        redacted_summary,
+                        input.outcome,
+                        input.source,
+                        redacted_metadata
+                    ],
+                )
+                .map_err(|error| map_repository_error("events", error))?;
+        }
 
         for target in input.targets {
             connection
