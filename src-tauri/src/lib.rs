@@ -14,6 +14,7 @@ static EVENT_COUNTER: AtomicU64 = AtomicU64::new(0);
 static TASK_COUNTER: AtomicU64 = AtomicU64::new(0);
 static CLI_SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 static AGENT_RUN_COUNTER: AtomicU64 = AtomicU64::new(0);
+static REVIEW_RECORD_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const SAFE_LOG_MAX_BYTES: usize = 4096;
 const SAFE_LOG_ROTATED_SUFFIX: &str = "1";
@@ -246,6 +247,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 6,
         name: "phase2_agent_runs",
         sql: include_str!("../migrations/0006_phase2_agent_runs.sql"),
+    },
+    Migration {
+        version: 7,
+        name: "phase2_review_records",
+        sql: include_str!("../migrations/0007_phase2_review_records.sql"),
     },
 ];
 
@@ -1125,6 +1131,118 @@ struct AgentRunCompletionInput {
     output_summary: String,
     error_summary: Option<String>,
     review_state: ReviewState,
+    metadata_json: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ReviewSubjectType {
+    Task,
+    AgentRun,
+    RelatedEntity,
+}
+
+#[allow(dead_code)]
+impl ReviewSubjectType {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Task => "task",
+            Self::AgentRun => "agent_run",
+            Self::RelatedEntity => "related_entity",
+        }
+    }
+
+    fn from_str(value: &str) -> RepoResult<Self> {
+        match value {
+            "task" => Ok(Self::Task),
+            "agent_run" => Ok(Self::AgentRun),
+            "related_entity" => Ok(Self::RelatedEntity),
+            other => Err(RepositoryError::Constraint {
+                entity: "review_records",
+                message: format!("invalid review subject_type: {other}"),
+            }),
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ReviewVerdict {
+    Approved,
+    RequiredFixes,
+    BlockedInsufficientEvidence,
+}
+
+#[allow(dead_code)]
+impl ReviewVerdict {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Approved => "approved",
+            Self::RequiredFixes => "required_fixes",
+            Self::BlockedInsufficientEvidence => "blocked_insufficient_evidence",
+        }
+    }
+
+    fn from_str(value: &str) -> RepoResult<Self> {
+        match value {
+            "approved" => Ok(Self::Approved),
+            "required_fixes" => Ok(Self::RequiredFixes),
+            "blocked_insufficient_evidence" => Ok(Self::BlockedInsufficientEvidence),
+            other => Err(RepositoryError::Constraint {
+                entity: "review_records",
+                message: format!("invalid review verdict: {other}"),
+            }),
+        }
+    }
+
+    fn state(self) -> ReviewState {
+        match self {
+            Self::Approved => ReviewState::Approved,
+            Self::RequiredFixes => ReviewState::RequiredFixes,
+            Self::BlockedInsufficientEvidence => ReviewState::BlockedInsufficientEvidence,
+        }
+    }
+
+    fn event_type(self) -> &'static str {
+        match self {
+            Self::Approved => "review.approved",
+            Self::RequiredFixes => "review.required_fixes",
+            Self::BlockedInsufficientEvidence => "review.blocked_insufficient_evidence",
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ReviewRecord {
+    id: String,
+    subject_type: ReviewSubjectType,
+    subject_id: String,
+    task_id: String,
+    run_id: Option<String>,
+    reviewer_profile_id: Option<String>,
+    state: ReviewState,
+    verdict: ReviewVerdict,
+    evidence_summary: String,
+    required_fixes_json: String,
+    metadata_json: String,
+    created_at: String,
+    updated_at: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct ReviewRecordCreateInput {
+    subject_type: ReviewSubjectType,
+    subject_id: String,
+    task_id: String,
+    run_id: Option<String>,
+    reviewer_profile_id: Option<String>,
+    verdict: ReviewVerdict,
+    evidence_summary: String,
+    required_fixes_json: String,
     metadata_json: String,
 }
 
@@ -3084,6 +3202,327 @@ fn create_agent_run_event(
         },
     )?;
     Ok(())
+}
+
+#[allow(dead_code)]
+fn create_review_record(
+    connection: &Connection,
+    input: ReviewRecordCreateInput,
+) -> RepoResult<ReviewRecord> {
+    validate_review_record_input(connection, &input)?;
+    let review_id = next_review_record_id();
+    let state = input.verdict.state();
+    let evidence_summary = redact_secrets(input.evidence_summary.trim()).text;
+    let metadata_json = redact_metadata_json(&input.metadata_json);
+    let required_fixes_json = redact_metadata_json(&input.required_fixes_json);
+
+    connection
+        .execute_batch("savepoint create_review_record")
+        .map_err(|error| map_repository_error("review_records", error))?;
+
+    let create_result = (|| -> RepoResult<ReviewRecord> {
+        connection
+            .execute(
+                "
+                insert into review_records (
+                    id, subject_type, subject_id, task_id, run_id, reviewer_profile_id,
+                    state, verdict, evidence_summary, required_fixes_json, metadata_json
+                ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                ",
+                params![
+                    review_id,
+                    input.subject_type.as_str(),
+                    input.subject_id,
+                    input.task_id,
+                    input.run_id,
+                    input.reviewer_profile_id,
+                    state.as_str(),
+                    input.verdict.as_str(),
+                    evidence_summary,
+                    required_fixes_json,
+                    metadata_json
+                ],
+            )
+            .map_err(|error| map_repository_error("review_records", error))?;
+
+        let review =
+            read_review_record(connection, &review_id)?.ok_or(RepositoryError::NotFound {
+                entity: "review_records",
+                key: review_id.clone(),
+            })?;
+        link_review_record(connection, &review)?;
+        create_review_event(connection, &review, "review.created")?;
+        create_review_event(connection, &review, review.verdict.event_type())?;
+        Ok(review)
+    })();
+
+    match create_result {
+        Ok(review) => {
+            connection
+                .execute_batch("release savepoint create_review_record")
+                .map_err(|error| map_repository_error("review_records", error))?;
+            Ok(review)
+        }
+        Err(error) => {
+            let _ = connection.execute_batch(
+                "rollback to savepoint create_review_record; release savepoint create_review_record",
+            );
+            Err(error)
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn read_review_record(connection: &Connection, id: &str) -> RepoResult<Option<ReviewRecord>> {
+    connection
+        .query_row(
+            "
+            select id, subject_type, subject_id, task_id, run_id, reviewer_profile_id,
+                   state, verdict, evidence_summary, required_fixes_json, metadata_json,
+                   created_at, updated_at
+            from review_records where id = ?1
+            ",
+            params![id],
+            review_record_from_row,
+        )
+        .optional()
+        .map_err(|error| map_repository_error("review_records", error))
+}
+
+#[allow(dead_code)]
+fn review_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReviewRecord> {
+    let subject_type: String = row.get(1)?;
+    let state: String = row.get(6)?;
+    let verdict: String = row.get(7)?;
+    Ok(ReviewRecord {
+        id: row.get(0)?,
+        subject_type: ReviewSubjectType::from_str(&subject_type)
+            .map_err(repository_error_to_rusqlite)?,
+        subject_id: row.get(2)?,
+        task_id: row.get(3)?,
+        run_id: row.get(4)?,
+        reviewer_profile_id: row.get(5)?,
+        state: ReviewState::from_str(&state).map_err(repository_error_to_rusqlite)?,
+        verdict: ReviewVerdict::from_str(&verdict).map_err(repository_error_to_rusqlite)?,
+        evidence_summary: row.get(8)?,
+        required_fixes_json: row.get(9)?,
+        metadata_json: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+    })
+}
+
+#[allow(dead_code)]
+fn validate_review_record_input(
+    connection: &Connection,
+    input: &ReviewRecordCreateInput,
+) -> RepoResult<()> {
+    let task = read_task_record(connection, &input.task_id)?;
+    if task.status == TaskStatus::Deleted || task.deleted_at.is_some() {
+        return Err(RepositoryError::Constraint {
+            entity: "review_records",
+            message: "deleted task cannot receive review".to_string(),
+        });
+    }
+    normalize_small_text("review_records", "subject_id", input.subject_id.as_str())?;
+    if input.evidence_summary.trim().is_empty() {
+        return Err(RepositoryError::Constraint {
+            entity: "review_records",
+            message: "evidence_summary must be non-empty".to_string(),
+        });
+    }
+    validate_no_secret_json("required_fixes_json", &input.required_fixes_json)?;
+    validate_no_secret_json("metadata_json", &input.metadata_json)?;
+    if input.verdict == ReviewVerdict::RequiredFixes
+        && !required_fixes_payload_is_non_empty_array(&input.required_fixes_json)?
+    {
+        return Err(RepositoryError::Constraint {
+            entity: "review_records",
+            message: "required_fixes verdict requires non-empty required_fixes_json".to_string(),
+        });
+    }
+    match input.subject_type {
+        ReviewSubjectType::Task => {
+            if input.subject_id != input.task_id || input.run_id.is_some() {
+                return Err(RepositoryError::Constraint {
+                    entity: "review_records",
+                    message: "task review subject must match task_id and omit run_id".to_string(),
+                });
+            }
+        }
+        ReviewSubjectType::AgentRun => {
+            let run_id = input.run_id.as_deref().ok_or(RepositoryError::Constraint {
+                entity: "review_records",
+                message: "agent_run review requires run_id".to_string(),
+            })?;
+            if input.subject_id != run_id {
+                return Err(RepositoryError::Constraint {
+                    entity: "review_records",
+                    message: "agent_run review subject must match run_id".to_string(),
+                });
+            }
+            let run = read_agent_run_required(connection, run_id)?;
+            if run.task_id != input.task_id {
+                return Err(RepositoryError::Constraint {
+                    entity: "review_records",
+                    message: "review run must belong to task_id".to_string(),
+                });
+            }
+        }
+        ReviewSubjectType::RelatedEntity => {
+            return Err(RepositoryError::Constraint {
+                entity: "review_records",
+                message: "related_entity reviews require verifiable related subject support before persistence".to_string(),
+            });
+        }
+    }
+    if let Some(reviewer_profile_id) = input.reviewer_profile_id.as_deref() {
+        if read_agent_profile(connection, reviewer_profile_id)?.is_none() {
+            return Err(RepositoryError::NotFound {
+                entity: "agent_profiles",
+                key: reviewer_profile_id.to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn required_fixes_payload_is_non_empty_array(value: &str) -> RepoResult<bool> {
+    match serde_json::from_str::<Value>(value).map_err(|error| RepositoryError::InvalidJson {
+        field: "required_fixes_json",
+        message: error.to_string(),
+    })? {
+        Value::Array(values) => Ok(!values.is_empty()),
+        _ => Err(RepositoryError::Constraint {
+            entity: "review_records",
+            message:
+                "required_fixes_json must be a non-empty JSON array for required_fixes verdict"
+                    .to_string(),
+        }),
+    }
+}
+
+#[allow(dead_code)]
+fn link_review_record(connection: &Connection, review: &ReviewRecord) -> RepoResult<()> {
+    insert_or_get_entity_link(
+        connection,
+        EntityLinkInput {
+            id: &format!("link_task_review_{}", review.id),
+            source_type: "task",
+            source_id: &review.task_id,
+            target_type: "review_record",
+            target_id: &review.id,
+            relation_type: "reviewed_by",
+            created_by_actor_type: "system",
+            metadata_json: "{}",
+        },
+    )?;
+    if let Some(run_id) = review.run_id.as_deref() {
+        insert_or_get_entity_link(
+            connection,
+            EntityLinkInput {
+                id: &format!("link_run_review_{}", review.id),
+                source_type: "agent_run",
+                source_id: run_id,
+                target_type: "review_record",
+                target_id: &review.id,
+                relation_type: "reviewed_by",
+                created_by_actor_type: "system",
+                metadata_json: "{}",
+            },
+        )?;
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn create_review_event(
+    connection: &Connection,
+    review: &ReviewRecord,
+    action_type: &str,
+) -> RepoResult<()> {
+    let metadata = serde_json::json!({
+        "review_id": review.id,
+        "task_id": review.task_id,
+        "run_id": review.run_id,
+        "subject_type": review.subject_type.as_str(),
+        "subject_id": review.subject_id,
+        "state": review.state.as_str(),
+        "verdict": review.verdict.as_str(),
+        "required_fixes": serde_json::from_str::<Value>(&review.required_fixes_json).unwrap_or(Value::Null),
+        "input_metadata": serde_json::from_str::<Value>(&review.metadata_json).unwrap_or(Value::Null),
+    })
+    .to_string();
+    let mut targets = vec![
+        EventTargetInput {
+            entity_type: "review_record",
+            entity_id: &review.id,
+            relation_type: "primary",
+        },
+        EventTargetInput {
+            entity_type: "task",
+            entity_id: &review.task_id,
+            relation_type: "owner",
+        },
+    ];
+    if let Some(run_id) = review.run_id.as_deref() {
+        targets.push(EventTargetInput {
+            entity_type: "agent_run",
+            entity_id: run_id,
+            relation_type: "run",
+        });
+    }
+    create_event_record(
+        connection,
+        EventCreateInput {
+            action_type,
+            outcome: "succeeded",
+            actor_type: "manual_reviewer",
+            actor_id: review.reviewer_profile_id.as_deref(),
+            workspace_key: Some("agents"),
+            summary: &format!(
+                "Review {} for {} {}",
+                review.verdict.as_str(),
+                review.subject_type.as_str(),
+                review.subject_id
+            ),
+            source: "review_record_repository",
+            metadata_json: &metadata,
+            targets,
+        },
+    )?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn review_gate_satisfied_for_task(connection: &Connection, task_id: &str) -> RepoResult<bool> {
+    read_task_record(connection, task_id)?;
+    let latest: Option<(String, String)> = connection
+        .query_row(
+            "
+            select state, verdict from review_records
+            where task_id = ?1
+            order by created_at desc, id desc
+            limit 1
+            ",
+            params![task_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| map_repository_error("review_records", error))?;
+    Ok(latest.is_some_and(|(state, verdict)| state == "approved" && verdict == "approved"))
+}
+
+#[allow(dead_code)]
+fn next_review_record_id() -> String {
+    let sequence = REVIEW_RECORD_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "review_{}_{:010}_{:020}",
+        now_millis(),
+        process::id(),
+        sequence
+    )
 }
 
 #[allow(dead_code)]
@@ -5683,9 +6122,9 @@ mod tests {
     #[test]
     fn p204_schema_version_six_has_agent_profile_session_run_tables() {
         let connection = migrated_in_memory_connection();
-        assert_eq!(
-            get_migration_version(&connection).expect("migration version"),
-            6
+        assert!(
+            get_migration_version(&connection).expect("migration version") >= 6,
+            "P2.04 schema must remain present after later migrations"
         );
         assert_table_has_columns(
             &connection,
@@ -6126,6 +6565,377 @@ mod tests {
             observed,
             vec!["failed", "cancelled", "blocked", "waiting_for_input"]
         );
+    }
+
+    fn p205_run(connection: &Connection, task: &TaskRecord) -> AgentRunRecord {
+        let profile = p204_profile(connection, true);
+        let session = p204_session(connection, task, &profile);
+        create_agent_run(
+            connection,
+            AgentRunCreateInput {
+                task_id: task.id.clone(),
+                profile_id: profile.id,
+                session_id: session.id,
+                cwd: "/tmp".to_string(),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect("create p205 run")
+    }
+
+    #[test]
+    fn p205_schema_version_seven_has_review_records_table() {
+        let connection = migrated_in_memory_connection();
+        assert_eq!(
+            get_migration_version(&connection).expect("migration version"),
+            7
+        );
+        assert_table_has_columns(
+            &connection,
+            "review_records",
+            &[
+                "id",
+                "subject_type",
+                "subject_id",
+                "task_id",
+                "run_id",
+                "reviewer_profile_id",
+                "state",
+                "verdict",
+                "evidence_summary",
+                "required_fixes_json",
+                "metadata_json",
+                "created_at",
+                "updated_at",
+            ],
+        );
+
+        let task = p204_task(&connection, "DB rejects unverifiable related review");
+        let direct_related_insert = connection.execute(
+            "
+            insert into review_records (
+                id, subject_type, subject_id, task_id, run_id, reviewer_profile_id,
+                state, verdict, evidence_summary, required_fixes_json, metadata_json
+            ) values (?1, 'related_entity', 'unverified_related', ?2, null, null,
+                'approved', 'approved', 'Direct insert should fail', '[]', '{}')
+            ",
+            params!["review_direct_related", task.id],
+        );
+        assert!(
+            direct_related_insert.is_err(),
+            "schema must reject unverifiable related_entity reviews until typed support exists"
+        );
+
+        let task_a = p204_task(&connection, "Review DB task A");
+        let run_a = p205_run(&connection, &task_a);
+        let task_b = p204_task(&connection, "Review DB task B");
+        let mismatched_run_insert = connection.execute(
+            "
+            insert into review_records (
+                id, subject_type, subject_id, task_id, run_id, reviewer_profile_id,
+                state, verdict, evidence_summary, required_fixes_json, metadata_json
+            ) values (?1, 'agent_run', ?2, ?3, ?2, null,
+                'approved', 'approved', 'Mismatched run should fail', '[]', '{}')
+            ",
+            params!["review_mismatched_run", run_a.id, task_b.id],
+        );
+        assert!(
+            mismatched_run_insert.is_err(),
+            "schema must reject agent_run reviews whose run_id belongs to a different task_id"
+        );
+
+        let state_mismatch_insert = connection.execute(
+            "
+            insert into review_records (
+                id, subject_type, subject_id, task_id, run_id, reviewer_profile_id,
+                state, verdict, evidence_summary, required_fixes_json, metadata_json
+            ) values (?1, 'task', ?2, ?2, null, null,
+                'approved', 'required_fixes', 'State mismatch should fail', '[\"fix\"]', '{}')
+            ",
+            params!["review_state_mismatch", task_a.id],
+        );
+        assert!(
+            state_mismatch_insert.is_err(),
+            "schema must reject contradictory review state/verdict rows"
+        );
+    }
+
+    #[test]
+    fn p205_manual_review_can_be_created_for_task_and_run() {
+        let connection = migrated_in_memory_connection();
+        let task = p204_task(&connection, "Reviewable task");
+        let run = p205_run(&connection, &task);
+
+        let task_review = create_review_record(
+            &connection,
+            ReviewRecordCreateInput {
+                subject_type: ReviewSubjectType::Task,
+                subject_id: task.id.clone(),
+                task_id: task.id.clone(),
+                run_id: None,
+                reviewer_profile_id: None,
+                verdict: ReviewVerdict::Approved,
+                evidence_summary: "Manual reviewer verified task evidence".to_string(),
+                required_fixes_json: "[]".to_string(),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect("create task review");
+        assert_eq!(task_review.subject_type, ReviewSubjectType::Task);
+        assert_eq!(task_review.task_id, task.id);
+        assert_eq!(task_review.run_id, None);
+        assert_eq!(task_review.reviewer_profile_id, None);
+        assert_eq!(task_review.state, ReviewState::Approved);
+        assert_eq!(task_review.verdict, ReviewVerdict::Approved);
+
+        let run_review = create_review_record(
+            &connection,
+            ReviewRecordCreateInput {
+                subject_type: ReviewSubjectType::AgentRun,
+                subject_id: run.id.clone(),
+                task_id: task.id.clone(),
+                run_id: Some(run.id.clone()),
+                reviewer_profile_id: None,
+                verdict: ReviewVerdict::RequiredFixes,
+                evidence_summary: "Manual reviewer found a gap".to_string(),
+                required_fixes_json: "[{\"fix\":\"add cited evidence\"}]".to_string(),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect("create run review");
+        assert_eq!(run_review.subject_type, ReviewSubjectType::AgentRun);
+        assert_eq!(run_review.subject_id, run.id);
+        assert_eq!(run_review.run_id.as_deref(), Some(run.id.as_str()));
+        assert_eq!(run_review.state, ReviewState::RequiredFixes);
+    }
+
+    #[test]
+    fn p205_required_fixes_and_insufficient_evidence_require_non_empty_payloads() {
+        let connection = migrated_in_memory_connection();
+        let task = p204_task(&connection, "Rejected review task");
+
+        let missing_fixes = create_review_record(
+            &connection,
+            ReviewRecordCreateInput {
+                subject_type: ReviewSubjectType::Task,
+                subject_id: task.id.clone(),
+                task_id: task.id.clone(),
+                run_id: None,
+                reviewer_profile_id: None,
+                verdict: ReviewVerdict::RequiredFixes,
+                evidence_summary: "Reviewed output".to_string(),
+                required_fixes_json: "[]".to_string(),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect_err("required fixes must be non-empty");
+        assert!(matches!(
+            missing_fixes,
+            RepositoryError::Constraint {
+                entity: "review_records",
+                ..
+            }
+        ));
+
+        let object_fixes = create_review_record(
+            &connection,
+            ReviewRecordCreateInput {
+                subject_type: ReviewSubjectType::Task,
+                subject_id: task.id.clone(),
+                task_id: task.id.clone(),
+                run_id: None,
+                reviewer_profile_id: None,
+                verdict: ReviewVerdict::RequiredFixes,
+                evidence_summary: "Reviewed output".to_string(),
+                required_fixes_json: "{\"fix\":\"not an array\"}".to_string(),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect_err("required fixes payload must be a non-empty JSON array");
+        assert!(matches!(
+            object_fixes,
+            RepositoryError::Constraint {
+                entity: "review_records",
+                ..
+            }
+        ));
+
+        let insufficient_evidence = create_review_record(
+            &connection,
+            ReviewRecordCreateInput {
+                subject_type: ReviewSubjectType::Task,
+                subject_id: task.id.clone(),
+                task_id: task.id.clone(),
+                run_id: None,
+                reviewer_profile_id: None,
+                verdict: ReviewVerdict::BlockedInsufficientEvidence,
+                evidence_summary: "   ".to_string(),
+                required_fixes_json: "[]".to_string(),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect_err("insufficient evidence must explain the missing evidence");
+        assert!(matches!(
+            insufficient_evidence,
+            RepositoryError::Constraint {
+                entity: "review_records",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn p205_review_events_are_written_and_linked_to_review_task_and_run() {
+        let connection = migrated_in_memory_connection();
+        let task = p204_task(&connection, "Review events task");
+        let run = p205_run(&connection, &task);
+
+        let review = create_review_record(
+            &connection,
+            ReviewRecordCreateInput {
+                subject_type: ReviewSubjectType::AgentRun,
+                subject_id: run.id.clone(),
+                task_id: task.id.clone(),
+                run_id: Some(run.id.clone()),
+                reviewer_profile_id: None,
+                verdict: ReviewVerdict::Approved,
+                evidence_summary: "Run summary and log reference are sufficient".to_string(),
+                required_fixes_json: "[]".to_string(),
+                metadata_json: "{\"safe\":true}".to_string(),
+            },
+        )
+        .expect("create approved review");
+
+        let events = list_event_records(
+            &connection,
+            EventListFilter {
+                workspace_key: Some("agents"),
+                action_type: None,
+                outcome: Some("succeeded"),
+                source: Some("review_record_repository"),
+                limit: 10,
+            },
+        )
+        .expect("list review events");
+        assert!(events
+            .iter()
+            .any(|event| event.action_type == "review.created"));
+        let approved = events
+            .iter()
+            .find(|event| event.action_type == "review.approved")
+            .expect("approved event");
+        assert!(approved.targets.iter().any(|target| {
+            target.entity_type == "review_record"
+                && target.entity_id == review.id
+                && target.relation_type == "primary"
+        }));
+        assert!(approved.targets.iter().any(|target| {
+            target.entity_type == "task"
+                && target.entity_id == task.id
+                && target.relation_type == "owner"
+        }));
+        assert!(approved.targets.iter().any(|target| {
+            target.entity_type == "agent_run"
+                && target.entity_id == run.id
+                && target.relation_type == "run"
+        }));
+
+        let run_review_links = count_rows(
+            &connection,
+            "select count(*) from entity_links where source_type = 'agent_run' and target_type = 'review_record' and relation_type = 'reviewed_by'",
+        );
+        assert_eq!(run_review_links, 1);
+    }
+
+    #[test]
+    fn p205_approved_review_satisfies_gate_and_blocking_verdicts_do_not() {
+        let connection = migrated_in_memory_connection();
+        let task = p204_task(&connection, "Review gate task");
+        let run = p205_run(&connection, &task);
+
+        assert!(!review_gate_satisfied_for_task(&connection, &task.id).expect("gate before review"));
+        create_review_record(
+            &connection,
+            ReviewRecordCreateInput {
+                subject_type: ReviewSubjectType::AgentRun,
+                subject_id: run.id.clone(),
+                task_id: task.id.clone(),
+                run_id: Some(run.id.clone()),
+                reviewer_profile_id: None,
+                verdict: ReviewVerdict::BlockedInsufficientEvidence,
+                evidence_summary: "Missing log reference for truthful verification".to_string(),
+                required_fixes_json: "[]".to_string(),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect("create blocking review");
+        assert!(!review_gate_satisfied_for_task(&connection, &task.id).expect("blocked gate"));
+
+        create_review_record(
+            &connection,
+            ReviewRecordCreateInput {
+                subject_type: ReviewSubjectType::AgentRun,
+                subject_id: run.id.clone(),
+                task_id: task.id.clone(),
+                run_id: Some(run.id.clone()),
+                reviewer_profile_id: None,
+                verdict: ReviewVerdict::Approved,
+                evidence_summary: "Manual reviewer approved final evidence".to_string(),
+                required_fixes_json: "[]".to_string(),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect("create approving review");
+        assert!(review_gate_satisfied_for_task(&connection, &task.id).expect("approved gate"));
+
+        create_review_record(
+            &connection,
+            ReviewRecordCreateInput {
+                subject_type: ReviewSubjectType::AgentRun,
+                subject_id: run.id.clone(),
+                task_id: task.id.clone(),
+                run_id: Some(run.id.clone()),
+                reviewer_profile_id: None,
+                verdict: ReviewVerdict::RequiredFixes,
+                evidence_summary: "Later reviewer found missing proof".to_string(),
+                required_fixes_json: "[{\"fix\":\"attach final log reference\"}]".to_string(),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect("create later blocking review");
+        assert!(
+            !review_gate_satisfied_for_task(&connection, &task.id).expect("later blocking gate"),
+            "latest blocking review must make the review gate unsatisfied"
+        );
+    }
+
+    #[test]
+    fn p205_related_entity_review_is_rejected_until_verifiable_subject_support_exists() {
+        let connection = migrated_in_memory_connection();
+        let task = p204_task(&connection, "Related entity review task");
+
+        let arbitrary = create_review_record(
+            &connection,
+            ReviewRecordCreateInput {
+                subject_type: ReviewSubjectType::RelatedEntity,
+                subject_id: "unverified_external_subject".to_string(),
+                task_id: task.id,
+                run_id: None,
+                reviewer_profile_id: None,
+                verdict: ReviewVerdict::Approved,
+                evidence_summary: "Cannot verify arbitrary related subject".to_string(),
+                required_fixes_json: "[]".to_string(),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect_err("related entity reviews need verifiable subject support");
+        assert!(matches!(
+            arbitrary,
+            RepositoryError::Constraint {
+                entity: "review_records",
+                ..
+            }
+        ));
     }
 
     #[test]
