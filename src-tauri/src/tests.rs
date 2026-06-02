@@ -4032,6 +4032,127 @@ fn assert_index_exists(connection: &Connection, table: &str, expected_index: &st
 }
 
 #[test]
+fn p303_note_identity_frontmatter_is_stable_and_round_trips() {
+    let markdown = "# Original title\n\nBody text\n";
+    let identity = derive_note_identity_from_markdown("Notes/original-title.md", markdown)
+        .expect("derive note identity");
+
+    assert!(identity.id.starts_with("note_"));
+    assert_eq!(identity.title, "Original title");
+    assert_eq!(identity.slug, "original-title");
+    assert_eq!(identity.relative_path, "Notes/original-title.md");
+    assert_eq!(identity.conflict_state.as_str(), "none");
+
+    let with_frontmatter =
+        write_note_identity_frontmatter(markdown, &identity).expect("write frontmatter");
+    assert!(with_frontmatter.starts_with("---\n"));
+    assert!(with_frontmatter.contains(&format!("zoid_id: \"{}\"", identity.id)));
+    assert!(with_frontmatter.contains("title: \"Original title\""));
+    assert!(with_frontmatter.contains("slug: \"original-title\""));
+    assert!(with_frontmatter.contains("# Original title"));
+
+    let special_title = NoteIdentityMetadata {
+        id: "note_yaml_safe_p303".to_string(),
+        title: "Meeting: Client \"A\"".to_string(),
+        slug: "meeting-client".to_string(),
+        relative_path: "Notes/meeting-client.md".to_string(),
+        frontmatter_json: "{}".to_string(),
+        body_digest: "fnv1a64:0000000000000000".to_string(),
+        conflict_state: NoteConflictState::None,
+    };
+    let special_frontmatter =
+        write_note_identity_frontmatter("# Meeting: Client\n\nBody\n", &special_title)
+            .expect("write YAML-safe frontmatter");
+    assert!(special_frontmatter.contains("title: \"Meeting: Client \\\"A\\\"\""));
+    let reparsed_special =
+        derive_note_identity_from_markdown("Notes/meeting-client.md", &special_frontmatter)
+            .expect("reparse YAML-safe frontmatter");
+    assert_eq!(reparsed_special.title, "Meeting: Client \"A\"");
+    assert_eq!(reparsed_special.id, "note_yaml_safe_p303");
+
+    let renamed_title = with_frontmatter.replace("# Original title", "# Retitled manually");
+    let reparsed = derive_note_identity_from_markdown("Notes/original-title.md", &renamed_title)
+        .expect("reparse identity");
+    assert_eq!(
+        reparsed.id, identity.id,
+        "frontmatter ID must remain stable across title edits"
+    );
+}
+
+#[test]
+fn p303_note_identity_rejects_unsafe_paths_and_invalid_frontmatter_ids() {
+    let unsafe_path = derive_note_identity_from_markdown("../outside.md", "# Outside");
+    assert!(matches!(
+        unsafe_path,
+        Err(RepositoryError::Constraint {
+            entity: "notes",
+            ..
+        })
+    ));
+
+    let invalid_id = derive_note_identity_from_markdown(
+        "Notes/bad.md",
+        "---\nzoid_id: apple-note-remote\ntitle: Bad\n---\n\nBody",
+    );
+    assert!(matches!(
+        invalid_id,
+        Err(RepositoryError::Constraint {
+            entity: "notes",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn p303_note_identity_upsert_records_index_metadata_and_duplicate_conflicts() {
+    let connection = migrated_in_memory_connection();
+    let first = derive_note_identity_from_markdown(
+        "Notes/first.md",
+        "---\nzoid_id: note_duplicate_for_p303\ntitle: First\nslug: first\n---\n\n# First",
+    )
+    .expect("first identity");
+    upsert_note_identity_metadata(&connection, &first).expect("insert first note identity");
+
+    let stored_frontmatter: String = connection
+        .query_row(
+            "select frontmatter_json from notes where id = 'note_duplicate_for_p303'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("stored frontmatter json");
+    assert!(stored_frontmatter.contains("note_duplicate_for_p303"));
+
+    let index_title: String = connection
+        .query_row(
+            "select title from knowledge_index_entries where entity_type = 'note' and entity_id = 'note_duplicate_for_p303' and source_type = 'markdown_frontmatter'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("frontmatter index title");
+    assert_eq!(index_title, "First");
+
+    let duplicate = derive_note_identity_from_markdown(
+        "Notes/second.md",
+        "---\nzoid_id: note_duplicate_for_p303\ntitle: Second\nslug: second\n---\n\n# Second",
+    )
+    .expect("duplicate identity parses before persistence");
+    let duplicate_error = upsert_note_identity_metadata(&connection, &duplicate)
+        .expect_err("duplicate frontmatter ID across paths must fail closed");
+    assert!(
+        matches!(duplicate_error, RepositoryError::Constraint { entity: "notes", ref message } if message.contains("duplicate_id"))
+    );
+
+    let conflict_state: String = connection
+        .query_row(
+            "select conflict_state from notes where id = 'note_duplicate_for_p303'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("existing note conflict state");
+    assert_eq!(conflict_state, "duplicate_id");
+}
+
+#[test]
 fn p302_schema_version_nine_has_notes_files_and_knowledge_index_tables() {
     let connection = migrated_in_memory_connection();
     assert!(
@@ -7075,6 +7196,8 @@ fn p229_run_bridge_cancel_kills_active_process_writes_log_and_rejects_terminal_m
         p209_profile_with_command(&connection, "profile-shell-cancel-p229", "/bin/sh", true);
     let logs_dir = temp_home("p229-cancel-bridge-logs");
     let before_marker = "before-cancel-ready";
+    let never_release_path = logs_dir.join("never-release-p229-cancel");
+    let never_release_path_arg = never_release_path.to_string_lossy().to_string();
 
     let outcome = start_agent_run_command_with_connection(
         &connection,
@@ -7084,7 +7207,11 @@ fn p229_run_bridge_cancel_kills_active_process_writes_log_and_rejects_terminal_m
             cwd: "/tmp".to_string(),
             argv: vec![
                 "-c".to_string(),
-                format!("printf '{before_marker}'; sleep 10; printf 'should-not-finish'"),
+                format!(
+                    "printf '{before_marker}'; while [ ! -f \"$1\" ]; do sleep 1; done; printf 'should-not-finish'"
+                ),
+                "p229-cancel-sentinel".to_string(),
+                never_release_path_arg,
             ],
             stdin: None,
             timeout_ms: None,

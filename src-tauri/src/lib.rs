@@ -1584,6 +1584,415 @@ impl IntegrationStatus {
 }
 
 #[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum NoteConflictState {
+    None,
+    DuplicateId,
+    PathMissing,
+    ExternalEdit,
+    ManualRename,
+    MetadataMismatch,
+}
+
+#[allow(dead_code)]
+impl NoteConflictState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::DuplicateId => "duplicate_id",
+            Self::PathMissing => "path_missing",
+            Self::ExternalEdit => "external_edit",
+            Self::ManualRename => "manual_rename",
+            Self::MetadataMismatch => "metadata_mismatch",
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct NoteIdentityMetadata {
+    id: String,
+    title: String,
+    slug: String,
+    relative_path: String,
+    frontmatter_json: String,
+    body_digest: String,
+    conflict_state: NoteConflictState,
+}
+
+#[allow(dead_code)]
+fn derive_note_identity_from_markdown(
+    relative_path: &str,
+    markdown: &str,
+) -> RepoResult<NoteIdentityMetadata> {
+    validate_note_relative_path(relative_path)?;
+    let (frontmatter, body) = split_markdown_frontmatter(markdown);
+    let parsed_id = frontmatter
+        .as_ref()
+        .and_then(|lines| yaml_scalar_value(lines, "zoid_id"))
+        .or_else(|| {
+            frontmatter
+                .as_ref()
+                .and_then(|lines| yaml_scalar_value(lines, "id"))
+        });
+    let title = frontmatter
+        .as_ref()
+        .and_then(|lines| yaml_scalar_value(lines, "title"))
+        .or_else(|| first_markdown_heading(body))
+        .unwrap_or_else(|| title_from_relative_path(relative_path));
+    let slug = frontmatter
+        .as_ref()
+        .and_then(|lines| yaml_scalar_value(lines, "slug"))
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| slugify_note_title(&title));
+    let id = match parsed_id {
+        Some(value) => {
+            validate_note_id(&value)?;
+            value
+        }
+        None => stable_note_id_from_relative_path(relative_path),
+    };
+    validate_note_title(&title)?;
+    validate_note_slug(&slug)?;
+
+    let body_digest = format!("fnv1a64:{:016x}", fnv1a64(body.as_bytes()));
+    let frontmatter_json = serde_json::json!({
+        "zoid_id": id,
+        "title": title,
+        "slug": slug,
+        "relative_path": relative_path,
+        "body_digest": body_digest,
+    })
+    .to_string();
+
+    Ok(NoteIdentityMetadata {
+        id,
+        title,
+        slug,
+        relative_path: relative_path.to_string(),
+        frontmatter_json,
+        body_digest,
+        conflict_state: NoteConflictState::None,
+    })
+}
+
+#[allow(dead_code)]
+fn write_note_identity_frontmatter(
+    markdown: &str,
+    identity: &NoteIdentityMetadata,
+) -> RepoResult<String> {
+    validate_note_id(&identity.id)?;
+    validate_note_title(&identity.title)?;
+    validate_note_slug(&identity.slug)?;
+    validate_note_relative_path(&identity.relative_path)?;
+
+    let (frontmatter, body) = split_markdown_frontmatter(markdown);
+    let mut lines = frontmatter.unwrap_or_default();
+    set_yaml_scalar(&mut lines, "zoid_id", &identity.id);
+    set_yaml_scalar(&mut lines, "title", &identity.title);
+    set_yaml_scalar(&mut lines, "slug", &identity.slug);
+
+    let mut output = String::from("---\n");
+    for line in lines {
+        output.push_str(&line);
+        output.push('\n');
+    }
+    output.push_str("---\n");
+    if !body.starts_with('\n') {
+        output.push('\n');
+    }
+    output.push_str(body);
+    Ok(output)
+}
+
+#[allow(dead_code)]
+fn upsert_note_identity_metadata(
+    connection: &Connection,
+    identity: &NoteIdentityMetadata,
+) -> RepoResult<()> {
+    validate_note_id(&identity.id)?;
+    validate_note_title(&identity.title)?;
+    validate_note_slug(&identity.slug)?;
+    validate_note_relative_path(&identity.relative_path)?;
+    validate_json_field("frontmatter_json", &identity.frontmatter_json)?;
+
+    let existing_path = connection
+        .query_row(
+            "select relative_path from notes where id = ?1 and deleted_at is null",
+            params![identity.id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| map_repository_error("notes", error))?;
+    if let Some(existing_path) = existing_path {
+        if existing_path != identity.relative_path {
+            connection
+                .execute(
+                    "update notes set status = 'conflicted', conflict_state = 'duplicate_id', updated_at = current_timestamp where id = ?1",
+                    params![identity.id],
+                )
+                .map_err(|error| map_repository_error("notes", error))?;
+            return Err(RepositoryError::Constraint {
+                entity: "notes",
+                message: format!(
+                    "duplicate_id: note {} already indexed at {}",
+                    identity.id, existing_path
+                ),
+            });
+        }
+    }
+
+    connection
+        .execute(
+            "insert into notes (id, title, slug, relative_path, status, conflict_state, frontmatter_json, body_digest, metadata_json)
+             values (?1, ?2, ?3, ?4, 'active', ?5, ?6, ?7, '{}')
+             on conflict(id) do update set
+                title = excluded.title,
+                slug = excluded.slug,
+                relative_path = excluded.relative_path,
+                status = 'active',
+                conflict_state = excluded.conflict_state,
+                frontmatter_json = excluded.frontmatter_json,
+                body_digest = excluded.body_digest,
+                updated_at = current_timestamp,
+                deleted_at = null",
+            params![
+                identity.id,
+                identity.title,
+                identity.slug,
+                identity.relative_path,
+                identity.conflict_state.as_str(),
+                identity.frontmatter_json,
+                identity.body_digest
+            ],
+        )
+        .map_err(|error| map_repository_error("notes", error))?;
+
+    let index_id = format!("knowledge_note_frontmatter_{}", identity.id);
+    connection
+        .execute(
+            "insert into knowledge_index_entries (id, entity_type, entity_id, source_type, title, excerpt, search_text, content_digest, scan_state, metadata_json)
+             values (?1, 'note', ?2, 'markdown_frontmatter', ?3, ?4, ?5, ?6, 'current', ?7)
+             on conflict(entity_type, entity_id, source_type) do update set
+                title = excluded.title,
+                excerpt = excluded.excerpt,
+                search_text = excluded.search_text,
+                content_digest = excluded.content_digest,
+                scan_state = 'current',
+                indexed_at = current_timestamp,
+                metadata_json = excluded.metadata_json",
+            params![
+                index_id,
+                identity.id,
+                identity.title,
+                identity.slug,
+                format!("{} {} {}", identity.title, identity.slug, identity.relative_path),
+                identity.body_digest,
+                identity.frontmatter_json
+            ],
+        )
+        .map_err(|error| map_repository_error("knowledge_index_entries", error))?;
+
+    Ok(())
+}
+
+fn split_markdown_frontmatter(markdown: &str) -> (Option<Vec<String>>, &str) {
+    if !markdown.starts_with("---\n") {
+        return (None, markdown);
+    }
+    let rest = &markdown[4..];
+    if let Some(end) = rest.find("\n---") {
+        let frontmatter = rest[..end].lines().map(|line| line.to_string()).collect();
+        let body_start = end + "\n---".len();
+        let body = rest[body_start..]
+            .strip_prefix('\n')
+            .unwrap_or(&rest[body_start..]);
+        return (Some(frontmatter), body);
+    }
+    (None, markdown)
+}
+
+fn yaml_scalar_value(lines: &[String], key: &str) -> Option<String> {
+    let prefix = format!("{key}:");
+    lines.iter().find_map(|line| {
+        let trimmed = line.trim();
+        trimmed
+            .strip_prefix(&prefix)
+            .map(|value| parse_yaml_scalar_value(value.trim()))
+    })
+}
+
+fn parse_yaml_scalar_value(value: &str) -> String {
+    if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
+        return unescape_yaml_double_quoted_scalar(&value[1..value.len() - 1]);
+    }
+    value.trim_matches('\'').to_string()
+}
+
+fn unescape_yaml_double_quoted_scalar(value: &str) -> String {
+    let mut output = String::new();
+    let mut chars = value.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            if let Some(escaped) = chars.next() {
+                match escaped {
+                    '"' => output.push('"'),
+                    '\\' => output.push('\\'),
+                    'n' => output.push('\n'),
+                    't' => output.push('\t'),
+                    other => {
+                        output.push('\\');
+                        output.push(other);
+                    }
+                }
+            } else {
+                output.push('\\');
+            }
+        } else {
+            output.push(ch);
+        }
+    }
+    output
+}
+
+fn set_yaml_scalar(lines: &mut Vec<String>, key: &str, value: &str) {
+    let prefix = format!("{key}:");
+    let rendered = format!("{key}: {}", yaml_safe_scalar(value));
+    if let Some(line) = lines
+        .iter_mut()
+        .find(|line| line.trim().starts_with(&prefix))
+    {
+        *line = rendered;
+    } else {
+        lines.push(rendered);
+    }
+}
+
+fn yaml_safe_scalar(value: &str) -> String {
+    let normalized = value.replace('\n', " ").trim().to_string();
+    let escaped = normalized.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
+}
+
+fn first_markdown_heading(markdown: &str) -> Option<String> {
+    markdown.lines().find_map(|line| {
+        let trimmed = line.trim();
+        trimmed
+            .strip_prefix("# ")
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn title_from_relative_path(relative_path: &str) -> String {
+    let stem = relative_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(relative_path)
+        .trim_end_matches(".md");
+    stem.replace(['-', '_'], " ")
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn slugify_note_title(title: &str) -> String {
+    let mut slug = String::new();
+    let mut last_dash = false;
+    for ch in title.chars().flat_map(char::to_lowercase) {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch);
+            last_dash = false;
+        } else if !last_dash && !slug.is_empty() {
+            slug.push('-');
+            last_dash = true;
+        }
+    }
+    slug.trim_matches('-').to_string()
+}
+
+fn validate_note_id(id: &str) -> RepoResult<()> {
+    let valid = id.starts_with("note_")
+        && id.len() <= 96
+        && id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-');
+    if valid {
+        Ok(())
+    } else {
+        Err(RepositoryError::Constraint {
+            entity: "notes",
+            message: format!("invalid stable note id: {id}"),
+        })
+    }
+}
+
+fn validate_note_title(title: &str) -> RepoResult<()> {
+    if !title.trim().is_empty() && title.len() <= 256 {
+        Ok(())
+    } else {
+        Err(RepositoryError::Constraint {
+            entity: "notes",
+            message: "note title must be non-empty and at most 256 bytes".to_string(),
+        })
+    }
+}
+
+fn validate_note_slug(slug: &str) -> RepoResult<()> {
+    if !slug.trim().is_empty()
+        && slug.len() <= 160
+        && slug
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        Ok(())
+    } else {
+        Err(RepositoryError::Constraint {
+            entity: "notes",
+            message: format!("invalid note slug: {slug}"),
+        })
+    }
+}
+
+fn validate_note_relative_path(relative_path: &str) -> RepoResult<()> {
+    let valid = !relative_path.trim().is_empty()
+        && relative_path.len() <= 1024
+        && !relative_path.starts_with('/')
+        && !relative_path.contains("..")
+        && relative_path.ends_with(".md");
+    if valid {
+        Ok(())
+    } else {
+        Err(RepositoryError::Constraint {
+            entity: "notes",
+            message: format!("unsafe note relative path: {relative_path}"),
+        })
+    }
+}
+
+fn stable_note_id_from_relative_path(relative_path: &str) -> String {
+    format!("note_{:016x}", fnv1a64(relative_path.as_bytes()))
+}
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct IntegrationStatusRecord {
     integration_key: String,
