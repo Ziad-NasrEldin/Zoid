@@ -179,8 +179,10 @@ Goal: Today → Task → CLI Session → AgentRun → ReviewRecord → Notificat
 
 ## Phase 3 — Notes, Files, and Local Knowledge
 
-- [ ] P3.01 Planning: define Notes/Files scope; explicitly exclude Apple Notes import and full file-manager overreach.
-- [ ] P3.02 Database: notes/files/index/entity-link schema and migrations.
+- [x] P3.01 Planning: define Notes/Files scope; explicitly exclude Apple Notes import and full file-manager overreach.
+  - 2026-06-03 completed narrow scope plan in `Docs/2026-06-03-phase-3-notes-files-scope-plan.md`: local Markdown notes, safe local file references, knowledge index metadata, and entity links only; explicitly excludes Apple Notes import/sync, iCloud/CloudKit, whole-home crawling, full Finder/file-manager replacement, OCR, embeddings/semantic search, remote sync, and destructive automatic conflict resolution.
+- [x] P3.02 Database: notes/files/index/entity-link schema and migrations.
+  - 2026-06-03 added migration v9 `phase3_notes_files_knowledge` with `notes`, upgraded `file_references`, and `knowledge_index_entries`; added fail-closed schema/constraint/entity-link tests. Verification passed: `npm run verify:local && git diff --check` with Rust `134 passed`, `1 ignored`, frontend tests passed, frontend build passed. Lean critique approved in `.hermes/reviews/phase-3-notes-files-knowledge/critique-report.md`.
 - [ ] P3.03 Database: note identity/index metadata with stable frontmatter ID and conflict state.
 - [ ] P3.04 Backend: Markdown note create/edit/delete/trash service.
 - [ ] P3.05 Backend: frontmatter stable ID writer/reader and scanner/indexer.

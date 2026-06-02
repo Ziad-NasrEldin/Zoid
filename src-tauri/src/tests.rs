@@ -1274,9 +1274,9 @@ fn p206_review(connection: &Connection, task: &TaskRecord, run: &AgentRunRecord)
 #[test]
 fn p206_schema_version_eight_has_notifications_table_and_constraints() {
     let connection = migrated_in_memory_connection();
-    assert_eq!(
-        get_migration_version(&connection).expect("migration version"),
-        8
+    assert!(
+        get_migration_version(&connection).expect("migration version") >= 8,
+        "P2.06 notification schema must remain present after later migrations"
     );
     assert_table_has_columns(
         &connection,
@@ -4032,6 +4032,277 @@ fn assert_index_exists(connection: &Connection, table: &str, expected_index: &st
 }
 
 #[test]
+fn p302_schema_version_nine_has_notes_files_and_knowledge_index_tables() {
+    let connection = migrated_in_memory_connection();
+    assert!(
+        get_migration_version(&connection).expect("migration version") >= 9,
+        "P3.02 schema migration must advance to version 9 or later"
+    );
+
+    assert_table_has_columns(
+        &connection,
+        "notes",
+        &[
+            "id",
+            "title",
+            "slug",
+            "relative_path",
+            "status",
+            "conflict_state",
+            "frontmatter_json",
+            "body_digest",
+            "created_at",
+            "updated_at",
+            "deleted_at",
+            "metadata_json",
+        ],
+    );
+    assert_index_exists(&connection, "notes", "idx_notes_status_updated");
+    assert_index_exists(&connection, "notes", "idx_notes_relative_path_active");
+    assert_index_exists(&connection, "notes", "idx_notes_conflict_state");
+
+    assert_table_has_columns(
+        &connection,
+        "file_references",
+        &[
+            "id",
+            "root_key",
+            "relative_path",
+            "display_name",
+            "file_kind",
+            "mime_type",
+            "extension",
+            "byte_size",
+            "content_fingerprint",
+            "status",
+            "conflict_state",
+            "last_seen_at",
+            "created_at",
+            "updated_at",
+            "deleted_at",
+            "metadata_json",
+        ],
+    );
+    assert_index_exists(
+        &connection,
+        "file_references",
+        "idx_file_references_root_path_active",
+    );
+    assert_index_exists(
+        &connection,
+        "file_references",
+        "idx_file_references_status_updated",
+    );
+    assert_index_exists(
+        &connection,
+        "file_references",
+        "idx_file_references_conflict_state",
+    );
+
+    assert_table_has_columns(
+        &connection,
+        "knowledge_index_entries",
+        &[
+            "id",
+            "entity_type",
+            "entity_id",
+            "source_type",
+            "title",
+            "excerpt",
+            "search_text",
+            "content_digest",
+            "source_modified_at",
+            "scan_state",
+            "indexed_at",
+            "metadata_json",
+        ],
+    );
+    assert_index_exists(
+        &connection,
+        "knowledge_index_entries",
+        "idx_knowledge_index_entity_source",
+    );
+    assert_index_exists(
+        &connection,
+        "knowledge_index_entries",
+        "idx_knowledge_index_scan_state",
+    );
+}
+
+#[test]
+fn p302_notes_files_and_index_constraints_fail_closed() {
+    let connection = migrated_in_memory_connection();
+
+    connection
+        .execute(
+            "insert into notes (id, title, slug, relative_path, status, conflict_state, frontmatter_json, body_digest, metadata_json)
+             values (?1, ?2, ?3, ?4, 'active', 'none', '{}', ?5, '{}')",
+            params![
+                "note-p302-valid",
+                "P3.02 valid note",
+                "p302-valid-note",
+                "Notes/p302-valid-note.md",
+                "sha256:note"
+            ],
+        )
+        .expect("valid note row should insert");
+
+    let invalid_note_status = connection.execute(
+        "insert into notes (id, title, relative_path, status, conflict_state, frontmatter_json, metadata_json)
+         values ('note-bad-status', 'Bad', 'Notes/bad.md', 'synced_to_apple_notes', 'none', '{}', '{}')",
+        [],
+    );
+    assert!(
+        invalid_note_status.is_err(),
+        "invalid note status must fail closed"
+    );
+
+    let invalid_frontmatter = connection.execute(
+        "insert into notes (id, title, relative_path, status, conflict_state, frontmatter_json, metadata_json)
+         values ('note-bad-json', 'Bad JSON', 'Notes/bad-json.md', 'active', 'none', '{bad', '{}')",
+        [],
+    );
+    assert!(
+        invalid_frontmatter.is_err(),
+        "invalid frontmatter JSON must fail closed"
+    );
+
+    connection
+        .execute(
+            "insert into file_references (id, root_key, relative_path, display_name, file_kind, mime_type, extension, byte_size, content_fingerprint, status, conflict_state, metadata_json)
+             values ('file-p302-valid', 'zoid_visible', 'Assets/p302.txt', 'p302.txt', 'document', 'text/plain', 'txt', 12, 'sha256:file', 'indexed', 'none', '{}')",
+            [],
+        )
+        .expect("valid file reference should insert");
+
+    let invalid_file_kind = connection.execute(
+        "insert into file_references (id, root_key, relative_path, display_name, file_kind, status, conflict_state, metadata_json)
+         values ('file-bad-kind', 'zoid_visible', 'Assets/bad', 'bad', 'whole_home_crawler', 'indexed', 'none', '{}')",
+        [],
+    );
+    assert!(
+        invalid_file_kind.is_err(),
+        "invalid file kind must fail closed"
+    );
+
+    let invalid_byte_size = connection.execute(
+        "insert into file_references (id, root_key, relative_path, display_name, file_kind, byte_size, status, conflict_state, metadata_json)
+         values ('file-bad-size', 'zoid_visible', 'Assets/bad-size', 'bad-size', 'document', -1, 'indexed', 'none', '{}')",
+        [],
+    );
+    assert!(
+        invalid_byte_size.is_err(),
+        "negative byte size must fail closed"
+    );
+
+    connection
+        .execute(
+            "insert into knowledge_index_entries (id, entity_type, entity_id, source_type, title, excerpt, search_text, content_digest, scan_state, metadata_json)
+             values ('index-note-p302', 'note', 'note-p302-valid', 'markdown_frontmatter', 'P3.02 valid note', 'excerpt', 'search text', 'sha256:index', 'current', '{}')",
+            [],
+        )
+        .expect("valid index entry should insert");
+
+    let invalid_entity_type = connection.execute(
+        "insert into knowledge_index_entries (id, entity_type, entity_id, source_type, scan_state, metadata_json)
+         values ('index-bad-entity', 'apple_note', 'apple-1', 'markdown_frontmatter', 'current', '{}')",
+        [],
+    );
+    assert!(
+        invalid_entity_type.is_err(),
+        "unsupported index entity type must fail closed"
+    );
+
+    let invalid_scan_state = connection.execute(
+        "insert into knowledge_index_entries (id, entity_type, entity_id, source_type, scan_state, metadata_json)
+         values ('index-bad-state', 'note', 'note-p302-valid', 'markdown_frontmatter', 'synced_remote', '{}')",
+        [],
+    );
+    assert!(
+        invalid_scan_state.is_err(),
+        "unsupported scan state must fail closed"
+    );
+}
+
+#[test]
+fn p302_notes_and_files_link_to_existing_tasks_through_entity_links() {
+    let connection = migrated_in_memory_connection();
+    let task = p204_task(&connection, "P3.02 linked task");
+
+    connection
+        .execute(
+            "insert into notes (id, title, slug, relative_path, status, conflict_state, frontmatter_json, metadata_json)
+             values ('note-p302-link', 'Linked note', 'linked-note', 'Notes/linked-note.md', 'active', 'none', '{}', '{}')",
+            [],
+        )
+        .expect("insert linked note");
+    connection
+        .execute(
+            "insert into file_references (id, root_key, relative_path, display_name, file_kind, status, conflict_state, metadata_json)
+             values ('file-p302-link', 'zoid_visible', 'Assets/linked.txt', 'linked.txt', 'document', 'indexed', 'none', '{}')",
+            [],
+        )
+        .expect("insert linked file");
+
+    insert_or_get_entity_link(
+        &connection,
+        EntityLinkInput {
+            id: "link-p302-task-note",
+            source_type: "task",
+            source_id: &task.id,
+            target_type: "note",
+            target_id: "note-p302-link",
+            relation_type: "references",
+            created_by_actor_type: "system",
+            metadata_json: "{}",
+        },
+    )
+    .expect("link task to note");
+    insert_or_get_entity_link(
+        &connection,
+        EntityLinkInput {
+            id: "link-p302-file-task",
+            source_type: "file",
+            source_id: "file-p302-link",
+            target_type: "task",
+            target_id: &task.id,
+            relation_type: "supports",
+            created_by_actor_type: "system",
+            metadata_json: "{}",
+        },
+    )
+    .expect("link file to task");
+
+    let outgoing_task_links = list_entity_links_by_source(
+        &connection,
+        EntityLinkListFilter {
+            entity_type: "task",
+            entity_id: &task.id,
+            relation_type: None,
+            counterpart_type: None,
+        },
+    )
+    .expect("list outgoing task links");
+    let incoming_task_links = list_entity_links_by_target(
+        &connection,
+        EntityLinkListFilter {
+            entity_type: "task",
+            entity_id: &task.id,
+            relation_type: None,
+            counterpart_type: None,
+        },
+    )
+    .expect("list incoming task links");
+
+    assert!(outgoing_task_links
+        .iter()
+        .any(|link| link.target_type == "note" && link.target_id == "note-p302-link"));
+    assert!(incoming_task_links
+        .iter()
+        .any(|link| link.source_type == "file" && link.source_id == "file-p302-link"));
+}
+
+#[test]
 fn migrations_create_p105_core_schema_tables() {
     let connection = Connection::open_in_memory().expect("open in-memory sqlite");
     run_migrations(&connection).expect("run migrations");
@@ -4125,11 +4396,14 @@ fn migrations_create_p105_core_schema_tables() {
         "file_references",
         &[
             "id",
-            "workspace_key",
+            "root_key",
             "relative_path",
             "display_name",
+            "file_kind",
             "mime_type",
-            "content_hash",
+            "content_fingerprint",
+            "status",
+            "conflict_state",
             "metadata_json",
             "created_at",
             "updated_at",
@@ -4174,7 +4448,7 @@ fn migrations_create_p105_core_schema_tables() {
     assert_index_exists(
         &connection,
         "file_references",
-        "idx_file_references_workspace_path",
+        "idx_file_references_root_path_active",
     );
     assert_index_exists(
         &connection,

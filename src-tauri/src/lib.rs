@@ -279,6 +279,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "phase2_notifications",
         sql: include_str!("../migrations/0008_phase2_notifications.sql"),
     },
+    Migration {
+        version: 9,
+        name: "phase3_notes_files_knowledge",
+        sql: include_str!("../migrations/0009_phase3_notes_files_knowledge.sql"),
+    },
 ];
 
 struct Migration {
