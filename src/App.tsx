@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import "./App.css";
 import {
   buildConfirmationPolicyView,
@@ -25,6 +25,18 @@ import {
   type TodayWidgetPanelView,
   type TodayWidgetsView,
 } from "./todayWidgets";
+import {
+  createInitialTaskBridgeState,
+  createTaskThroughBridge,
+  formDraftForTask,
+  refreshTasksFromBridge,
+  selectTaskThroughBridge,
+  updateTaskThroughBridge,
+  type TaskBridgeInvoke,
+  type TaskBridgeUiState,
+} from "./taskBridgeIntegration";
+import type { TaskFormDraft } from "./taskViewModel";
+import { TaskWorkspace } from "./taskWorkspace";
 import {
   buildWorkspaceChromeView,
   buildWorkspaceRegistryView,
@@ -362,6 +374,8 @@ function TodayWidgetPanel({ panel }: TodayWidgetPanelProps) {
 const ACTIVE_RUNS_BRIDGE_GAP =
   "No persisted run-list command is registered in the native bridge yet; Today cannot query active AgentRun rows truthfully.";
 
+const taskInvoke: TaskBridgeInvoke = (command, args) => invoke(command, args);
+
 function bridgeErrorReason(label: string, error: unknown) {
   const detail = error instanceof Error ? error.message : typeof error === "string" ? error : "unknown native bridge error";
   return `${label} bridge is unavailable (${detail}). No browser preview or fallback records are simulated.`;
@@ -501,6 +515,7 @@ function App() {
   const [statusError, setStatusError] = useState<string | null>(null);
   const [todayTasks, setTodayTasks] = useState<TodayDataState<TodayTaskRecord>>({ state: "checking" });
   const [todayInbox, setTodayInbox] = useState<TodayDataState<TodayNotificationRecord>>({ state: "checking" });
+  const [taskBridgeUi, setTaskBridgeUi] = useState<TaskBridgeUiState>(() => createInitialTaskBridgeState("tasks"));
 
   useEffect(() => {
     invoke<FoundationStatus>("get_foundation_status")
@@ -510,15 +525,23 @@ function App() {
       });
   }, []);
 
+  const applyTaskState = useCallback((state: TaskBridgeUiState["state"]) => {
+    setTaskBridgeUi((current) => ({ ...current, state }));
+    if (state.mode === "ready") setTodayTasks({ state: "ready", records: state.tasks });
+    if (state.mode === "error") setTodayTasks({ state: "unavailable", reason: bridgeErrorReason("Native task", state.error) });
+  }, []);
+
+  const loadTaskWorkspace = useCallback(async (selectedTaskId: string | null) => {
+    setTaskBridgeUi((current) => ({ ...current, state: { mode: "loading", selectedTaskId } }));
+    applyTaskState(await refreshTasksFromBridge(taskInvoke, { selectedTaskId }));
+  }, [applyTaskState]);
+
   useEffect(() => {
     let cancelled = false;
 
-    invoke<TodayTaskRecord[]>("list_tasks_command")
-      .then((records) => {
-        if (!cancelled) setTodayTasks({ state: "ready", records });
-      })
-      .catch((error) => {
-        if (!cancelled) setTodayTasks({ state: "unavailable", reason: bridgeErrorReason("Native task", error) });
+    refreshTasksFromBridge(taskInvoke, { selectedTaskId: null })
+      .then((state) => {
+        if (!cancelled) applyTaskState(state);
       });
 
     invoke<TodayNotificationRecord[]>("list_inbox_notifications_command", {
@@ -534,7 +557,50 @@ function App() {
     return () => {
       cancelled = true;
     };
+  }, [applyTaskState]);
+
+  const handleTaskFormChange = useCallback((form: TaskFormDraft) => {
+    setTaskBridgeUi((current) => ({ ...current, form, formErrors: {} }));
   }, []);
+
+  const handleNewTask = useCallback(() => {
+    setTaskBridgeUi((current) => ({
+      form: createInitialTaskBridgeState(current.form.workspace_key || "tasks").form,
+      formErrors: {},
+      state: current.state.mode === "ready"
+        ? { ...current.state, selectedTaskId: null }
+        : { mode: "loading", selectedTaskId: null },
+    }));
+  }, []);
+
+  const handleCreateTask = useCallback(async (form: TaskFormDraft) => {
+    const next = await createTaskThroughBridge(taskInvoke, form);
+    setTaskBridgeUi(next);
+    if (next.state.mode === "ready") setTodayTasks({ state: "ready", records: next.state.tasks });
+    if (next.state.mode === "error") setTodayTasks({ state: "unavailable", reason: bridgeErrorReason("Native task", next.state.error) });
+  }, []);
+
+  const handleUpdateTask = useCallback(async (taskId: string, form: TaskFormDraft) => {
+    const next = await updateTaskThroughBridge(taskInvoke, taskId, form);
+    setTaskBridgeUi(next);
+    if (next.state.mode === "ready") setTodayTasks({ state: "ready", records: next.state.tasks });
+    if (next.state.mode === "error") setTodayTasks({ state: "unavailable", reason: bridgeErrorReason("Native task", next.state.error) });
+  }, []);
+
+  const handleSelectTask = useCallback(async (taskId: string) => {
+    const state = await selectTaskThroughBridge(taskInvoke, taskId);
+    setTaskBridgeUi((current) => {
+      const selectedTask = state.mode === "ready" ? state.tasks.find((task) => task.id === state.selectedTaskId) : null;
+      return {
+        ...current,
+        form: selectedTask ? formDraftForTask(selectedTask) : current.form,
+        formErrors: {},
+        state,
+      };
+    });
+    if (state.mode === "ready") setTodayTasks({ state: "ready", records: state.tasks });
+    if (state.mode === "error") setTodayTasks({ state: "unavailable", reason: bridgeErrorReason("Native task", state.error) });
+  }, [applyTaskState]);
 
   const workspaceRegistry = useMemo(() => buildWorkspaceRegistryView(status, statusError), [status, statusError]);
   const workspaces = workspaceRegistry.workspaces;
@@ -640,6 +706,18 @@ function App() {
                 todayWidgets={todayWidgets}
                 workspaceRegistry={workspaceRegistry}
                 workspaces={workspaces}
+              />
+            ) : active?.id === "tasks" ? (
+              <TaskWorkspace
+                form={taskBridgeUi.form}
+                formErrors={taskBridgeUi.formErrors}
+                onCreateTask={handleCreateTask}
+                onFormChange={handleTaskFormChange}
+                onNewTask={handleNewTask}
+                onRefresh={() => loadTaskWorkspace(taskBridgeUi.state.selectedTaskId)}
+                onSelectTask={handleSelectTask}
+                onUpdateTask={handleUpdateTask}
+                state={taskBridgeUi.state}
               />
             ) : (
             <>

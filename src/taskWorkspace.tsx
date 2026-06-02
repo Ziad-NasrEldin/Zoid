@@ -19,6 +19,7 @@ export type TaskWorkspaceProps = {
   onFormChange?: (form: TaskFormDraft) => void;
   onCreateTask?: (form: TaskFormDraft) => void;
   onUpdateTask?: (taskId: string, form: TaskFormDraft) => void;
+  onNewTask?: () => void;
   onSelectTask?: (taskId: string) => void;
   onRefresh?: () => void;
 };
@@ -77,10 +78,11 @@ export function TaskForm({
 
       <label>
         Status
-        <select value={form.status} onChange={(event) => update({ status: event.currentTarget.value })}>
+        <select aria-describedby="task-status-bridge-note" disabled value={form.status} onChange={(event) => update({ status: event.currentTarget.value })}>
           {taskStatuses.map((status) => <option key={status} value={status}>{status.replace(/_/g, " ")}</option>)}
         </select>
       </label>
+      <p id="task-status-bridge-note">Status is shown from persisted task state; status changes use the separate native status action.</p>
       <FieldError message={visibleErrors.status} />
 
       <label>
@@ -115,6 +117,7 @@ export function TaskWorkspace({
   onFormChange,
   onCreateTask,
   onUpdateTask,
+  onNewTask,
   onSelectTask,
   onRefresh,
 }: TaskWorkspaceProps) {
@@ -128,6 +131,7 @@ export function TaskWorkspace({
         <h2 id="task-workspace-heading">Tasks</h2>
         <p>{view.list.copy}</p>
         <p aria-live="polite">{view.list.statusLabel}</p>
+        <button type="button" onClick={onNewTask}>New task</button>
         <button type="button" onClick={onRefresh}>Refresh real tasks</button>
       </header>
 
