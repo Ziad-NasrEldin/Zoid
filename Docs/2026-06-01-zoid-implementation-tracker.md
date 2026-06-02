@@ -93,7 +93,8 @@ Non-negotiable gates for every implementation slice:
   - 2026-06-02 launched local Tauri dev app with `npm run tauri:dev`; verified native `target/debug/zoid` process, `http://127.0.0.1:1420/` HTTP 200, visible folders `Notes`, `Content`, `Assets`, `Exports`, `Imports`, `Backups`, app-support `logs`/`config`/`zoid.sqlite`/`foundation.log`, SQLite counts `workspaces=14`, `events=1`, `action_policies=20`, `integrations=7`, `app_settings=0`, `migration_version=4`, and foundation log readiness lines. Settings evidence is truthful: config directory and SQLite settings table/status path verified; startup does not create physical `config/settings.json` or default settings rows. Final verification review verdict APPROVED.
 - [x] P1.28 Verification: run `npm run verify:local`.
   - 2026-06-02 ran `npm run verify:local` after P1.27. Repo gate passed: npm dependencies present, Tauri CLI found, Rust tests 90 passed/0 failed, frontend smoke tests passed, frontend production build passed, and final script marker `PASS: local push verification passed (--skip-package)`.
-- [ ] P1.29 Review: write `.hermes/reviews/phase-1-secure-foundation/handoff.md`.
+- [x] P1.29 Review: write `.hermes/reviews/phase-1-secure-foundation/handoff.md`.
+  - 2026-06-02 wrote phase-level handoff summarizing completed P1.05-P1.28 secure-foundation slices, changed source/test/review artifacts, latest `npm run verify:local` evidence, P1.27 macOS launch evidence, and truthful caveats for packaging, Keychain, config/settings path, and browser preview states.
 - [ ] P1.30 Review: critique loop until `Verdict: APPROVED`.
 
 ---
