@@ -4032,6 +4032,317 @@ fn assert_index_exists(connection: &Connection, table: &str, expected_index: &st
 }
 
 #[test]
+fn p304_note_service_create_edit_persists_file_db_index_and_events() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p304-note-service-create-edit");
+    fs::create_dir_all(visible_root.join("Notes")).expect("create Notes directory");
+
+    let created = create_markdown_note_service(
+        &connection,
+        &visible_root,
+        NoteCreateInput {
+            title: "Today Note".to_string(),
+            body_markdown: "Initial body".to_string(),
+            relative_path: Some("Notes/today-note.md".to_string()),
+            metadata_json: r#"{"source":"test"}"#.to_string(),
+        },
+    )
+    .expect("create note");
+
+    assert_eq!(created.title, "Today Note");
+    assert_eq!(created.slug, "today-note");
+    assert_eq!(created.relative_path, "Notes/today-note.md");
+    assert_eq!(created.status, "active");
+    assert!(created
+        .markdown
+        .contains(&format!("zoid_id: \"{}\"", created.id)));
+    assert!(visible_root.join("Notes/today-note.md").exists());
+
+    let edited_markdown = format!(
+        "---\nzoid_id: \"{}\"\ntitle: \"Today Updated\"\nslug: \"today-updated\"\n---\n\n# Today Updated\n\nEdited body",
+        created.id
+    );
+    let edited =
+        edit_markdown_note_service(&connection, &visible_root, &created.id, &edited_markdown)
+            .expect("edit note");
+    assert_eq!(edited.id, created.id);
+    assert_eq!(edited.relative_path, created.relative_path);
+    assert_eq!(edited.title, "Today Updated");
+    assert_eq!(edited.slug, "today-updated");
+    assert!(edited
+        .markdown
+        .contains(&format!("zoid_id: \"{}\"", created.id)));
+    assert!(edited.markdown.contains("Edited body"));
+
+    let indexed_title: String = connection
+        .query_row(
+            "select title from knowledge_index_entries where entity_type = 'note' and entity_id = ?1 and source_type = 'markdown_frontmatter'",
+            params![created.id],
+            |row| row.get(0),
+        )
+        .expect("read note index title");
+    assert_eq!(indexed_title, "Today Updated");
+
+    let note_event_count: i64 = connection
+        .query_row(
+            "select count(*) from events where type in ('note.created', 'note.updated') and source = 'note_service'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count note events");
+    assert_eq!(note_event_count, 2);
+}
+
+#[test]
+fn p304_note_service_trash_and_delete_are_non_destructive_soft_states() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p304-note-service-trash-delete");
+    fs::create_dir_all(visible_root.join("Notes")).expect("create Notes directory");
+    let created = create_markdown_note_service(
+        &connection,
+        &visible_root,
+        NoteCreateInput {
+            title: "Trash Me".to_string(),
+            body_markdown: "Keep a recoverable file".to_string(),
+            relative_path: Some("Notes/trash-me.md".to_string()),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect("create note");
+
+    let trashed =
+        trash_markdown_note_service(&connection, &visible_root, &created.id).expect("trash note");
+    assert_eq!(trashed.status, "trashed");
+    assert_eq!(
+        trashed.relative_path,
+        format!("Notes/.Trash/{}.md", created.id)
+    );
+    assert!(!visible_root.join("Notes/trash-me.md").exists());
+    assert!(visible_root.join(&trashed.relative_path).exists());
+    assert!(trashed.metadata_json.contains("original_relative_path"));
+    assert!(trashed.metadata_json.contains("Notes/trash-me.md"));
+    let trashed_index_state: String = connection
+        .query_row(
+            "select scan_state from knowledge_index_entries where entity_type = 'note' and entity_id = ?1 and source_type = 'markdown_frontmatter'",
+            params![created.id],
+            |row| row.get(0),
+        )
+        .expect("trashed index state");
+    assert_eq!(trashed_index_state, "missing");
+
+    let re_trashed = trash_markdown_note_service(&connection, &visible_root, &created.id)
+        .expect("double trash is idempotent");
+    assert_eq!(re_trashed.status, "trashed");
+    assert!(re_trashed.metadata_json.contains("Notes/trash-me.md"));
+    assert!(!re_trashed
+        .metadata_json
+        .contains("original_relative_path\":\"Notes/.Trash"));
+
+    let deleted = delete_markdown_note_service(&connection, &visible_root, &created.id)
+        .expect("soft delete note");
+    assert_eq!(deleted.status, "deleted");
+    assert!(visible_root.join(&trashed.relative_path).exists());
+    let deleted_index_state: String = connection
+        .query_row(
+            "select scan_state from knowledge_index_entries where entity_type = 'note' and entity_id = ?1 and source_type = 'markdown_frontmatter'",
+            params![created.id],
+            |row| row.get(0),
+        )
+        .expect("deleted index state");
+    assert_eq!(deleted_index_state, "missing");
+
+    let deleted_at: Option<String> = connection
+        .query_row(
+            "select deleted_at from notes where id = ?1",
+            params![created.id],
+            |row| row.get(0),
+        )
+        .expect("read deleted_at");
+    assert!(deleted_at.is_some());
+
+    let second = create_markdown_note_service(
+        &connection,
+        &visible_root,
+        NoteCreateInput {
+            title: "Collision".to_string(),
+            body_markdown: "Do not overwrite trash destination".to_string(),
+            relative_path: Some("Notes/collision.md".to_string()),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect("create collision note");
+    let collision_path = visible_root.join(format!("Notes/.Trash/{}.md", second.id));
+    fs::write(&collision_path, "pre-existing trash file").expect("write collision trash file");
+    let collision_error = trash_markdown_note_service(&connection, &visible_root, &second.id)
+        .expect_err("trash destination collision must fail closed");
+    assert!(matches!(
+        collision_error,
+        RepositoryError::Constraint {
+            entity: "notes",
+            ..
+        }
+    ));
+    assert_eq!(
+        fs::read_to_string(&collision_path).expect("read collision file"),
+        "pre-existing trash file"
+    );
+    assert!(visible_root.join("Notes/collision.md").exists());
+
+    let third = create_markdown_note_service(
+        &connection,
+        &visible_root,
+        NoteCreateInput {
+            title: "Double Trash".to_string(),
+            body_markdown: "Preserve original path".to_string(),
+            relative_path: Some("Notes/double-trash.md".to_string()),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect("create double-trash note");
+    let first_trash = trash_markdown_note_service(&connection, &visible_root, &third.id)
+        .expect("trash third note");
+    let second_trash = trash_markdown_note_service(&connection, &visible_root, &third.id)
+        .expect("already-trashed note is idempotent");
+    assert_eq!(second_trash.status, "trashed");
+    assert_eq!(second_trash.relative_path, first_trash.relative_path);
+    assert!(first_trash.metadata_json.contains("Notes/double-trash.md"));
+    assert!(second_trash.metadata_json.contains("Notes/double-trash.md"));
+    assert!(!second_trash
+        .metadata_json
+        .contains("original_relative_path\":\"Notes/.Trash"));
+}
+
+#[test]
+fn p304_note_service_rejects_unsafe_paths_existing_files_and_secret_metadata() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p304-note-service-rejections");
+    fs::create_dir_all(visible_root.join("Notes")).expect("create Notes directory");
+    fs::write(visible_root.join("Notes/existing.md"), "existing").expect("write existing note");
+
+    let unsafe_path = create_markdown_note_service(
+        &connection,
+        &visible_root,
+        NoteCreateInput {
+            title: "Unsafe".to_string(),
+            body_markdown: "Body".to_string(),
+            relative_path: Some("Content/unsafe.md".to_string()),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect_err("non-Notes path rejected");
+    assert!(matches!(
+        unsafe_path,
+        RepositoryError::Constraint {
+            entity: "notes",
+            ..
+        }
+    ));
+
+    let existing_file = create_markdown_note_service(
+        &connection,
+        &visible_root,
+        NoteCreateInput {
+            title: "Existing".to_string(),
+            body_markdown: "Body".to_string(),
+            relative_path: Some("Notes/existing.md".to_string()),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect_err("existing note file rejected");
+    assert!(matches!(
+        existing_file,
+        RepositoryError::Constraint {
+            entity: "notes",
+            ..
+        }
+    ));
+
+    let raw_secret = create_markdown_note_service(
+        &connection,
+        &visible_root,
+        NoteCreateInput {
+            title: "Secret".to_string(),
+            body_markdown: "Body".to_string(),
+            relative_path: Some("Notes/secret.md".to_string()),
+            metadata_json: r#"{"api_key":"sk-live-123"}"#.to_string(),
+        },
+    )
+    .expect_err("secret metadata rejected");
+    assert!(matches!(
+        raw_secret,
+        RepositoryError::SecretRejected {
+            field: "metadata_json",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn p304_note_service_rejects_trash_destination_collision_and_symlink_escape() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p304-note-service-safe-paths");
+    fs::create_dir_all(visible_root.join("Notes/link-parent")).expect("create Notes child");
+    let outside = temp_home("p304-note-service-outside");
+    fs::create_dir_all(&outside).expect("create outside dir");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let link_path = visible_root.join("Notes/symlinked");
+        symlink(&outside, &link_path).expect("create symlink escape");
+        let escaped = create_markdown_note_service(
+            &connection,
+            &visible_root,
+            NoteCreateInput {
+                title: "Escaped".to_string(),
+                body_markdown: "Body".to_string(),
+                relative_path: Some("Notes/symlinked/escaped.md".to_string()),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect_err("symlink parent escape rejected");
+        assert!(matches!(
+            escaped,
+            RepositoryError::Constraint {
+                entity: "notes",
+                ..
+            }
+        ));
+        assert!(!outside.join("escaped.md").exists());
+    }
+
+    let created = create_markdown_note_service(
+        &connection,
+        &visible_root,
+        NoteCreateInput {
+            title: "Collision".to_string(),
+            body_markdown: "Recoverable body".to_string(),
+            relative_path: Some("Notes/link-parent/collision.md".to_string()),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect("create collision note");
+    let trash_path = visible_root.join(format!("Notes/.Trash/{}.md", created.id));
+    fs::create_dir_all(trash_path.parent().expect("trash parent")).expect("trash parent dir");
+    fs::write(&trash_path, "existing recoverable content").expect("seed trash collision");
+
+    let collision = trash_markdown_note_service(&connection, &visible_root, &created.id)
+        .expect_err("trash destination collision rejected");
+    assert!(matches!(
+        collision,
+        RepositoryError::Constraint {
+            entity: "notes",
+            ..
+        }
+    ));
+    assert_eq!(
+        fs::read_to_string(&trash_path).expect("read trash collision file"),
+        "existing recoverable content"
+    );
+    assert!(visible_root.join("Notes/link-parent/collision.md").exists());
+}
+
+#[test]
 fn p303_note_identity_frontmatter_is_stable_and_round_trips() {
     let markdown = "# Original title\n\nBody text\n";
     let identity = derive_note_identity_from_markdown("Notes/original-title.md", markdown)

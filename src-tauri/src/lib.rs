@@ -1994,6 +1994,485 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct NoteServiceRecord {
+    id: String,
+    title: String,
+    slug: String,
+    relative_path: String,
+    status: String,
+    conflict_state: String,
+    body_digest: String,
+    metadata_json: String,
+    markdown: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct NoteCreateInput {
+    title: String,
+    body_markdown: String,
+    relative_path: Option<String>,
+    metadata_json: String,
+}
+
+#[allow(dead_code)]
+impl NoteCreateInput {
+    fn new(title: &str, body_markdown: &str) -> Self {
+        Self {
+            title: title.to_string(),
+            body_markdown: body_markdown.to_string(),
+            relative_path: None,
+            metadata_json: "{}".to_string(),
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn create_markdown_note_service(
+    connection: &Connection,
+    visible_root: &Path,
+    input: NoteCreateInput,
+) -> RepoResult<NoteServiceRecord> {
+    validate_note_title(&input.title)?;
+    validate_no_secret_json("metadata_json", &input.metadata_json)?;
+    let relative_path = input
+        .relative_path
+        .unwrap_or_else(|| format!("Notes/{}.md", slugify_note_title(&input.title)));
+    validate_note_service_relative_path(&relative_path)?;
+    let note_path = resolve_note_service_path(visible_root, &relative_path)?;
+    if note_path.exists() {
+        return Err(RepositoryError::Constraint {
+            entity: "notes",
+            message: format!("note file already exists: {relative_path}"),
+        });
+    }
+    if let Some(parent) = note_path.parent() {
+        ensure_directory(parent).map_err(|error| io_repository_error("notes", error))?;
+    }
+
+    let seed_markdown = format!(
+        "# {}\n\n{}",
+        input.title.trim(),
+        input.body_markdown.trim_start()
+    );
+    let identity = derive_note_identity_from_markdown(&relative_path, &seed_markdown)?;
+    let markdown = write_note_identity_frontmatter(&seed_markdown, &identity)?;
+
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&note_path)
+        .and_then(|mut file| file.write_all(markdown.as_bytes()))
+        .map_err(|error| io_repository_error("notes", error))?;
+
+    connection
+        .execute_batch("savepoint create_markdown_note_service")
+        .map_err(|error| map_repository_error("notes", error))?;
+    let create_result = (|| -> RepoResult<NoteServiceRecord> {
+        upsert_note_identity_metadata(connection, &identity)?;
+        connection
+            .execute(
+                "update notes set metadata_json = ?2, updated_at = current_timestamp where id = ?1",
+                params![identity.id, input.metadata_json],
+            )
+            .map_err(|error| map_repository_error("notes", error))?;
+        create_note_service_event(connection, "note.created", &identity.id, &identity.title)?;
+        read_note_service(connection, visible_root, &identity.id)
+    })();
+
+    match create_result {
+        Ok(record) => {
+            connection
+                .execute_batch("release savepoint create_markdown_note_service")
+                .map_err(|error| map_repository_error("notes", error))?;
+            Ok(record)
+        }
+        Err(error) => {
+            let _ = connection.execute_batch(
+                "rollback to savepoint create_markdown_note_service; release savepoint create_markdown_note_service",
+            );
+            let _ = fs::remove_file(&note_path);
+            Err(error)
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn edit_markdown_note_service(
+    connection: &Connection,
+    visible_root: &Path,
+    note_id: &str,
+    markdown: &str,
+) -> RepoResult<NoteServiceRecord> {
+    let before = read_note_row(connection, note_id)?;
+    if before.status == "deleted" || before.status == "trashed" {
+        return Err(RepositoryError::Constraint {
+            entity: "notes",
+            message: format!("cannot edit note in status {}", before.status),
+        });
+    }
+    let parsed_frontmatter_id = split_markdown_frontmatter(markdown)
+        .0
+        .as_ref()
+        .and_then(|lines| yaml_scalar_value(lines, "zoid_id"));
+    if let Some(parsed_frontmatter_id) = parsed_frontmatter_id {
+        if parsed_frontmatter_id != before.id {
+            return Err(RepositoryError::Constraint {
+                entity: "notes",
+                message: "note frontmatter id changes are not allowed".to_string(),
+            });
+        }
+    }
+
+    let mut identity = derive_note_identity_from_markdown(&before.relative_path, markdown)?;
+    identity.id = before.id.clone();
+    identity.frontmatter_json = serde_json::json!({
+        "zoid_id": identity.id,
+        "title": identity.title,
+        "slug": identity.slug,
+        "relative_path": identity.relative_path,
+        "body_digest": identity.body_digest,
+    })
+    .to_string();
+    let rendered = write_note_identity_frontmatter(markdown, &identity)?;
+    let note_path = resolve_note_service_path(visible_root, &before.relative_path)?;
+    let original_markdown = fs::read_to_string(&note_path).unwrap_or_default();
+    let temp_path = note_path.with_extension("md.zoid-tmp");
+
+    connection
+        .execute_batch("savepoint edit_markdown_note_service")
+        .map_err(|error| map_repository_error("notes", error))?;
+    let edit_result = (|| -> RepoResult<NoteServiceRecord> {
+        upsert_note_identity_metadata(connection, &identity)?;
+        connection
+            .execute(
+                "update notes set metadata_json = ?2, updated_at = current_timestamp where id = ?1",
+                params![identity.id, before.metadata_json],
+            )
+            .map_err(|error| map_repository_error("notes", error))?;
+        create_note_service_event(connection, "note.updated", &identity.id, &identity.title)?;
+        fs::write(&temp_path, rendered.as_bytes())
+            .map_err(|error| io_repository_error("notes", error))?;
+        fs::rename(&temp_path, &note_path).map_err(|error| io_repository_error("notes", error))?;
+        read_note_service(connection, visible_root, &identity.id)
+    })();
+
+    match edit_result {
+        Ok(record) => {
+            connection
+                .execute_batch("release savepoint edit_markdown_note_service")
+                .map_err(|error| map_repository_error("notes", error))?;
+            Ok(record)
+        }
+        Err(error) => {
+            let _ = connection.execute_batch(
+                "rollback to savepoint edit_markdown_note_service; release savepoint edit_markdown_note_service",
+            );
+            let _ = fs::remove_file(&temp_path);
+            if !original_markdown.is_empty() {
+                let _ = fs::write(&note_path, original_markdown.as_bytes());
+            }
+            Err(error)
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn trash_markdown_note_service(
+    connection: &Connection,
+    visible_root: &Path,
+    note_id: &str,
+) -> RepoResult<NoteServiceRecord> {
+    let before = read_note_row(connection, note_id)?;
+    if before.status == "deleted" {
+        return Err(RepositoryError::Constraint {
+            entity: "notes",
+            message: "deleted notes cannot be trashed again".to_string(),
+        });
+    }
+    let trash_relative_path = format!("Notes/.Trash/{}.md", before.id);
+    if before.status == "trashed" {
+        mark_note_index_lifecycle(connection, note_id, "missing", "trashed")?;
+        return read_note_service(connection, visible_root, note_id);
+    }
+
+    let source_path = resolve_note_service_path(visible_root, &before.relative_path)?;
+    let trash_path = resolve_note_service_path(visible_root, &trash_relative_path)?;
+    if let Some(parent) = trash_path.parent() {
+        ensure_directory(parent).map_err(|error| io_repository_error("notes", error))?;
+    }
+    let metadata_json =
+        merge_note_original_path_metadata(&before.metadata_json, &before.relative_path)?;
+    connection
+        .execute_batch("savepoint trash_markdown_note_service")
+        .map_err(|error| map_repository_error("notes", error))?;
+    let trash_result = (|| -> RepoResult<NoteServiceRecord> {
+        if source_path.exists() && source_path != trash_path {
+            if trash_path.exists() {
+                return Err(RepositoryError::Constraint {
+                    entity: "notes",
+                    message: format!("trash destination already exists: {trash_relative_path}"),
+                });
+            }
+            fs::rename(&source_path, &trash_path)
+                .map_err(|error| io_repository_error("notes", error))?;
+        }
+        connection
+            .execute(
+                "update notes set status = 'trashed', conflict_state = 'none', relative_path = ?2, metadata_json = ?3, updated_at = current_timestamp where id = ?1",
+                params![before.id, trash_relative_path, metadata_json],
+            )
+            .map_err(|error| map_repository_error("notes", error))?;
+        mark_note_index_lifecycle(connection, note_id, "missing", "trashed")?;
+        create_note_service_event(connection, "note.trashed", note_id, &before.title)?;
+        read_note_service(connection, visible_root, note_id)
+    })();
+    match trash_result {
+        Ok(record) => {
+            connection
+                .execute_batch("release savepoint trash_markdown_note_service")
+                .map_err(|error| map_repository_error("notes", error))?;
+            Ok(record)
+        }
+        Err(error) => {
+            let _ = connection.execute_batch(
+                "rollback to savepoint trash_markdown_note_service; release savepoint trash_markdown_note_service",
+            );
+            if trash_path.exists() && !source_path.exists() {
+                let _ = fs::rename(&trash_path, &source_path);
+            }
+            Err(error)
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn delete_markdown_note_service(
+    connection: &Connection,
+    visible_root: &Path,
+    note_id: &str,
+) -> RepoResult<NoteServiceRecord> {
+    let before = read_note_row(connection, note_id)?;
+    connection
+        .execute_batch("savepoint delete_markdown_note_service")
+        .map_err(|error| map_repository_error("notes", error))?;
+    let delete_result = (|| -> RepoResult<NoteServiceRecord> {
+        connection
+            .execute(
+                "update notes set status = 'deleted', deleted_at = current_timestamp, updated_at = current_timestamp where id = ?1",
+                params![note_id],
+            )
+            .map_err(|error| map_repository_error("notes", error))?;
+        mark_note_index_lifecycle(connection, note_id, "missing", "deleted")?;
+        create_note_service_event(connection, "note.deleted", note_id, &before.title)?;
+        read_note_service(connection, visible_root, note_id)
+    })();
+    match delete_result {
+        Ok(record) => {
+            connection
+                .execute_batch("release savepoint delete_markdown_note_service")
+                .map_err(|error| map_repository_error("notes", error))?;
+            Ok(record)
+        }
+        Err(error) => {
+            let _ = connection.execute_batch(
+                "rollback to savepoint delete_markdown_note_service; release savepoint delete_markdown_note_service",
+            );
+            Err(error)
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn read_note_service(
+    connection: &Connection,
+    visible_root: &Path,
+    note_id: &str,
+) -> RepoResult<NoteServiceRecord> {
+    let row = read_note_row(connection, note_id)?;
+    let note_path = resolve_note_service_path(visible_root, &row.relative_path)?;
+    let markdown = fs::read_to_string(note_path).unwrap_or_default();
+    Ok(NoteServiceRecord {
+        id: row.id,
+        title: row.title,
+        slug: row.slug.unwrap_or_default(),
+        relative_path: row.relative_path,
+        status: row.status,
+        conflict_state: row.conflict_state,
+        body_digest: row.body_digest.unwrap_or_default(),
+        metadata_json: row.metadata_json,
+        markdown,
+    })
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct NoteRow {
+    id: String,
+    title: String,
+    slug: Option<String>,
+    relative_path: String,
+    status: String,
+    conflict_state: String,
+    body_digest: Option<String>,
+    metadata_json: String,
+}
+
+fn read_note_row(connection: &Connection, note_id: &str) -> RepoResult<NoteRow> {
+    connection
+        .query_row(
+            "select id, title, slug, relative_path, status, conflict_state, body_digest, metadata_json from notes where id = ?1",
+            params![note_id],
+            |row| {
+                Ok(NoteRow {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    slug: row.get(2)?,
+                    relative_path: row.get(3)?,
+                    status: row.get(4)?,
+                    conflict_state: row.get(5)?,
+                    body_digest: row.get(6)?,
+                    metadata_json: row.get(7)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| map_repository_error("notes", error))?
+        .ok_or_else(|| RepositoryError::NotFound {
+            entity: "notes",
+            key: note_id.to_string(),
+        })
+}
+
+fn validate_note_service_relative_path(relative_path: &str) -> RepoResult<()> {
+    validate_note_relative_path(relative_path)?;
+    if relative_path.starts_with("Notes/") && !relative_path.ends_with('/') {
+        Ok(())
+    } else {
+        Err(RepositoryError::Constraint {
+            entity: "notes",
+            message: format!("note path must live under Notes/: {relative_path}"),
+        })
+    }
+}
+
+fn resolve_note_service_path(visible_root: &Path, relative_path: &str) -> RepoResult<PathBuf> {
+    validate_note_service_relative_path(relative_path)?;
+    ensure_directory(visible_root).map_err(|error| io_repository_error("notes", error))?;
+    let canonical_root = visible_root
+        .canonicalize()
+        .map_err(|error| io_repository_error("notes", error))?;
+    let candidate = visible_root.join(relative_path);
+    let mut current = candidate.parent();
+    while let Some(parent) = current {
+        if parent == visible_root {
+            break;
+        }
+        if parent.exists() {
+            let metadata = fs::symlink_metadata(parent)
+                .map_err(|error| io_repository_error("notes", error))?;
+            if metadata.file_type().is_symlink() {
+                return Err(RepositoryError::Constraint {
+                    entity: "notes",
+                    message: format!("note path parent is a symlink: {}", display_path(parent)),
+                });
+            }
+            let canonical_parent = parent
+                .canonicalize()
+                .map_err(|error| io_repository_error("notes", error))?;
+            if !canonical_parent.starts_with(&canonical_root) {
+                return Err(RepositoryError::Constraint {
+                    entity: "notes",
+                    message: format!("note path escapes visible root: {relative_path}"),
+                });
+            }
+        }
+        current = parent.parent();
+    }
+    Ok(candidate)
+}
+
+fn mark_note_index_lifecycle(
+    connection: &Connection,
+    note_id: &str,
+    scan_state: &str,
+    lifecycle: &str,
+) -> RepoResult<()> {
+    let metadata_json = serde_json::json!({
+        "note_id": note_id,
+        "lifecycle": lifecycle,
+    })
+    .to_string();
+    connection
+        .execute(
+            "update knowledge_index_entries set scan_state = ?2, metadata_json = ?3, indexed_at = current_timestamp where entity_type = 'note' and entity_id = ?1",
+            params![note_id, scan_state, metadata_json],
+        )
+        .map_err(|error| map_repository_error("knowledge_index_entries", error))?;
+    Ok(())
+}
+
+fn merge_note_original_path_metadata(
+    metadata_json: &str,
+    original_path: &str,
+) -> RepoResult<String> {
+    let mut metadata = serde_json::from_str::<Value>(metadata_json).map_err(|error| {
+        RepositoryError::InvalidJson {
+            field: "metadata_json",
+            message: error.to_string(),
+        }
+    })?;
+    if !metadata.is_object() {
+        metadata = serde_json::json!({});
+    }
+    if metadata
+        .get("original_relative_path")
+        .and_then(Value::as_str)
+        .is_none()
+    {
+        metadata["original_relative_path"] = Value::String(original_path.to_string());
+    }
+    let rendered = metadata.to_string();
+    validate_no_secret_json("metadata_json", &rendered)?;
+    Ok(rendered)
+}
+
+fn create_note_service_event(
+    connection: &Connection,
+    action_type: &str,
+    note_id: &str,
+    title: &str,
+) -> RepoResult<()> {
+    create_event_record(
+        connection,
+        EventCreateInput {
+            action_type,
+            outcome: "succeeded",
+            actor_type: "system",
+            actor_id: None,
+            workspace_key: Some("notes"),
+            summary: &format!("{} note: {}", action_type, title),
+            source: "note_service",
+            metadata_json: &serde_json::json!({ "note_id": note_id, "title": title }).to_string(),
+            targets: vec![EventTargetInput {
+                entity_type: "note",
+                entity_id: note_id,
+                relation_type: "primary",
+            }],
+        },
+    )
+    .map(|_| ())
+}
+
+fn io_repository_error(entity: &'static str, error: std::io::Error) -> RepositoryError {
+    RepositoryError::Constraint {
+        entity,
+        message: error.to_string(),
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct IntegrationStatusRecord {
     integration_key: String,
     display_name: String,
