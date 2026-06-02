@@ -11,7 +11,7 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
-    "test:frontend": "tsx src/cleanSession.test.ts && tsx src/taskLinkedPanels.test.ts && tsx src/taskBridgeIntegration.test.ts && tsx src/taskViewModel.test.ts && tsx src/inboxViewModel.test.ts && tsx src/historyTimelineViewModel.test.ts && tsx src/todayWidgets.test.ts && tsx src/todayFoundation.test.ts && tsx src/settingsStatus.test.ts && tsx src/confirmationPolicy.test.ts && tsx src/workspaceRegistry.test.ts",
+    "test:frontend": "tsx src/runControls.test.ts && tsx src/cleanSession.test.ts && tsx src/taskLinkedPanels.test.ts && tsx src/taskBridgeIntegration.test.ts && tsx src/taskViewModel.test.ts && tsx src/inboxViewModel.test.ts && tsx src/historyTimelineViewModel.test.ts && tsx src/todayWidgets.test.ts && tsx src/todayFoundation.test.ts && tsx src/settingsStatus.test.ts && tsx src/confirmationPolicy.test.ts && tsx src/workspaceRegistry.test.ts",
     "verify:local": "scripts/verify-local.sh --skip-package",
     "verify:release": "scripts/verify-local.sh",
     "verify:push": "scripts/verify-local.sh --skip-package",

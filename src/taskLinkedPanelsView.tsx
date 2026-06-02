@@ -11,11 +11,12 @@ import {
 export type TaskLinkedPanelsProps = {
   state: TaskLinkedPanelsState;
   cleanSessions?: Record<string, CleanSessionState>;
+  runControls?: ReactElement;
   onRefresh?: (taskId: string) => void;
   onRefreshCleanSession?: (runId: string) => void;
 };
 
-export function TaskLinkedPanels({ state, cleanSessions = {}, onRefresh, onRefreshCleanSession }: TaskLinkedPanelsProps): ReactElement {
+export function TaskLinkedPanels({ state, cleanSessions = {}, runControls, onRefresh, onRefreshCleanSession }: TaskLinkedPanelsProps): ReactElement {
   const view = createTaskLinkedPanelsViewModel(state);
   const taskId = view.taskId;
   const linkedRuns = state.mode === "ready" ? state.runs : [];
@@ -32,6 +33,8 @@ export function TaskLinkedPanels({ state, cleanSessions = {}, onRefresh, onRefre
 
       {view.errorMessage ? <p role="alert">{view.errorMessage}</p> : null}
       {view.isLoading ? <p>Loading linked activity from native history.</p> : null}
+
+      {runControls}
 
       <div className="task-linked-panels__grid">
         <LinkedSummaryPanel title={view.runPanel.title} emptyCopy={view.runPanel.emptyCopy} items={view.runPanel.items} />

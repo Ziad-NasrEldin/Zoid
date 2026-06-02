@@ -46,6 +46,16 @@ import { TaskWorkspace } from "./taskWorkspace";
 import { loadTaskLinkedPanelsFromBridge, type TaskLinkedPanelsState } from "./taskLinkedPanels";
 import { TaskLinkedPanels } from "./taskLinkedPanelsView";
 import {
+  cancelRunThroughBridge,
+  createInitialRunControlsState,
+  resetRunControlsForTask,
+  startRunThroughBridge,
+  updateRunControlsDraft,
+  type RunControlsDraft,
+  type RunControlsState,
+} from "./runControls";
+import { RunControlsPanel } from "./runControlsView";
+import {
   buildWorkspaceChromeView,
   buildWorkspaceRegistryView,
   type WorkspaceRegistryView,
@@ -526,6 +536,7 @@ function App() {
   const [taskBridgeUi, setTaskBridgeUi] = useState<TaskBridgeUiState>(() => createInitialTaskBridgeState("tasks"));
   const [taskLinkedPanels, setTaskLinkedPanels] = useState<TaskLinkedPanelsState>({ mode: "idle", taskId: null });
   const [cleanSessions, setCleanSessions] = useState<Record<string, CleanSessionState>>({});
+  const [runControls, setRunControls] = useState<RunControlsState>(() => createInitialRunControlsState({ taskId: null, profileId: "default", cwd: "" }));
 
   useEffect(() => {
     invoke<FoundationStatus>("get_foundation_status")
@@ -604,6 +615,7 @@ function App() {
     }));
     setTaskLinkedPanels({ mode: "idle", taskId: null });
     setCleanSessions({});
+    setRunControls((current) => updateRunControlsDraft(current, { taskId: null, clearStatus: true }));
   }, []);
 
   const handleCreateTask = useCallback(async (form: TaskFormDraft) => {
@@ -611,8 +623,11 @@ function App() {
     setTaskBridgeUi(next);
     if (next.state.mode === "ready") setTodayTasks({ state: "ready", records: next.state.tasks });
     if (next.state.mode === "error") setTodayTasks({ state: "unavailable", reason: bridgeErrorReason("Native task", next.state.error) });
-    if (next.state.mode === "ready" && next.state.selectedTaskId) await loadLinkedPanels(next.state.selectedTaskId);
-  }, [loadLinkedPanels]);
+    if (next.state.mode === "ready" && next.state.selectedTaskId) {
+      setRunControls((current) => resetRunControlsForTask(current, next.state.selectedTaskId, status?.visible_root || ""));
+      await loadLinkedPanels(next.state.selectedTaskId);
+    }
+  }, [loadLinkedPanels, status?.visible_root]);
 
   const handleUpdateTask = useCallback(async (taskId: string, form: TaskFormDraft) => {
     const next = await updateTaskThroughBridge(taskInvoke, taskId, form);
@@ -635,8 +650,36 @@ function App() {
     });
     if (state.mode === "ready") setTodayTasks({ state: "ready", records: state.tasks });
     if (state.mode === "error") setTodayTasks({ state: "unavailable", reason: bridgeErrorReason("Native task", state.error) });
-    if (state.mode === "ready" && state.selectedTaskId) await loadLinkedPanels(state.selectedTaskId);
-  }, [loadLinkedPanels]);
+    if (state.mode === "ready" && state.selectedTaskId) {
+      setRunControls((current) => resetRunControlsForTask(current, state.selectedTaskId, status?.visible_root || ""));
+      await loadLinkedPanels(state.selectedTaskId);
+    }
+  }, [loadLinkedPanels, status?.visible_root]);
+
+  const handleRunDraftChange = useCallback((patch: Partial<RunControlsDraft>) => {
+    setRunControls((current) => updateRunControlsDraft(current, patch));
+  }, []);
+
+  const handleClearRunStatus = useCallback(() => {
+    setRunControls((current) => updateRunControlsDraft(current, { clearStatus: true, taskId: current.draft.taskId, cwd: current.draft.cwd }));
+  }, []);
+
+  const handleStartRun = useCallback(async () => {
+    setRunControls((current) => ({ ...current, mode: "starting", errorMessage: null, validationErrors: [] }));
+    const next = await startRunThroughBridge(taskInvoke, runControls, { logsDir: status?.logs_dir });
+    setRunControls(next);
+    if (next.mode === "ready" && next.activeRun?.id) {
+      await loadCleanSession(next.activeRun.id);
+      if (next.draft.taskId) await loadLinkedPanels(next.draft.taskId);
+    }
+  }, [loadCleanSession, loadLinkedPanels, runControls, status?.logs_dir]);
+
+  const handleCancelRun = useCallback(async () => {
+    setRunControls((current) => ({ ...current, mode: "cancelling", errorMessage: null, validationErrors: [] }));
+    const next = await cancelRunThroughBridge(taskInvoke, runControls, "Cancelled from Zoid task detail");
+    setRunControls(next);
+    if (next.mode === "ready" && next.activeRun?.id) await loadCleanSession(next.activeRun.id);
+  }, [loadCleanSession, runControls]);
 
   const workspaceRegistry = useMemo(() => buildWorkspaceRegistryView(status, statusError), [status, statusError]);
   const workspaces = workspaceRegistry.workspaces;
@@ -757,6 +800,15 @@ function App() {
                   <TaskLinkedPanels
                     state={taskLinkedPanels}
                     cleanSessions={cleanSessions}
+                    runControls={
+                      <RunControlsPanel
+                        state={runControls}
+                        onDraftChange={handleRunDraftChange}
+                        onStart={handleStartRun}
+                        onCancel={handleCancelRun}
+                        onClear={handleClearRunStatus}
+                      />
+                    }
                     onRefresh={loadLinkedPanels}
                     onRefreshCleanSession={loadCleanSession}
                   />
