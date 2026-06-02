@@ -12,6 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 static CONFIRMATION_DECISION_COUNTER: AtomicU64 = AtomicU64::new(0);
 static EVENT_COUNTER: AtomicU64 = AtomicU64::new(0);
 static TASK_COUNTER: AtomicU64 = AtomicU64::new(0);
+static CLI_SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
+static AGENT_RUN_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const SAFE_LOG_MAX_BYTES: usize = 4096;
 const SAFE_LOG_ROTATED_SUFFIX: &str = "1";
@@ -239,6 +241,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 5,
         name: "phase2_tasks",
         sql: include_str!("../migrations/0005_phase2_tasks.sql"),
+    },
+    Migration {
+        version: 6,
+        name: "phase2_agent_runs",
+        sql: include_str!("../migrations/0006_phase2_agent_runs.sql"),
     },
 ];
 
@@ -887,6 +894,238 @@ impl TaskCreateInput {
             metadata_json: "{}".to_string(),
         }
     }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct AgentProfileRecord {
+    id: String,
+    label: String,
+    configured: bool,
+    command: Option<String>,
+    config_json: String,
+    capabilities_json: String,
+    credential_ref: Option<String>,
+    env_refs_json: String,
+    metadata_json: String,
+    created_at: String,
+    updated_at: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct AgentProfileInput {
+    id: String,
+    label: String,
+    configured: bool,
+    command: Option<String>,
+    config_json: String,
+    capabilities_json: String,
+    credential_ref: Option<String>,
+    env_refs_json: String,
+    metadata_json: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct CliSessionRecord {
+    id: String,
+    task_id: String,
+    profile_id: String,
+    mode: String,
+    cwd: String,
+    status: String,
+    status_summary: String,
+    metadata_json: String,
+    created_at: String,
+    updated_at: String,
+    completed_at: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct CliSessionCreateInput {
+    task_id: String,
+    profile_id: String,
+    mode: String,
+    cwd: String,
+    status_summary: String,
+    metadata_json: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AgentRunStatus {
+    Queued,
+    Starting,
+    Running,
+    WaitingForInput,
+    ReviewRequired,
+    Completed,
+    Failed,
+    Cancelled,
+    Blocked,
+}
+
+#[allow(dead_code)]
+impl AgentRunStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Starting => "starting",
+            Self::Running => "running",
+            Self::WaitingForInput => "waiting_for_input",
+            Self::ReviewRequired => "review_required",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Blocked => "blocked",
+        }
+    }
+
+    fn from_str(value: &str) -> RepoResult<Self> {
+        match value {
+            "queued" => Ok(Self::Queued),
+            "starting" => Ok(Self::Starting),
+            "running" => Ok(Self::Running),
+            "waiting_for_input" => Ok(Self::WaitingForInput),
+            "review_required" => Ok(Self::ReviewRequired),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            "cancelled" => Ok(Self::Cancelled),
+            "blocked" => Ok(Self::Blocked),
+            other => Err(RepositoryError::Constraint {
+                entity: "agent_runs",
+                message: format!("invalid agent run status: {other}"),
+            }),
+        }
+    }
+
+    fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Completed | Self::Failed | Self::Cancelled | Self::Blocked
+        )
+    }
+
+    fn event_type(self) -> &'static str {
+        match self {
+            Self::Queued => "run.queued",
+            Self::Starting | Self::Running => "run.started",
+            Self::WaitingForInput => "run.waiting_for_input",
+            Self::ReviewRequired => "run.review_required",
+            Self::Completed => "run.completed",
+            Self::Failed => "run.failed",
+            Self::Cancelled => "run.cancelled",
+            Self::Blocked => "run.blocked",
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ReviewState {
+    NotRequired,
+    Required,
+    Requested,
+    InProgress,
+    Approved,
+    RequiredFixes,
+    BlockedInsufficientEvidence,
+    Failed,
+    Cancelled,
+}
+
+#[allow(dead_code)]
+impl ReviewState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NotRequired => "not_required",
+            Self::Required => "required",
+            Self::Requested => "requested",
+            Self::InProgress => "in_progress",
+            Self::Approved => "approved",
+            Self::RequiredFixes => "required_fixes",
+            Self::BlockedInsufficientEvidence => "blocked_insufficient_evidence",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    fn from_str(value: &str) -> RepoResult<Self> {
+        match value {
+            "not_required" => Ok(Self::NotRequired),
+            "required" => Ok(Self::Required),
+            "requested" => Ok(Self::Requested),
+            "in_progress" => Ok(Self::InProgress),
+            "approved" => Ok(Self::Approved),
+            "required_fixes" => Ok(Self::RequiredFixes),
+            "blocked_insufficient_evidence" => Ok(Self::BlockedInsufficientEvidence),
+            "failed" => Ok(Self::Failed),
+            "cancelled" => Ok(Self::Cancelled),
+            other => Err(RepositoryError::Constraint {
+                entity: "agent_runs",
+                message: format!("invalid review state: {other}"),
+            }),
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct AgentRunRecord {
+    id: String,
+    task_id: String,
+    profile_id: String,
+    session_id: String,
+    cwd: String,
+    command_snapshot: String,
+    profile_snapshot_json: String,
+    status: AgentRunStatus,
+    created_at: String,
+    updated_at: String,
+    started_at: Option<String>,
+    completed_at: Option<String>,
+    duration_ms: Option<i64>,
+    exit_code: Option<i64>,
+    log_reference_id: Option<String>,
+    output_summary: Option<String>,
+    error_summary: Option<String>,
+    review_state: ReviewState,
+    metadata_json: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct AgentRunCreateInput {
+    task_id: String,
+    profile_id: String,
+    session_id: String,
+    cwd: String,
+    metadata_json: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct AgentRunTransitionInput {
+    output_summary: Option<String>,
+    error_summary: Option<String>,
+    metadata_json: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct AgentRunCompletionInput {
+    status: AgentRunStatus,
+    duration_ms: i64,
+    exit_code: Option<i64>,
+    log_reference_id: Option<String>,
+    output_summary: String,
+    error_summary: Option<String>,
+    review_state: ReviewState,
+    metadata_json: String,
 }
 
 #[allow(dead_code)]
@@ -2329,6 +2568,666 @@ fn next_task_id() -> String {
     let sequence = TASK_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!(
         "task_{}_{:010}_{:020}",
+        now_millis(),
+        process::id(),
+        sequence
+    )
+}
+
+#[allow(dead_code)]
+fn upsert_agent_profile(
+    connection: &Connection,
+    input: AgentProfileInput,
+) -> RepoResult<AgentProfileRecord> {
+    let id = normalize_small_text("agent_profiles", "id", &input.id)?;
+    let label = normalize_small_text("agent_profiles", "label", &input.label)?;
+    let command = normalize_optional_command(input.command.as_deref())?;
+    validate_no_secret_command(command.as_deref())?;
+    if input.configured && command.is_none() {
+        return Err(RepositoryError::Constraint {
+            entity: "agent_profiles",
+            message: "configured agent profile requires a command".to_string(),
+        });
+    }
+    validate_no_secret_json("config_json", &input.config_json)?;
+    validate_no_secret_json("capabilities_json", &input.capabilities_json)?;
+    validate_credential_ref(input.credential_ref.as_deref())?;
+    validate_no_secret_json("env_refs_json", &input.env_refs_json)?;
+    validate_no_secret_json("metadata_json", &input.metadata_json)?;
+
+    connection
+        .execute(
+            "
+            insert into agent_profiles (
+                id, label, configured, command, config_json, capabilities_json,
+                credential_ref, env_refs_json, metadata_json, updated_at
+            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, current_timestamp)
+            on conflict(id) do update set
+                label = excluded.label,
+                configured = excluded.configured,
+                command = excluded.command,
+                config_json = excluded.config_json,
+                capabilities_json = excluded.capabilities_json,
+                credential_ref = excluded.credential_ref,
+                env_refs_json = excluded.env_refs_json,
+                metadata_json = excluded.metadata_json,
+                updated_at = current_timestamp
+            ",
+            params![
+                id,
+                label,
+                if input.configured { 1_i64 } else { 0_i64 },
+                command,
+                input.config_json,
+                input.capabilities_json,
+                input.credential_ref,
+                input.env_refs_json,
+                input.metadata_json
+            ],
+        )
+        .map_err(|error| map_repository_error("agent_profiles", error))?;
+    read_agent_profile(connection, &input.id)?.ok_or_else(|| RepositoryError::NotFound {
+        entity: "agent_profiles",
+        key: input.id,
+    })
+}
+
+#[allow(dead_code)]
+fn read_agent_profile(connection: &Connection, id: &str) -> RepoResult<Option<AgentProfileRecord>> {
+    connection
+        .query_row(
+            "
+            select id, label, configured, command, config_json, capabilities_json,
+                   credential_ref, env_refs_json, metadata_json, created_at, updated_at
+            from agent_profiles where id = ?1
+            ",
+            params![id],
+            agent_profile_from_row,
+        )
+        .optional()
+        .map_err(|error| map_repository_error("agent_profiles", error))
+}
+
+#[allow(dead_code)]
+fn agent_profile_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentProfileRecord> {
+    let configured: i64 = row.get(2)?;
+    Ok(AgentProfileRecord {
+        id: row.get(0)?,
+        label: row.get(1)?,
+        configured: configured != 0,
+        command: row.get(3)?,
+        config_json: row.get(4)?,
+        capabilities_json: row.get(5)?,
+        credential_ref: row.get(6)?,
+        env_refs_json: row.get(7)?,
+        metadata_json: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+    })
+}
+
+#[allow(dead_code)]
+fn create_cli_session(
+    connection: &Connection,
+    input: CliSessionCreateInput,
+) -> RepoResult<CliSessionRecord> {
+    validate_runnable_task(connection, &input.task_id, "cli_sessions")?;
+    let profile = read_agent_profile(connection, &input.profile_id)?.ok_or_else(|| {
+        RepositoryError::NotFound {
+            entity: "agent_profiles",
+            key: input.profile_id.clone(),
+        }
+    })?;
+    validate_configured_profile(&profile)?;
+    let mode = normalize_small_text("cli_sessions", "mode", &input.mode)?;
+    let cwd = normalize_cwd("cli_sessions", &input.cwd)?;
+    validate_no_secret_json("metadata_json", &input.metadata_json)?;
+    let session_id = next_cli_session_id();
+
+    connection
+        .execute(
+            "
+            insert into cli_sessions (id, task_id, profile_id, mode, cwd, status, status_summary, metadata_json)
+            values (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?7)
+            ",
+            params![
+                session_id,
+                input.task_id,
+                input.profile_id,
+                mode,
+                cwd,
+                redact_secrets(&input.status_summary).text,
+                input.metadata_json
+            ],
+        )
+        .map_err(|error| map_repository_error("cli_sessions", error))?;
+
+    insert_or_get_entity_link(
+        connection,
+        EntityLinkInput {
+            id: &format!("link_task_session_{session_id}"),
+            source_type: "task",
+            source_id: &input.task_id,
+            target_type: "cli_session",
+            target_id: &session_id,
+            relation_type: "owns",
+            created_by_actor_type: "system",
+            metadata_json: "{}",
+        },
+    )?;
+    read_cli_session(connection, &session_id)?.ok_or(RepositoryError::NotFound {
+        entity: "cli_sessions",
+        key: session_id,
+    })
+}
+
+#[allow(dead_code)]
+fn read_cli_session(connection: &Connection, id: &str) -> RepoResult<Option<CliSessionRecord>> {
+    connection
+        .query_row(
+            "
+            select id, task_id, profile_id, mode, cwd, status, status_summary,
+                   metadata_json, created_at, updated_at, completed_at
+            from cli_sessions where id = ?1
+            ",
+            params![id],
+            |row| {
+                Ok(CliSessionRecord {
+                    id: row.get(0)?,
+                    task_id: row.get(1)?,
+                    profile_id: row.get(2)?,
+                    mode: row.get(3)?,
+                    cwd: row.get(4)?,
+                    status: row.get(5)?,
+                    status_summary: row.get(6)?,
+                    metadata_json: row.get(7)?,
+                    created_at: row.get(8)?,
+                    updated_at: row.get(9)?,
+                    completed_at: row.get(10)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| map_repository_error("cli_sessions", error))
+}
+
+#[allow(dead_code)]
+fn create_agent_run(
+    connection: &Connection,
+    input: AgentRunCreateInput,
+) -> RepoResult<AgentRunRecord> {
+    validate_runnable_task(connection, &input.task_id, "agent_runs")?;
+    let profile = read_agent_profile(connection, &input.profile_id)?.ok_or_else(|| {
+        RepositoryError::NotFound {
+            entity: "agent_profiles",
+            key: input.profile_id.clone(),
+        }
+    })?;
+    validate_configured_profile(&profile)?;
+    let session = read_cli_session(connection, &input.session_id)?.ok_or_else(|| {
+        RepositoryError::NotFound {
+            entity: "cli_sessions",
+            key: input.session_id.clone(),
+        }
+    })?;
+    if session.task_id != input.task_id || session.profile_id != input.profile_id {
+        return Err(RepositoryError::Constraint {
+            entity: "agent_runs",
+            message: "run session must belong to the same task and profile".to_string(),
+        });
+    }
+    let cwd = normalize_cwd("agent_runs", &input.cwd)?;
+    validate_no_secret_json("metadata_json", &input.metadata_json)?;
+    let run_id = next_agent_run_id();
+    let command_snapshot = profile.command.clone().unwrap_or_default();
+    let profile_snapshot_json = serde_json::json!({
+        "profile_id": profile.id,
+        "label": profile.label,
+        "configured": profile.configured,
+        "command": command_snapshot,
+        "capabilities": serde_json::from_str::<Value>(&profile.capabilities_json).unwrap_or(Value::Null),
+        "credential_ref_present": profile.credential_ref.is_some(),
+        "env_refs": serde_json::from_str::<Value>(&profile.env_refs_json).unwrap_or(Value::Null),
+    })
+    .to_string();
+
+    connection
+        .execute(
+            "
+            insert into agent_runs (
+                id, task_id, profile_id, session_id, cwd, command_snapshot,
+                profile_snapshot_json, status, metadata_json
+            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'queued', ?8)
+            ",
+            params![
+                run_id,
+                input.task_id,
+                input.profile_id,
+                input.session_id,
+                cwd,
+                command_snapshot,
+                profile_snapshot_json,
+                input.metadata_json
+            ],
+        )
+        .map_err(|error| map_repository_error("agent_runs", error))?;
+    insert_or_get_entity_link(
+        connection,
+        EntityLinkInput {
+            id: &format!("link_task_run_{run_id}"),
+            source_type: "task",
+            source_id: &input.task_id,
+            target_type: "agent_run",
+            target_id: &run_id,
+            relation_type: "owns",
+            created_by_actor_type: "system",
+            metadata_json: "{}",
+        },
+    )?;
+    let run = read_agent_run(connection, &run_id)?.ok_or(RepositoryError::NotFound {
+        entity: "agent_runs",
+        key: run_id,
+    })?;
+    create_agent_run_event(connection, &run, AgentRunStatus::Queued, None, None, "{}")?;
+    Ok(run)
+}
+
+#[allow(dead_code)]
+fn transition_agent_run_status(
+    connection: &Connection,
+    run_id: &str,
+    status: AgentRunStatus,
+    input: AgentRunTransitionInput,
+) -> RepoResult<AgentRunRecord> {
+    let before = read_agent_run_required(connection, run_id)?;
+    if before.status.is_terminal() {
+        return Err(RepositoryError::Constraint {
+            entity: "agent_runs",
+            message: "terminal agent run cannot mutate into new work; create a new run attempt"
+                .to_string(),
+        });
+    }
+    if status == AgentRunStatus::Completed {
+        return Err(RepositoryError::Constraint {
+            entity: "agent_runs",
+            message: "completed transition requires completion evidence".to_string(),
+        });
+    }
+    validate_no_secret_json("metadata_json", &input.metadata_json)?;
+    connection
+        .execute(
+            "
+            update agent_runs
+            set status = ?2,
+                updated_at = current_timestamp,
+                started_at = case when ?2 in ('starting', 'running') then coalesce(started_at, current_timestamp) else started_at end,
+                completed_at = case when ?2 in ('failed', 'cancelled', 'blocked') then coalesce(completed_at, current_timestamp) else completed_at end,
+                output_summary = coalesce(?3, output_summary),
+                error_summary = coalesce(?4, error_summary),
+                metadata_json = ?5
+            where id = ?1
+            ",
+            params![
+                run_id,
+                status.as_str(),
+                input.output_summary.as_deref().map(|value| redact_secrets(value).text),
+                input.error_summary.as_deref().map(|value| redact_secrets(value).text),
+                input.metadata_json
+            ],
+        )
+        .map_err(|error| map_repository_error("agent_runs", error))?;
+    let run = read_agent_run_required(connection, run_id)?;
+    create_agent_run_event(
+        connection,
+        &run,
+        status,
+        input.output_summary.as_deref(),
+        input.error_summary.as_deref(),
+        &input.metadata_json,
+    )?;
+    Ok(run)
+}
+
+#[allow(dead_code)]
+fn complete_agent_run(
+    connection: &Connection,
+    run_id: &str,
+    input: AgentRunCompletionInput,
+) -> RepoResult<AgentRunRecord> {
+    let before = read_agent_run_required(connection, run_id)?;
+    if before.status.is_terminal() {
+        return Err(RepositoryError::Constraint {
+            entity: "agent_runs",
+            message: "terminal agent run cannot mutate into new work; create a new run attempt"
+                .to_string(),
+        });
+    }
+    if !input.status.is_terminal() {
+        return Err(RepositoryError::Constraint {
+            entity: "agent_runs",
+            message: "completion requires a terminal status".to_string(),
+        });
+    }
+    if input.status == AgentRunStatus::Completed
+        && (input.exit_code.is_none() || input.log_reference_id.is_none())
+    {
+        return Err(RepositoryError::Constraint {
+            entity: "agent_runs",
+            message: "completed run requires exit code and log reference".to_string(),
+        });
+    }
+    if input.duration_ms < 0 || input.output_summary.trim().is_empty() {
+        return Err(RepositoryError::Constraint {
+            entity: "agent_runs",
+            message: "completion requires duration and summary".to_string(),
+        });
+    }
+    if let Some(log_reference_id) = input.log_reference_id.as_deref() {
+        validate_log_reference_exists(connection, log_reference_id)?;
+    }
+    validate_no_secret_json("metadata_json", &input.metadata_json)?;
+    let output_summary = redact_secrets(&input.output_summary).text;
+    let error_summary = input
+        .error_summary
+        .as_deref()
+        .map(|value| redact_secrets(value).text);
+    connection
+        .execute(
+            "
+            update agent_runs
+            set status = ?2,
+                updated_at = current_timestamp,
+                started_at = coalesce(started_at, current_timestamp),
+                completed_at = coalesce(completed_at, current_timestamp),
+                duration_ms = ?3,
+                exit_code = ?4,
+                log_reference_id = ?5,
+                output_summary = ?6,
+                error_summary = ?7,
+                review_state = ?8,
+                metadata_json = ?9
+            where id = ?1
+            ",
+            params![
+                run_id,
+                input.status.as_str(),
+                input.duration_ms,
+                input.exit_code,
+                input.log_reference_id,
+                output_summary,
+                error_summary,
+                input.review_state.as_str(),
+                input.metadata_json
+            ],
+        )
+        .map_err(|error| map_repository_error("agent_runs", error))?;
+    let run = read_agent_run_required(connection, run_id)?;
+    create_agent_run_event(
+        connection,
+        &run,
+        input.status,
+        Some(&input.output_summary),
+        input.error_summary.as_deref(),
+        &input.metadata_json,
+    )?;
+    Ok(run)
+}
+
+#[allow(dead_code)]
+fn read_agent_run_required(connection: &Connection, run_id: &str) -> RepoResult<AgentRunRecord> {
+    read_agent_run(connection, run_id)?.ok_or_else(|| RepositoryError::NotFound {
+        entity: "agent_runs",
+        key: run_id.to_string(),
+    })
+}
+
+#[allow(dead_code)]
+fn read_agent_run(connection: &Connection, run_id: &str) -> RepoResult<Option<AgentRunRecord>> {
+    connection
+        .query_row(
+            "
+            select id, task_id, profile_id, session_id, cwd, command_snapshot,
+                   profile_snapshot_json, status, created_at, updated_at, started_at,
+                   completed_at, duration_ms, exit_code, log_reference_id,
+                   output_summary, error_summary, review_state, metadata_json
+            from agent_runs where id = ?1
+            ",
+            params![run_id],
+            agent_run_from_row,
+        )
+        .optional()
+        .map_err(|error| map_repository_error("agent_runs", error))
+}
+
+#[allow(dead_code)]
+fn agent_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRunRecord> {
+    let status_text: String = row.get(7)?;
+    let review_state_text: String = row.get(17)?;
+    Ok(AgentRunRecord {
+        id: row.get(0)?,
+        task_id: row.get(1)?,
+        profile_id: row.get(2)?,
+        session_id: row.get(3)?,
+        cwd: row.get(4)?,
+        command_snapshot: row.get(5)?,
+        profile_snapshot_json: row.get(6)?,
+        status: AgentRunStatus::from_str(&status_text).map_err(repository_error_to_rusqlite)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+        started_at: row.get(10)?,
+        completed_at: row.get(11)?,
+        duration_ms: row.get(12)?,
+        exit_code: row.get(13)?,
+        log_reference_id: row.get(14)?,
+        output_summary: row.get(15)?,
+        error_summary: row.get(16)?,
+        review_state: ReviewState::from_str(&review_state_text)
+            .map_err(repository_error_to_rusqlite)?,
+        metadata_json: row.get(18)?,
+    })
+}
+
+#[allow(dead_code)]
+fn create_agent_run_event(
+    connection: &Connection,
+    run: &AgentRunRecord,
+    status: AgentRunStatus,
+    output_summary: Option<&str>,
+    error_summary: Option<&str>,
+    metadata_json: &str,
+) -> RepoResult<()> {
+    let summary = output_summary
+        .or(error_summary)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("Agent run {}", status.as_str()));
+    let metadata = serde_json::json!({
+        "run_id": run.id,
+        "task_id": run.task_id,
+        "session_id": run.session_id,
+        "profile_id": run.profile_id,
+        "status": status.as_str(),
+        "duration_ms": run.duration_ms,
+        "exit_code": run.exit_code,
+        "log_reference_id": run.log_reference_id,
+        "input_metadata": serde_json::from_str::<Value>(metadata_json).unwrap_or(Value::Null),
+    })
+    .to_string();
+    let mut targets = vec![
+        EventTargetInput {
+            entity_type: "agent_run",
+            entity_id: &run.id,
+            relation_type: "primary",
+        },
+        EventTargetInput {
+            entity_type: "task",
+            entity_id: &run.task_id,
+            relation_type: "owner",
+        },
+    ];
+    targets.push(EventTargetInput {
+        entity_type: "cli_session",
+        entity_id: &run.session_id,
+        relation_type: "session",
+    });
+    create_event_record(
+        connection,
+        EventCreateInput {
+            action_type: status.event_type(),
+            outcome: "succeeded",
+            actor_type: "system",
+            actor_id: None,
+            workspace_key: Some("agents"),
+            summary: &summary,
+            source: "agent_run_repository",
+            metadata_json: &metadata,
+            targets,
+        },
+    )?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn validate_runnable_task(
+    connection: &Connection,
+    task_id: &str,
+    entity: &'static str,
+) -> RepoResult<TaskRecord> {
+    let task = read_task_record(connection, task_id)?;
+    if task.status == TaskStatus::Deleted || task.deleted_at.is_some() {
+        return Err(RepositoryError::Constraint {
+            entity,
+            message: format!("task is deleted and cannot start a run: {task_id}"),
+        });
+    }
+    Ok(task)
+}
+
+#[allow(dead_code)]
+fn validate_configured_profile(profile: &AgentProfileRecord) -> RepoResult<()> {
+    if !profile.configured
+        || profile
+            .command
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+    {
+        return Err(RepositoryError::Constraint {
+            entity: "agent_profiles",
+            message: "agent profile is unconfigured or missing command".to_string(),
+        });
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn validate_log_reference_exists(
+    connection: &Connection,
+    log_reference_id: &str,
+) -> RepoResult<()> {
+    let exists = connection
+        .query_row(
+            "select 1 from log_references where id = ?1",
+            params![log_reference_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|error| map_repository_error("log_references", error))?;
+    if exists.is_none() {
+        return Err(RepositoryError::Constraint {
+            entity: "agent_runs",
+            message: format!("log_reference_id does not exist: {log_reference_id}"),
+        });
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn normalize_small_text(entity: &'static str, field: &str, value: &str) -> RepoResult<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.len() > EVENT_CREATE_MAX_SMALL_FIELD_BYTES {
+        return Err(RepositoryError::Constraint {
+            entity,
+            message: format!("{field} must be non-empty and small"),
+        });
+    }
+    Ok(trimmed.to_string())
+}
+
+#[allow(dead_code)]
+fn normalize_optional_command(command: Option<&str>) -> RepoResult<Option<String>> {
+    match command.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) if value.len() <= EVENT_CREATE_MAX_SOURCE_BYTES => Ok(Some(value.to_string())),
+        Some(_) => Err(RepositoryError::Constraint {
+            entity: "agent_profiles",
+            message: "command is too large".to_string(),
+        }),
+        None => Ok(None),
+    }
+}
+
+#[allow(dead_code)]
+fn validate_no_secret_command(command: Option<&str>) -> RepoResult<()> {
+    let Some(command) = command else {
+        return Ok(());
+    };
+    let lower = command.to_ascii_lowercase();
+    let secret_flag_present = [
+        "--api-key",
+        "--apikey",
+        "--token",
+        "--password",
+        "--secret",
+        "api_key=",
+        "apikey=",
+        "token=",
+        "password=",
+        "secret=",
+        "authorization:",
+        "authorization=",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    let token_secret_present = command
+        .split(|character: char| character.is_whitespace() || character == '\'' || character == '"')
+        .any(looks_like_secret_material);
+    if secret_flag_present || token_secret_present {
+        return Err(reject_secret(
+            "command",
+            "command contains secret-like material; use credential_ref/env_refs instead",
+        ));
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn normalize_cwd(entity: &'static str, cwd: &str) -> RepoResult<String> {
+    let trimmed = cwd.trim();
+    if trimmed.is_empty() || trimmed.len() > EVENT_CREATE_MAX_SOURCE_BYTES {
+        return Err(RepositoryError::Constraint {
+            entity,
+            message: "cwd must be present before execution".to_string(),
+        });
+    }
+    Ok(trimmed.to_string())
+}
+
+#[allow(dead_code)]
+fn next_cli_session_id() -> String {
+    let sequence = CLI_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "session_{}_{:010}_{:020}",
+        now_millis(),
+        process::id(),
+        sequence
+    )
+}
+
+#[allow(dead_code)]
+fn next_agent_run_id() -> String {
+    let sequence = AGENT_RUN_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "run_{}_{:010}_{:020}",
         now_millis(),
         process::id(),
         sequence
@@ -4724,6 +5623,509 @@ mod tests {
         let connection = Connection::open_in_memory().expect("open in-memory sqlite");
         run_migrations(&connection).expect("run migrations");
         connection
+    }
+
+    fn p204_task(connection: &Connection, title: &str) -> TaskRecord {
+        create_task_record(connection, TaskCreateInput::new(title, None)).expect("create task")
+    }
+
+    fn p204_profile(connection: &Connection, configured: bool) -> AgentProfileRecord {
+        upsert_agent_profile(
+            connection,
+            AgentProfileInput {
+                id: "profile-hermes".to_string(),
+                label: "Hermes CLI".to_string(),
+                configured,
+                command: if configured {
+                    Some("hermes".to_string())
+                } else {
+                    None
+                },
+                config_json: "{\"model\":\"default\"}".to_string(),
+                capabilities_json: "{\"local_cli\":true}".to_string(),
+                credential_ref: Some("keychain://zoid/hermes".to_string()),
+                env_refs_json: "[\"HERMES_API_KEY\"]".to_string(),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect("upsert profile")
+    }
+
+    fn p204_session(
+        connection: &Connection,
+        task: &TaskRecord,
+        profile: &AgentProfileRecord,
+    ) -> CliSessionRecord {
+        create_cli_session(
+            connection,
+            CliSessionCreateInput {
+                task_id: task.id.clone(),
+                profile_id: profile.id.clone(),
+                mode: "clean_session".to_string(),
+                cwd: "/tmp".to_string(),
+                status_summary: "Queued".to_string(),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect("create session")
+    }
+
+    fn p204_log_reference(connection: &Connection) -> String {
+        connection
+            .execute(
+                "insert into log_references (id, log_scope, relative_path, redaction_count, byte_count, metadata_json) values ('logref-p204', 'agent_run', 'agent-run-p204.log', 1, 42, '{}')",
+                [],
+            )
+            .expect("insert log reference");
+        "logref-p204".to_string()
+    }
+
+    #[test]
+    fn p204_schema_version_six_has_agent_profile_session_run_tables() {
+        let connection = migrated_in_memory_connection();
+        assert_eq!(
+            get_migration_version(&connection).expect("migration version"),
+            6
+        );
+        assert_table_has_columns(
+            &connection,
+            "agent_profiles",
+            &[
+                "id",
+                "label",
+                "configured",
+                "command",
+                "config_json",
+                "capabilities_json",
+                "credential_ref",
+                "env_refs_json",
+                "metadata_json",
+            ],
+        );
+        assert_table_has_columns(
+            &connection,
+            "cli_sessions",
+            &[
+                "id",
+                "task_id",
+                "profile_id",
+                "mode",
+                "cwd",
+                "status",
+                "status_summary",
+                "metadata_json",
+            ],
+        );
+        assert_table_has_columns(
+            &connection,
+            "agent_runs",
+            &[
+                "id",
+                "task_id",
+                "profile_id",
+                "session_id",
+                "cwd",
+                "command_snapshot",
+                "profile_snapshot_json",
+                "status",
+                "started_at",
+                "completed_at",
+                "duration_ms",
+                "exit_code",
+                "log_reference_id",
+                "output_summary",
+                "error_summary",
+                "review_state",
+                "metadata_json",
+            ],
+        );
+
+        let task = p204_task(&connection, "FK restrict task");
+        let profile = p204_profile(&connection, true);
+        let session = p204_session(&connection, &task, &profile);
+        create_agent_run(
+            &connection,
+            AgentRunCreateInput {
+                task_id: task.id,
+                profile_id: profile.id,
+                session_id: session.id.clone(),
+                cwd: "/tmp".to_string(),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect("create run for session FK restrict");
+        let delete_session = connection.execute(
+            "delete from cli_sessions where id = ?1",
+            params![session.id],
+        );
+        assert!(
+            delete_session.is_err(),
+            "mandatory session FK must restrict deleting a referenced session"
+        );
+    }
+
+    #[test]
+    fn p204_agent_profile_rejects_secret_like_command_before_persistence() {
+        let connection = migrated_in_memory_connection();
+        let rejected = upsert_agent_profile(
+            &connection,
+            AgentProfileInput {
+                id: "profile-secret-command".to_string(),
+                label: "Secret Command".to_string(),
+                configured: true,
+                command: Some("hermes --api-key sk-raw-secret-token".to_string()),
+                config_json: "{}".to_string(),
+                capabilities_json: "{}".to_string(),
+                credential_ref: Some("keychain://zoid/hermes".to_string()),
+                env_refs_json: "[\"HERMES_API_KEY\"]".to_string(),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect_err("secret-like command must be rejected");
+        assert!(matches!(
+            rejected,
+            RepositoryError::SecretRejected {
+                field: "command",
+                ..
+            }
+        ));
+        assert!(
+            read_agent_profile(&connection, "profile-secret-command")
+                .expect("read profile")
+                .is_none(),
+            "rejected command profile must not persist"
+        );
+    }
+
+    #[test]
+    fn p204_run_creation_rejects_missing_deleted_task_and_unconfigured_profile() {
+        let connection = migrated_in_memory_connection();
+        let configured = p204_profile(&connection, true);
+        let missing = create_agent_run(
+            &connection,
+            AgentRunCreateInput {
+                task_id: "missing-task".to_string(),
+                profile_id: configured.id.clone(),
+                session_id: "missing-session".to_string(),
+                cwd: "/tmp".to_string(),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect_err("missing task rejected");
+        assert!(matches!(
+            missing,
+            RepositoryError::NotFound {
+                entity: "tasks",
+                ..
+            }
+        ));
+
+        let deleted = p204_task(&connection, "Deleted run target");
+        soft_delete_task(&connection, &deleted.id).expect("delete task");
+        let deleted_error = create_agent_run(
+            &connection,
+            AgentRunCreateInput {
+                task_id: deleted.id,
+                profile_id: configured.id.clone(),
+                session_id: "missing-session".to_string(),
+                cwd: "/tmp".to_string(),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect_err("deleted task rejected");
+        assert!(matches!(
+            deleted_error,
+            RepositoryError::Constraint {
+                entity: "agent_runs",
+                ..
+            }
+        ));
+
+        let task = p204_task(&connection, "Unconfigured profile target");
+        let unconfigured = p204_profile(&connection, false);
+        let blocked = create_agent_run(
+            &connection,
+            AgentRunCreateInput {
+                task_id: task.id.clone(),
+                profile_id: unconfigured.id,
+                session_id: "missing-session".to_string(),
+                cwd: "/tmp".to_string(),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect_err("unconfigured profile rejected before fake success");
+        assert!(matches!(
+            blocked,
+            RepositoryError::Constraint {
+                entity: "agent_profiles",
+                ..
+            }
+        ));
+
+        let configured_again = p204_profile(&connection, true);
+        let no_session = create_agent_run(
+            &connection,
+            AgentRunCreateInput {
+                task_id: task.id,
+                profile_id: configured_again.id,
+                session_id: "missing-session".to_string(),
+                cwd: "/tmp".to_string(),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect_err("run must reference an existing session");
+        assert!(matches!(
+            no_session,
+            RepositoryError::NotFound {
+                entity: "cli_sessions",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn p204_session_run_link_to_task_and_lifecycle_events_omit_raw_logs() {
+        let connection = migrated_in_memory_connection();
+        let task = p204_task(&connection, "Run linked task");
+        let profile = p204_profile(&connection, true);
+        let session = p204_session(&connection, &task, &profile);
+
+        let run = create_agent_run(
+            &connection,
+            AgentRunCreateInput {
+                task_id: task.id.clone(),
+                profile_id: profile.id.clone(),
+                session_id: session.id.clone(),
+                cwd: "/tmp".to_string(),
+                metadata_json: "{\"safe\":true}".to_string(),
+            },
+        )
+        .expect("create run");
+
+        assert_eq!(session.task_id, task.id);
+        assert_eq!(run.task_id, task.id);
+        assert_eq!(run.session_id, session.id);
+        assert_eq!(run.profile_id, profile.id);
+        assert_eq!(run.status, AgentRunStatus::Queued);
+        assert_eq!(run.command_snapshot, "hermes");
+
+        let link_count = count_rows(
+            &connection,
+            "select count(*) from entity_links where source_type = 'task' and target_type in ('cli_session', 'agent_run')",
+        );
+        assert_eq!(link_count, 2);
+
+        transition_agent_run_status(
+            &connection,
+            &run.id,
+            AgentRunStatus::Running,
+            AgentRunTransitionInput {
+                output_summary: Some("Started without raw stdout".to_string()),
+                error_summary: None,
+                metadata_json: "{\"log_path\":\"agent-run-p204.log\"}".to_string(),
+            },
+        )
+        .expect("transition running");
+
+        let events = list_event_records(
+            &connection,
+            EventListFilter {
+                workspace_key: Some("agents"),
+                action_type: None,
+                outcome: Some("succeeded"),
+                source: Some("agent_run_repository"),
+                limit: 10,
+            },
+        )
+        .expect("list events");
+        assert!(events.iter().any(|event| event.action_type == "run.queued"));
+        assert!(events
+            .iter()
+            .any(|event| event.action_type == "run.started"));
+        let raw_log = "RAW_STDOUT_SECRET_SHOULD_NOT_BE_IN_SQLITE";
+        assert!(events.iter().all(
+            |event| !event.summary.contains(raw_log) && !event.metadata_json.contains(raw_log)
+        ));
+    }
+
+    #[test]
+    fn p204_terminal_transitions_are_immutable_and_completion_stores_evidence() {
+        let connection = migrated_in_memory_connection();
+        let task = p204_task(&connection, "Completing run task");
+        let profile = p204_profile(&connection, true);
+        let session = p204_session(&connection, &task, &profile);
+        let run = create_agent_run(
+            &connection,
+            AgentRunCreateInput {
+                task_id: task.id,
+                profile_id: profile.id,
+                session_id: session.id,
+                cwd: "/tmp".to_string(),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect("create run");
+        let log_reference_id = p204_log_reference(&connection);
+
+        let missing_exit_code = complete_agent_run(
+            &connection,
+            &run.id,
+            AgentRunCompletionInput {
+                status: AgentRunStatus::Completed,
+                duration_ms: 1_234,
+                exit_code: None,
+                log_reference_id: Some(log_reference_id.clone()),
+                output_summary: "Completed with summarized output".to_string(),
+                error_summary: None,
+                review_state: ReviewState::NotRequired,
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect_err("completed run requires exit code");
+        assert!(matches!(
+            missing_exit_code,
+            RepositoryError::Constraint {
+                entity: "agent_runs",
+                ..
+            }
+        ));
+
+        let missing_log_reference = complete_agent_run(
+            &connection,
+            &run.id,
+            AgentRunCompletionInput {
+                status: AgentRunStatus::Completed,
+                duration_ms: 1_234,
+                exit_code: Some(0),
+                log_reference_id: None,
+                output_summary: "Completed with summarized output".to_string(),
+                error_summary: None,
+                review_state: ReviewState::NotRequired,
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect_err("completed run requires log reference");
+        assert!(matches!(
+            missing_log_reference,
+            RepositoryError::Constraint {
+                entity: "agent_runs",
+                ..
+            }
+        ));
+
+        let completed = complete_agent_run(
+            &connection,
+            &run.id,
+            AgentRunCompletionInput {
+                status: AgentRunStatus::Completed,
+                duration_ms: 1_234,
+                exit_code: Some(0),
+                log_reference_id: Some(log_reference_id.clone()),
+                output_summary: "Completed with summarized output".to_string(),
+                error_summary: None,
+                review_state: ReviewState::NotRequired,
+                metadata_json: "{\"log_reference_path\":\"agent-run-p204.log\"}".to_string(),
+            },
+        )
+        .expect("complete run");
+
+        assert_eq!(completed.status, AgentRunStatus::Completed);
+        assert_eq!(completed.duration_ms, Some(1_234));
+        assert_eq!(completed.exit_code, Some(0));
+        assert_eq!(
+            completed.log_reference_id.as_deref(),
+            Some(log_reference_id.as_str())
+        );
+        assert_eq!(
+            completed.output_summary.as_deref(),
+            Some("Completed with summarized output")
+        );
+        assert!(!completed.metadata_json.contains("raw stdout"));
+
+        let same_terminal_update = complete_agent_run(
+            &connection,
+            &run.id,
+            AgentRunCompletionInput {
+                status: AgentRunStatus::Completed,
+                duration_ms: 2_000,
+                exit_code: Some(0),
+                log_reference_id: Some(log_reference_id.clone()),
+                output_summary: "Should not rewrite terminal evidence".to_string(),
+                error_summary: None,
+                review_state: ReviewState::NotRequired,
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect_err("terminal run cannot be mutated even to same status");
+        assert!(matches!(
+            same_terminal_update,
+            RepositoryError::Constraint {
+                entity: "agent_runs",
+                ..
+            }
+        ));
+
+        let illegal = transition_agent_run_status(
+            &connection,
+            &run.id,
+            AgentRunStatus::Running,
+            AgentRunTransitionInput {
+                output_summary: Some("retry should be a new run".to_string()),
+                error_summary: None,
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect_err("terminal run cannot mutate into new work");
+        assert!(matches!(
+            illegal,
+            RepositoryError::Constraint {
+                entity: "agent_runs",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn p204_failed_cancelled_blocked_and_waiting_for_input_are_distinct() {
+        let connection = migrated_in_memory_connection();
+        let profile = p204_profile(&connection, true);
+        let mut observed = Vec::new();
+        for status in [
+            AgentRunStatus::Failed,
+            AgentRunStatus::Cancelled,
+            AgentRunStatus::Blocked,
+            AgentRunStatus::WaitingForInput,
+        ] {
+            let task = p204_task(&connection, status.as_str());
+            let session = p204_session(&connection, &task, &profile);
+            let run = create_agent_run(
+                &connection,
+                AgentRunCreateInput {
+                    task_id: task.id,
+                    profile_id: profile.id.clone(),
+                    session_id: session.id,
+                    cwd: "/tmp".to_string(),
+                    metadata_json: "{}".to_string(),
+                },
+            )
+            .expect("create run");
+            let updated = transition_agent_run_status(
+                &connection,
+                &run.id,
+                status,
+                AgentRunTransitionInput {
+                    output_summary: Some(format!("status {} summary", status.as_str())),
+                    error_summary: None,
+                    metadata_json: "{}".to_string(),
+                },
+            )
+            .expect("transition status");
+            observed.push(updated.status.as_str().to_string());
+        }
+        assert_eq!(
+            observed,
+            vec!["failed", "cancelled", "blocked", "waiting_for_input"]
+        );
     }
 
     #[test]
