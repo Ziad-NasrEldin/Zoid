@@ -1,5 +1,7 @@
 import type { ReactElement } from "react";
 
+import type { CleanSessionState } from "./cleanSession";
+import { CleanSessionPanel } from "./cleanSessionView";
 import { HistoryTimeline } from "./historyTimeline";
 import {
   createTaskLinkedPanelsViewModel,
@@ -8,12 +10,15 @@ import {
 
 export type TaskLinkedPanelsProps = {
   state: TaskLinkedPanelsState;
+  cleanSessions?: Record<string, CleanSessionState>;
   onRefresh?: (taskId: string) => void;
+  onRefreshCleanSession?: (runId: string) => void;
 };
 
-export function TaskLinkedPanels({ state, onRefresh }: TaskLinkedPanelsProps): ReactElement {
+export function TaskLinkedPanels({ state, cleanSessions = {}, onRefresh, onRefreshCleanSession }: TaskLinkedPanelsProps): ReactElement {
   const view = createTaskLinkedPanelsViewModel(state);
   const taskId = view.taskId;
+  const linkedRuns = state.mode === "ready" ? state.runs : [];
 
   return (
     <section aria-busy={view.isLoading} aria-label="Linked task activity" className="task-linked-panels">
@@ -32,6 +37,19 @@ export function TaskLinkedPanels({ state, onRefresh }: TaskLinkedPanelsProps): R
         <LinkedSummaryPanel title={view.runPanel.title} emptyCopy={view.runPanel.emptyCopy} items={view.runPanel.items} />
         <LinkedSummaryPanel title={view.reviewPanel.title} emptyCopy={view.reviewPanel.emptyCopy} items={view.reviewPanel.items} />
       </div>
+
+      {linkedRuns.length > 0 ? (
+        <section aria-label="Clean session output cards">
+          <h4>Clean session output</h4>
+          {linkedRuns.map((run) => (
+            <CleanSessionPanel
+              key={run.id}
+              state={cleanSessions[run.id] ?? { mode: "unavailable", runId: run.id, reason: "Run output has not been streamed for this task detail yet." }}
+              onRefresh={onRefreshCleanSession}
+            />
+          ))}
+        </section>
+      ) : null}
 
       <HistoryTimeline
         mode="task"

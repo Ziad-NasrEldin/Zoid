@@ -3,6 +3,12 @@ import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import "./App.css";
 import {
+  appendCleanSessionChunk,
+  loadCleanSessionStreamFromBridge,
+  nextCleanSessionOffset,
+  type CleanSessionState,
+} from "./cleanSession";
+import {
   buildConfirmationPolicyView,
   type ConfirmationPolicyRequirementView,
   type ConfirmationPolicyView,
@@ -519,6 +525,7 @@ function App() {
   const [todayInbox, setTodayInbox] = useState<TodayDataState<TodayNotificationRecord>>({ state: "checking" });
   const [taskBridgeUi, setTaskBridgeUi] = useState<TaskBridgeUiState>(() => createInitialTaskBridgeState("tasks"));
   const [taskLinkedPanels, setTaskLinkedPanels] = useState<TaskLinkedPanelsState>({ mode: "idle", taskId: null });
+  const [cleanSessions, setCleanSessions] = useState<Record<string, CleanSessionState>>({});
 
   useEffect(() => {
     invoke<FoundationStatus>("get_foundation_status")
@@ -539,10 +546,26 @@ function App() {
     applyTaskState(await refreshTasksFromBridge(taskInvoke, { selectedTaskId }));
   }, [applyTaskState]);
 
+  const loadCleanSession = useCallback(async (runId: string) => {
+    const previousState = cleanSessions[runId];
+    setCleanSessions((current) => ({ ...current, [runId]: { mode: "loading", runId } }));
+    const next = await loadCleanSessionStreamFromBridge(taskInvoke, {
+      runId,
+      logsDir: status?.logs_dir,
+      offset: nextCleanSessionOffset(previousState),
+      maxBytes: 4096,
+    });
+    setCleanSessions((current) => ({ ...current, [runId]: appendCleanSessionChunk(previousState, next) }));
+  }, [cleanSessions, status?.logs_dir]);
+
   const loadLinkedPanels = useCallback(async (taskId: string) => {
     setTaskLinkedPanels({ mode: "loading", taskId });
-    setTaskLinkedPanels(await loadTaskLinkedPanelsFromBridge(taskInvoke, taskId));
-  }, []);
+    const linkedState = await loadTaskLinkedPanelsFromBridge(taskInvoke, taskId);
+    setTaskLinkedPanels(linkedState);
+    if (linkedState.mode === "ready") {
+      await Promise.all(linkedState.runs.map((run) => loadCleanSession(run.id)));
+    }
+  }, [loadCleanSession]);
 
   useEffect(() => {
     let cancelled = false;
@@ -580,6 +603,7 @@ function App() {
         : { mode: "loading", selectedTaskId: null },
     }));
     setTaskLinkedPanels({ mode: "idle", taskId: null });
+    setCleanSessions({});
   }, []);
 
   const handleCreateTask = useCallback(async (form: TaskFormDraft) => {
@@ -729,7 +753,14 @@ function App() {
                 onRefresh={() => loadTaskWorkspace(taskBridgeUi.state.selectedTaskId)}
                 onSelectTask={handleSelectTask}
                 onUpdateTask={handleUpdateTask}
-                linkedPanels={<TaskLinkedPanels state={taskLinkedPanels} onRefresh={loadLinkedPanels} />}
+                linkedPanels={
+                  <TaskLinkedPanels
+                    state={taskLinkedPanels}
+                    cleanSessions={cleanSessions}
+                    onRefresh={loadLinkedPanels}
+                    onRefreshCleanSession={loadCleanSession}
+                  />
+                }
                 state={taskBridgeUi.state}
               />
             ) : (
