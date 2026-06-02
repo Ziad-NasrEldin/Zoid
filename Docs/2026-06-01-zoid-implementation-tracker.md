@@ -104,8 +104,10 @@ Non-negotiable gates for every implementation slice:
 
 Goal: Today → Task → CLI Session → AgentRun → ReviewRecord → Notification → History.
 
-- [ ] P2.01 Planning: convert vertical-slice acceptance into task-level spec and data-flow diagram.
-- [ ] P2.02 Planning: define run lifecycle states, task states, review states, notification states, and failure/blocker states.
+- [x] P2.01 Planning: convert vertical-slice acceptance into task-level spec and data-flow diagram.
+  - 2026-06-02 wrote `/Users/ziadnasreldin/Zoid/Docs/2026-06-02-phase-2-first-vertical-slice-spec.md` defining the `Today -> Task -> CLI Session -> AgentRun -> ReviewRecord -> Notification -> History` scope, entity boundaries, data flow, event taxonomy, P2.03-P2.07 order, TDD acceptance targets, and verification gates. Read-only data-model boundary subagent review passed before schema edits.
+- [x] P2.02 Planning: define run lifecycle states, task states, review states, notification states, and failure/blocker states.
+  - 2026-06-02 captured TaskStatus, AgentRunStatus, ReviewState/Verdict, NotificationState, and failure-vs-blocker semantics in the Phase 2 spec. Read-only lifecycle/state subagent review completed and recommended transition/test rules before schema edits.
 - [ ] P2.03 Database: tasks table/model with title, detail, status, priority, timestamps, archived/deleted handling.
 - [ ] P2.04 Database: AgentRun/session tables with task link, command/profile, cwd, status, duration, exit code, log reference, summary.
 - [ ] P2.05 Database: ReviewRecord table/model with manual reviewer stub fields and links to task/run.
