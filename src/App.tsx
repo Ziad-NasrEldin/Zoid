@@ -45,6 +45,16 @@ import type { TaskFormDraft } from "./taskViewModel";
 import { TaskWorkspace } from "./taskWorkspace";
 import { loadTaskLinkedPanelsFromBridge, type TaskLinkedPanelsState } from "./taskLinkedPanels";
 import { TaskLinkedPanels } from "./taskLinkedPanelsView";
+import type { InboxDataState, InboxNotificationRecord } from "./inboxViewModel";
+import {
+  buildTaskScopedInboxState,
+  createInitialManualReviewState,
+  createManualReviewThroughBridge,
+  resetManualReviewForTask,
+  updateManualReviewDraft,
+  type ManualReviewDraft,
+  type ManualReviewState,
+} from "./taskDetailBatchPanels";
 import {
   cancelRunThroughBridge,
   createInitialRunControlsState,
@@ -537,6 +547,7 @@ function App() {
   const [taskLinkedPanels, setTaskLinkedPanels] = useState<TaskLinkedPanelsState>({ mode: "idle", taskId: null });
   const [cleanSessions, setCleanSessions] = useState<Record<string, CleanSessionState>>({});
   const [runControls, setRunControls] = useState<RunControlsState>(() => createInitialRunControlsState({ taskId: null, profileId: "default", cwd: "" }));
+  const [manualReview, setManualReview] = useState<ManualReviewState>(() => createInitialManualReviewState(null, null));
 
   useEffect(() => {
     invoke<FoundationStatus>("get_foundation_status")
@@ -574,7 +585,11 @@ function App() {
     const linkedState = await loadTaskLinkedPanelsFromBridge(taskInvoke, taskId);
     setTaskLinkedPanels(linkedState);
     if (linkedState.mode === "ready") {
+      const primaryRunId = linkedState.runs[0]?.id ?? null;
+      setManualReview((current) => resetManualReviewForTask(current, taskId, primaryRunId));
       await Promise.all(linkedState.runs.map((run) => loadCleanSession(run.id)));
+    } else {
+      setManualReview((current) => resetManualReviewForTask(current, taskId, null));
     }
   }, [loadCleanSession]);
 
@@ -616,6 +631,7 @@ function App() {
     setTaskLinkedPanels({ mode: "idle", taskId: null });
     setCleanSessions({});
     setRunControls((current) => updateRunControlsDraft(current, { taskId: null, clearStatus: true }));
+    setManualReview(createInitialManualReviewState(null, null));
   }, []);
 
   const handleCreateTask = useCallback(async (form: TaskFormDraft) => {
@@ -681,6 +697,21 @@ function App() {
     if (next.mode === "ready" && next.activeRun?.id) await loadCleanSession(next.activeRun.id);
   }, [loadCleanSession, runControls]);
 
+  const handleManualReviewDraftChange = useCallback((patch: Partial<ManualReviewDraft>) => {
+    setManualReview((current) => updateManualReviewDraft(current, patch));
+  }, []);
+
+  const handleClearManualReview = useCallback(() => {
+    setManualReview((current) => updateManualReviewDraft(current, { clear: true }));
+  }, []);
+
+  const handleSubmitManualReview = useCallback(async () => {
+    setManualReview((current) => ({ ...current, mode: "submitting", errorMessage: null, validationErrors: [] }));
+    const next = await createManualReviewThroughBridge(taskInvoke, manualReview);
+    setManualReview(next);
+    if (next.mode === "ready" && next.draft.taskId) await loadLinkedPanels(next.draft.taskId);
+  }, [loadLinkedPanels, manualReview]);
+
   const workspaceRegistry = useMemo(() => buildWorkspaceRegistryView(status, statusError), [status, statusError]);
   const workspaces = workspaceRegistry.workspaces;
   const workspaceChrome = useMemo(
@@ -713,6 +744,15 @@ function App() {
     }),
     [status, statusError, todayTasks, todayInbox],
   );
+  const linkedRunIds = useMemo(
+    () => taskLinkedPanels.mode === "ready" ? taskLinkedPanels.runs.map((run) => run.id) : [],
+    [taskLinkedPanels],
+  );
+  const taskScopedInbox = useMemo<InboxDataState<InboxNotificationRecord>>(() => {
+    if (todayInbox.state === "checking") return { state: "checking" };
+    if (todayInbox.state === "unavailable") return { state: "unavailable", reason: todayInbox.reason };
+    return buildTaskScopedInboxState(taskLinkedPanels.taskId, todayInbox.records as InboxNotificationRecord[], linkedRunIds);
+  }, [linkedRunIds, taskLinkedPanels.taskId, todayInbox]);
   const settingsStatusView = useMemo(
     () => buildSettingsStatusShellView({
       mode: status ? "native" : statusError ? "preview" : "checking",
@@ -800,6 +840,8 @@ function App() {
                   <TaskLinkedPanels
                     state={taskLinkedPanels}
                     cleanSessions={cleanSessions}
+                    inboxState={taskScopedInbox}
+                    manualReview={manualReview}
                     runControls={
                       <RunControlsPanel
                         state={runControls}
@@ -809,6 +851,9 @@ function App() {
                         onClear={handleClearRunStatus}
                       />
                     }
+                    onManualReviewDraftChange={handleManualReviewDraftChange}
+                    onSubmitManualReview={handleSubmitManualReview}
+                    onClearManualReview={handleClearManualReview}
                     onRefresh={loadLinkedPanels}
                     onRefreshCleanSession={loadCleanSession}
                   />

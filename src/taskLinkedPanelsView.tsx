@@ -3,6 +3,9 @@ import type { ReactElement } from "react";
 import type { CleanSessionState } from "./cleanSession";
 import { CleanSessionPanel } from "./cleanSessionView";
 import { HistoryTimeline } from "./historyTimeline";
+import type { InboxDataState, InboxNotificationRecord } from "./inboxViewModel";
+import type { ManualReviewState } from "./taskDetailBatchPanels";
+import { InboxAttentionPanel, LinkedRunHistoryPanels, ManualReviewPanel } from "./taskDetailBatchPanelsView";
 import {
   createTaskLinkedPanelsViewModel,
   type TaskLinkedPanelsState,
@@ -11,12 +14,17 @@ import {
 export type TaskLinkedPanelsProps = {
   state: TaskLinkedPanelsState;
   cleanSessions?: Record<string, CleanSessionState>;
+  inboxState?: InboxDataState<InboxNotificationRecord>;
+  manualReview?: ManualReviewState;
   runControls?: ReactElement;
+  onManualReviewDraftChange?: Parameters<typeof ManualReviewPanel>[0]["onDraftChange"];
+  onSubmitManualReview?: () => void;
+  onClearManualReview?: () => void;
   onRefresh?: (taskId: string) => void;
   onRefreshCleanSession?: (runId: string) => void;
 };
 
-export function TaskLinkedPanels({ state, cleanSessions = {}, runControls, onRefresh, onRefreshCleanSession }: TaskLinkedPanelsProps): ReactElement {
+export function TaskLinkedPanels({ state, cleanSessions = {}, inboxState, manualReview, runControls, onManualReviewDraftChange, onSubmitManualReview, onClearManualReview, onRefresh, onRefreshCleanSession }: TaskLinkedPanelsProps): ReactElement {
   const view = createTaskLinkedPanelsViewModel(state);
   const taskId = view.taskId;
   const linkedRuns = state.mode === "ready" ? state.runs : [];
@@ -35,6 +43,8 @@ export function TaskLinkedPanels({ state, cleanSessions = {}, runControls, onRef
       {view.isLoading ? <p>Loading linked activity from native history.</p> : null}
 
       {runControls}
+      {manualReview ? <ManualReviewPanel state={manualReview} onDraftChange={onManualReviewDraftChange} onSubmit={onSubmitManualReview} onClear={onClearManualReview} /> : null}
+      {inboxState ? <InboxAttentionPanel state={inboxState} /> : null}
 
       <div className="task-linked-panels__grid">
         <LinkedSummaryPanel title={view.runPanel.title} emptyCopy={view.runPanel.emptyCopy} items={view.runPanel.items} />
@@ -63,6 +73,7 @@ export function TaskLinkedPanels({ state, cleanSessions = {}, runControls, onRef
         pageSize={25}
         includeRelated
       />
+      <LinkedRunHistoryPanels history={state.mode === "ready" ? state.history : []} runIds={linkedRuns.map((run) => run.id)} />
     </section>
   );
 }
