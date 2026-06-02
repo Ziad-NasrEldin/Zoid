@@ -552,6 +552,327 @@ fn p204_failed_cancelled_blocked_and_waiting_for_input_are_distinct() {
     );
 }
 
+fn p209_profile_with_command(
+    connection: &Connection,
+    id: &str,
+    command: &str,
+    configured: bool,
+) -> AgentProfileRecord {
+    upsert_agent_profile(
+        connection,
+        AgentProfileInput {
+            id: id.to_string(),
+            label: format!("Profile {id}"),
+            configured,
+            command: if command.is_empty() {
+                None
+            } else {
+                Some(command.to_string())
+            },
+            config_json: "{\"mode\":\"local_command\"}".to_string(),
+            capabilities_json: "{\"local_cli\":true,\"safe_command\":true}".to_string(),
+            credential_ref: None,
+            env_refs_json: "[]".to_string(),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect("upsert p209 profile")
+}
+
+#[test]
+fn p209_preflight_blocks_unconfigured_missing_command_and_bad_cwd_before_run_records() {
+    let connection = migrated_in_memory_connection();
+    let task = p204_task(&connection, "Preflight command task");
+    let logs_dir = temp_home("p209-preflight-logs");
+    let unconfigured =
+        p209_profile_with_command(&connection, "profile-unconfigured-p209", "", false);
+
+    let blocked = run_agent_command_service(
+        &connection,
+        AgentCommandRunRequest {
+            task_id: task.id.clone(),
+            profile_id: unconfigured.id,
+            cwd: "/tmp".to_string(),
+            argv: vec![],
+            stdin: None,
+            timeout_ms: None,
+            logs_dir: logs_dir.clone(),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect_err("unconfigured profile must block before fake success");
+    assert!(matches!(
+        blocked,
+        RepositoryError::Constraint {
+            entity: "agent_profiles",
+            ..
+        }
+    ));
+    assert_eq!(
+        count_rows(&connection, "select count(*) from cli_sessions"),
+        0
+    );
+    assert_eq!(
+        count_rows(&connection, "select count(*) from agent_runs"),
+        0
+    );
+
+    let missing_command = p209_profile_with_command(
+        &connection,
+        "profile-missing-command-p209",
+        "/definitely/not/a/zoid-command",
+        true,
+    );
+    let command_error = run_agent_command_service(
+        &connection,
+        AgentCommandRunRequest {
+            task_id: task.id.clone(),
+            profile_id: missing_command.id,
+            cwd: "/tmp".to_string(),
+            argv: vec![],
+            stdin: None,
+            timeout_ms: None,
+            logs_dir: logs_dir.clone(),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect_err("missing command must block before launch");
+    assert!(matches!(
+        command_error,
+        RepositoryError::Constraint {
+            entity: "agent_profiles",
+            ..
+        }
+    ));
+    assert_eq!(
+        count_rows(&connection, "select count(*) from cli_sessions"),
+        0
+    );
+    assert_eq!(
+        count_rows(&connection, "select count(*) from agent_runs"),
+        0
+    );
+
+    let shell = p209_profile_with_command(&connection, "profile-shell-p209", "/bin/sh", true);
+    let bad_cwd = run_agent_command_service(
+        &connection,
+        AgentCommandRunRequest {
+            task_id: task.id,
+            profile_id: shell.id,
+            cwd: "/definitely/missing/zoid/cwd".to_string(),
+            argv: vec!["-c".to_string(), "printf nope".to_string()],
+            stdin: None,
+            timeout_ms: None,
+            logs_dir,
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect_err("missing cwd must block before launch");
+    assert!(matches!(
+        bad_cwd,
+        RepositoryError::Constraint {
+            entity: "cli_sessions",
+            ..
+        }
+    ));
+    assert_eq!(
+        count_rows(&connection, "select count(*) from cli_sessions"),
+        0
+    );
+    assert_eq!(
+        count_rows(&connection, "select count(*) from agent_runs"),
+        0
+    );
+}
+
+#[test]
+fn p210_p212_p213_runner_captures_output_persists_redacted_log_and_writes_events() {
+    let connection = migrated_in_memory_connection();
+    let task = p204_task(&connection, "Run safe local command");
+    let profile =
+        p209_profile_with_command(&connection, "profile-shell-success-p210", "/bin/sh", true);
+    let logs_dir = temp_home("p210-logs");
+    let secret = "sk-live-should-redact-12345678901234567890";
+
+    let outcome = run_agent_command_service(
+        &connection,
+        AgentCommandRunRequest {
+            task_id: task.id.clone(),
+            profile_id: profile.id,
+            cwd: "/tmp".to_string(),
+            argv: vec![
+                "-c".to_string(),
+                format!("printf 'clean stdout'; printf 'stderr {secret}' >&2"),
+            ],
+            stdin: None,
+            timeout_ms: None,
+            logs_dir: logs_dir.clone(),
+            metadata_json: "{\"source\":\"test\"}".to_string(),
+        },
+    )
+    .expect("run safe command");
+
+    assert_eq!(outcome.run.status, AgentRunStatus::Completed);
+    assert_eq!(outcome.run.exit_code, Some(0));
+    assert!(outcome.run.duration_ms.unwrap_or_default() >= 1);
+    assert!(outcome.stdout.contains("clean stdout"));
+    assert!(outcome.stderr.contains(secret));
+    assert!(outcome.run.log_reference_id.is_some());
+    assert_eq!(outcome.run.review_state, ReviewState::Required);
+
+    let persisted_log =
+        std::fs::read_to_string(&outcome.log_path).expect("read safe persisted log");
+    assert!(persisted_log.contains("clean stdout"));
+    assert!(
+        !persisted_log.contains(secret),
+        "raw secret must not be persisted in log file"
+    );
+    assert!(persisted_log.contains("[REDACTED]"));
+
+    let sqlite_secret_count = count_rows(
+        &connection,
+        "select count(*) from agent_runs where output_summary like '%sk-live%' or error_summary like '%sk-live%' or metadata_json like '%sk-live%'",
+    );
+    assert_eq!(
+        sqlite_secret_count, 0,
+        "SQLite run metadata/summaries must not store raw secret material"
+    );
+
+    let events = list_event_records(
+        &connection,
+        EventListFilter {
+            workspace_key: Some("agents"),
+            action_type: None,
+            outcome: Some("succeeded"),
+            source: Some("agent_run_repository"),
+            limit: 20,
+        },
+    )
+    .expect("list lifecycle events");
+    assert!(events.iter().any(|event| event.action_type == "run.queued"));
+    assert!(events
+        .iter()
+        .any(|event| event.action_type == "run.started"));
+    assert!(events
+        .iter()
+        .any(|event| event.action_type == "run.completed"));
+    assert!(events
+        .iter()
+        .all(|event| !event.summary.contains(secret) && !event.metadata_json.contains(secret)));
+
+    let notification_count = count_rows(
+        &connection,
+        "select count(*) from notifications where task_id is not null and run_id is not null and notification_type = 'completion'",
+    );
+    assert_eq!(notification_count, 1);
+}
+
+#[test]
+fn p210_timeout_kills_process_and_records_cancelled_cleanup() {
+    let connection = migrated_in_memory_connection();
+    let task = p204_task(&connection, "Timed out command");
+    let profile =
+        p209_profile_with_command(&connection, "profile-shell-timeout-p210", "/bin/sh", true);
+    let logs_dir = temp_home("p210-timeout-logs");
+
+    let outcome = run_agent_command_service(
+        &connection,
+        AgentCommandRunRequest {
+            task_id: task.id,
+            profile_id: profile.id,
+            cwd: "/tmp".to_string(),
+            argv: vec![
+                "-c".to_string(),
+                "sleep 2; printf should-not-finish".to_string(),
+            ],
+            stdin: None,
+            timeout_ms: Some(50),
+            logs_dir,
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect("timeout should kill child and record cancellation");
+
+    assert_eq!(outcome.run.status, AgentRunStatus::Cancelled);
+    assert!(outcome.run.log_reference_id.is_some());
+    assert!(outcome.log_path.is_file());
+    assert!(!outcome.stdout.contains("should-not-finish"));
+
+    let cancelled_events = list_event_records(
+        &connection,
+        EventListFilter {
+            workspace_key: Some("agents"),
+            action_type: Some("run.cancelled"),
+            outcome: Some("succeeded"),
+            source: Some("agent_run_repository"),
+            limit: 10,
+        },
+    )
+    .expect("list cancelled events");
+    assert_eq!(cancelled_events.len(), 1);
+    let notification_count = count_rows(
+        &connection,
+        "select count(*) from notifications where run_id is not null and notification_type = 'attention' and title = 'Agent run cancelled'",
+    );
+    assert_eq!(notification_count, 1);
+}
+
+#[test]
+fn p211_failed_command_is_recorded_as_failed_with_exit_code_log_and_failure_notification() {
+    let connection = migrated_in_memory_connection();
+    let task = p204_task(&connection, "Failing local command");
+    let profile =
+        p209_profile_with_command(&connection, "profile-shell-fail-p211", "/bin/sh", true);
+    let logs_dir = temp_home("p211-logs");
+
+    let outcome = run_agent_command_service(
+        &connection,
+        AgentCommandRunRequest {
+            task_id: task.id,
+            profile_id: profile.id,
+            cwd: "/tmp".to_string(),
+            argv: vec![
+                "-c".to_string(),
+                "printf 'bad stderr' >&2; exit 7".to_string(),
+            ],
+            stdin: None,
+            timeout_ms: None,
+            logs_dir,
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect("failed process still records observed outcome");
+
+    assert_eq!(outcome.run.status, AgentRunStatus::Failed);
+    assert_eq!(outcome.run.exit_code, Some(7));
+    assert!(outcome
+        .run
+        .error_summary
+        .as_deref()
+        .unwrap_or_default()
+        .contains("bad stderr"));
+    assert!(outcome.run.log_reference_id.is_some());
+    assert!(outcome.log_path.is_file());
+
+    let events = list_event_records(
+        &connection,
+        EventListFilter {
+            workspace_key: Some("agents"),
+            action_type: Some("run.failed"),
+            outcome: Some("succeeded"),
+            source: Some("agent_run_repository"),
+            limit: 10,
+        },
+    )
+    .expect("list failed events");
+    assert_eq!(events.len(), 1);
+    let notification_count = count_rows(
+        &connection,
+        "select count(*) from notifications where run_id is not null and notification_type = 'failure' and severity = 'error'",
+    );
+    assert_eq!(notification_count, 1);
+}
+
 fn p205_run(connection: &Connection, task: &TaskRecord) -> AgentRunRecord {
     let profile = p204_profile(connection, true);
     let session = p204_session(connection, task, &profile);
