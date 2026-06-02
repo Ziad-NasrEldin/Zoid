@@ -174,7 +174,7 @@ pub(crate) fn run_agent_command_service(
     })
 }
 
-fn preflight_agent_command(
+pub(crate) fn preflight_agent_command(
     connection: &Connection,
     request: &AgentCommandRunRequest,
 ) -> RepoResult<()> {
@@ -221,12 +221,12 @@ fn preflight_agent_command(
     Ok(())
 }
 
-enum CommandExecutionResult {
+pub(crate) enum CommandExecutionResult {
     Exited(std::process::Output),
     KilledAfterTimeout(std::process::Output),
 }
 
-fn execute_command(
+pub(crate) fn execute_command(
     command: &str,
     argv: &[String],
     cwd: &str,
@@ -282,7 +282,7 @@ fn command_is_available(command: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn read_log_reference_id(
+pub(crate) fn read_log_reference_id(
     connection: &Connection,
     log_scope: &str,
     relative_path: &str,
@@ -301,7 +301,7 @@ fn read_log_reference_id(
         })
 }
 
-fn summarize_output(stdout: &str, status: AgentRunStatus) -> String {
+pub(crate) fn summarize_output(stdout: &str, status: AgentRunStatus) -> String {
     let trimmed = summarize_text(stdout);
     if trimmed.is_empty() {
         format!("Agent run {}", status.as_str())
@@ -310,7 +310,7 @@ fn summarize_output(stdout: &str, status: AgentRunStatus) -> String {
     }
 }
 
-fn summarize_text(value: &str) -> String {
+pub(crate) fn summarize_text(value: &str) -> String {
     let normalized = value.lines().next().unwrap_or_default().trim();
     if normalized.len() > 240 {
         normalized[..240].to_string()
@@ -319,7 +319,10 @@ fn summarize_text(value: &str) -> String {
     }
 }
 
-fn create_run_result_notification(connection: &Connection, run: &AgentRunRecord) -> RepoResult<()> {
+pub(crate) fn create_run_result_notification(
+    connection: &Connection,
+    run: &AgentRunRecord,
+) -> RepoResult<()> {
     let (notification_type, severity, title, message) = match run.status {
         AgentRunStatus::Completed => (
             NotificationType::Completion,

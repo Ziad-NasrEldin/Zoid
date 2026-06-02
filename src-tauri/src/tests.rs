@@ -49,6 +49,15 @@ fn migrated_in_memory_connection() -> Connection {
     connection
 }
 
+fn migrated_file_connection(name: &str) -> (Connection, PathBuf) {
+    let dir = temp_home(name);
+    std::fs::create_dir_all(&dir).expect("create sqlite temp dir");
+    let path = dir.join("foundation.sqlite");
+    let connection = open_foundation_database(&path).expect("open file-backed sqlite");
+    run_migrations(&connection).expect("run migrations");
+    (connection, path)
+}
+
 fn p204_task(connection: &Connection, title: &str) -> TaskRecord {
     create_task_record(connection, TaskCreateInput::new(title, None)).expect("create task")
 }
@@ -3071,7 +3080,7 @@ fn integration_status_service_rejects_secret_config_invalid_json_and_raw_credent
 
 #[test]
 fn tauri_bridge_command_surface_lists_registered_p116_commands() {
-    assert_eq!(TAURI_BRIDGE_COMMAND_NAMES.len(), 19);
+    assert_eq!(TAURI_BRIDGE_COMMAND_NAMES.len(), 23);
     for command_name in [
         "get_foundation_status",
         "get_workspace_registry",
@@ -3092,6 +3101,10 @@ fn tauri_bridge_command_surface_lists_registered_p116_commands() {
         "update_task_status_command",
         "archive_task_command",
         "delete_task_command",
+        "start_agent_run_command",
+        "read_run_status_command",
+        "stream_run_output_command",
+        "cancel_run_command",
     ] {
         assert!(
             TAURI_BRIDGE_COMMAND_NAMES.contains(&command_name),
@@ -6376,6 +6389,197 @@ fn p217_task_bridge_commands_preserve_validation_and_secret_guards() {
     )
     .expect_err("invalid status must fail");
     assert!(invalid_status.contains("invalid task status"));
+}
+
+#[test]
+fn p218_run_bridge_commands_start_status_stream_and_write_events() {
+    let (connection, _database_path) = migrated_file_connection("p218-run-bridge-db");
+    let task = p204_task(&connection, "Bridge run task");
+    let profile = p209_profile_with_command(&connection, "profile-shell-p218", "/bin/sh", true);
+    let logs_dir = temp_home("p218-run-bridge-logs");
+
+    let outcome = start_agent_run_command_with_connection(
+        &connection,
+        AgentRunCommandStartRequest {
+            task_id: task.id.clone(),
+            profile_id: profile.id,
+            cwd: "/tmp".to_string(),
+            argv: vec![
+                "-c".to_string(),
+                "printf 'bridge stdout'; sleep 0.25; printf 'token=sk-liv...cret' >&2".to_string(),
+            ],
+            stdin: None,
+            timeout_ms: None,
+            logs_dir: logs_dir.clone(),
+            metadata_json: Some("{\"source\":\"p218_bridge\"}".to_string()),
+        },
+    )
+    .expect("start run via bridge helper");
+
+    assert_eq!(outcome.run.status, AgentRunStatus::Running);
+    assert_eq!(outcome.run.task_id, task.id);
+    assert!(outcome
+        .log_path
+        .ends_with(&format!("{}.log", outcome.run.id)));
+
+    let running_status =
+        read_run_status_command_with_connection(&connection, outcome.run.id.clone())
+            .expect("read running status via bridge helper");
+    assert_eq!(running_status.status, AgentRunStatus::Running);
+
+    let mut stream = None;
+    for _ in 0..30 {
+        let chunk = stream_run_output_command_with_connection(
+            &connection,
+            AgentRunCommandStreamRequest {
+                run_id: outcome.run.id.clone(),
+                logs_dir: logs_dir.clone(),
+                offset: Some(0),
+                max_bytes: Some(1024),
+            },
+        )
+        .expect("stream run output via bridge helper");
+        if chunk.content.contains("bridge stdout") {
+            stream = Some(chunk);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let stream = stream.expect("stream should expose partial stdout before process exit");
+    assert_eq!(stream.run_id, outcome.run.id);
+    assert_eq!(stream.status, AgentRunStatus::Running);
+    assert!(!stream.eof);
+    assert!(stream.next_offset > stream.offset);
+
+    let mut completed = None;
+    for _ in 0..40 {
+        let status = read_run_status_command_with_connection(&connection, outcome.run.id.clone())
+            .expect("read eventual status via bridge helper");
+        if status.status == AgentRunStatus::Completed {
+            completed = Some(status);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let completed = completed.expect("run should complete asynchronously");
+    assert!(completed.log_reference_id.is_some());
+
+    let final_stream = stream_run_output_command_with_connection(
+        &connection,
+        AgentRunCommandStreamRequest {
+            run_id: outcome.run.id.clone(),
+            logs_dir,
+            offset: Some(0),
+            max_bytes: Some(4096),
+        },
+    )
+    .expect("stream final run output via bridge helper");
+    assert!(final_stream.content.contains("bridge stdout"));
+    assert!(final_stream.content.contains("[REDACTED]"));
+    assert!(!final_stream.content.contains("sk-liv...cret"));
+    assert!(final_stream.eof);
+
+    let events = list_run_history(&connection, &outcome.run.id, 20, None).expect("run history");
+    assert!(events
+        .iter()
+        .any(|item| item.event.action_type == "run.queued"));
+    assert!(events
+        .iter()
+        .any(|item| item.event.action_type == "run.started"));
+    assert!(events
+        .iter()
+        .any(|item| item.event.action_type == "run.completed"));
+}
+
+#[test]
+fn p218_run_bridge_cancel_kills_active_process_and_rejects_terminal_mutation() {
+    let (connection, _database_path) = migrated_file_connection("p218-cancel-bridge-db");
+    let task = p204_task(&connection, "Cancelable bridge run task");
+    let profile =
+        p209_profile_with_command(&connection, "profile-shell-cancel-p218", "/bin/sh", true);
+    let logs_dir = temp_home("p218-cancel-bridge-logs");
+
+    let outcome = start_agent_run_command_with_connection(
+        &connection,
+        AgentRunCommandStartRequest {
+            task_id: task.id,
+            profile_id: profile.id,
+            cwd: "/tmp".to_string(),
+            argv: vec![
+                "-c".to_string(),
+                "printf 'before cancel'; sleep 3; printf 'should-not-finish'".to_string(),
+            ],
+            stdin: None,
+            timeout_ms: None,
+            logs_dir: logs_dir.clone(),
+            metadata_json: Some("{\"source\":\"p218_cancel\"}".to_string()),
+        },
+    )
+    .expect("start cancelable run");
+    assert_eq!(outcome.run.status, AgentRunStatus::Running);
+
+    let cancelled = cancel_run_command_with_connection(
+        &connection,
+        outcome.run.id.clone(),
+        AgentRunCommandCancelRequest {
+            reason: Some("User stopped from bridge".to_string()),
+            metadata_json: Some("{\"source\":\"p218_cancel\"}".to_string()),
+        },
+    )
+    .expect("cancel active run via bridge helper");
+    assert_eq!(cancelled.status, AgentRunStatus::Cancelled);
+    assert!(cancelled.completed_at.is_some());
+
+    let mut finalized = None;
+    for _ in 0..40 {
+        let status = read_run_status_command_with_connection(&connection, outcome.run.id.clone())
+            .expect("read cancelled status");
+        if status.status == AgentRunStatus::Cancelled
+            && status.log_reference_id.is_some()
+            && status.duration_ms.is_some()
+        {
+            finalized = Some(status);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let status = finalized.expect("cancelled run should receive worker evidence");
+    assert_eq!(status.status, AgentRunStatus::Cancelled);
+    assert!(status.log_reference_id.is_some());
+    assert!(status.duration_ms.unwrap_or_default() > 0);
+
+    let notifications = list_inbox_notifications(&connection, false, 20).expect("notifications");
+    assert!(notifications
+        .iter()
+        .any(|item| item.run_id.as_deref() == Some(outcome.run.id.as_str())));
+
+    let stream = stream_run_output_command_with_connection(
+        &connection,
+        AgentRunCommandStreamRequest {
+            run_id: outcome.run.id.clone(),
+            logs_dir,
+            offset: Some(0),
+            max_bytes: Some(4096),
+        },
+    )
+    .expect("stream cancelled run output");
+    assert!(
+        stream.content.contains("before cancel")
+            || stream.content.contains("Run cancelled")
+            || stream.content.is_empty()
+    );
+    assert!(!stream.content.contains("should-not-finish"));
+
+    let recancel = cancel_run_command_with_connection(
+        &connection,
+        outcome.run.id,
+        AgentRunCommandCancelRequest {
+            reason: None,
+            metadata_json: None,
+        },
+    )
+    .expect_err("terminal run cannot be cancelled again");
+    assert!(recancel.contains("terminal agent run cannot mutate"));
 }
 
 #[test]

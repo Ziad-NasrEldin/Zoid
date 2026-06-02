@@ -18,13 +18,14 @@ pub(crate) use task_service::*;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process;
+use std::process::{self, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static CONFIRMATION_DECISION_COUNTER: AtomicU64 = AtomicU64::new(0);
 static EVENT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -33,6 +34,8 @@ static CLI_SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 static AGENT_RUN_COUNTER: AtomicU64 = AtomicU64::new(0);
 static REVIEW_RECORD_COUNTER: AtomicU64 = AtomicU64::new(0);
 static NOTIFICATION_COUNTER: AtomicU64 = AtomicU64::new(0);
+static ACTIVE_RUN_CHILDREN: OnceLock<Mutex<HashMap<String, Arc<Mutex<std::process::Child>>>>> =
+    OnceLock::new();
 
 const SAFE_LOG_MAX_BYTES: usize = 4096;
 const SAFE_LOG_ROTATED_SUFFIX: &str = "1";
@@ -1678,6 +1681,10 @@ const TAURI_BRIDGE_COMMAND_NAMES: &[&str] = &[
     "update_task_status_command",
     "archive_task_command",
     "delete_task_command",
+    "start_agent_run_command",
+    "read_run_status_command",
+    "stream_run_output_command",
+    "cancel_run_command",
 ];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1701,6 +1708,50 @@ struct TaskCommandUpdateRequest {
 #[derive(Debug, Clone, Deserialize)]
 struct TaskCommandStatusRequest {
     status: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AgentRunCommandStartRequest {
+    task_id: String,
+    profile_id: String,
+    cwd: String,
+    argv: Vec<String>,
+    stdin: Option<String>,
+    timeout_ms: Option<u64>,
+    logs_dir: PathBuf,
+    metadata_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AgentRunCommandStreamRequest {
+    run_id: String,
+    logs_dir: PathBuf,
+    offset: Option<u64>,
+    max_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AgentRunCommandCancelRequest {
+    reason: Option<String>,
+    metadata_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AgentRunCommandOutcome {
+    session_id: String,
+    run: AgentRunRecord,
+    log_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AgentRunCommandStreamChunk {
+    run_id: String,
+    log_reference_id: String,
+    offset: u64,
+    next_offset: u64,
+    eof: bool,
+    status: AgentRunStatus,
+    content: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1808,6 +1859,37 @@ fn archive_task_command(task_id: String) -> Result<TaskRecord, String> {
 fn delete_task_command(task_id: String) -> Result<TaskRecord, String> {
     let connection = open_ready_connection()?;
     delete_task_command_with_connection(&connection, task_id)
+}
+
+#[tauri::command]
+fn start_agent_run_command(
+    request: AgentRunCommandStartRequest,
+) -> Result<AgentRunCommandOutcome, String> {
+    let connection = open_ready_connection()?;
+    start_agent_run_command_with_connection(&connection, request)
+}
+
+#[tauri::command]
+fn read_run_status_command(run_id: String) -> Result<AgentRunRecord, String> {
+    let connection = open_ready_connection()?;
+    read_run_status_command_with_connection(&connection, run_id)
+}
+
+#[tauri::command]
+fn stream_run_output_command(
+    request: AgentRunCommandStreamRequest,
+) -> Result<AgentRunCommandStreamChunk, String> {
+    let connection = open_ready_connection()?;
+    stream_run_output_command_with_connection(&connection, request)
+}
+
+#[tauri::command]
+fn cancel_run_command(
+    run_id: String,
+    request: AgentRunCommandCancelRequest,
+) -> Result<AgentRunRecord, String> {
+    let connection = open_ready_connection()?;
+    cancel_run_command_with_connection(&connection, run_id, request)
 }
 
 #[tauri::command]
@@ -1991,6 +2073,479 @@ fn delete_task_command_with_connection(
     task_id: String,
 ) -> Result<TaskRecord, String> {
     delete_task_service(connection, &task_id).map_err(repository_error_message)
+}
+
+fn start_agent_run_command_with_connection(
+    connection: &Connection,
+    request: AgentRunCommandStartRequest,
+) -> Result<AgentRunCommandOutcome, String> {
+    let metadata_json = request.metadata_json.unwrap_or_else(|| "{}".to_string());
+    let command_request = AgentCommandRunRequest {
+        task_id: request.task_id.clone(),
+        profile_id: request.profile_id.clone(),
+        cwd: request.cwd.clone(),
+        argv: request.argv.clone(),
+        stdin: request.stdin.clone(),
+        timeout_ms: request.timeout_ms,
+        logs_dir: request.logs_dir.clone(),
+        metadata_json: metadata_json.clone(),
+    };
+    preflight_agent_command(connection, &command_request).map_err(repository_error_message)?;
+    let database_path = database_path_for_connection(connection)?;
+
+    let session = create_cli_session(
+        connection,
+        CliSessionCreateInput {
+            task_id: request.task_id.clone(),
+            profile_id: request.profile_id.clone(),
+            mode: "clean_session".to_string(),
+            cwd: request.cwd.clone(),
+            status_summary: "Agent command queued".to_string(),
+            metadata_json: metadata_json.clone(),
+        },
+    )
+    .map_err(repository_error_message)?;
+    let run = create_agent_run(
+        connection,
+        AgentRunCreateInput {
+            task_id: request.task_id.clone(),
+            profile_id: request.profile_id.clone(),
+            session_id: session.id.clone(),
+            cwd: request.cwd.clone(),
+            metadata_json: metadata_json.clone(),
+        },
+    )
+    .map_err(repository_error_message)?;
+    let running = transition_agent_run_status(
+        connection,
+        &run.id,
+        AgentRunStatus::Running,
+        AgentRunTransitionInput {
+            output_summary: Some("Process started".to_string()),
+            error_summary: None,
+            metadata_json: metadata_json.clone(),
+        },
+    )
+    .map_err(repository_error_message)?;
+    let log_path = request.logs_dir.join(format!("{}.log", running.id));
+
+    let worker_ready = spawn_agent_run_worker(database_path, running.id.clone(), command_request);
+    worker_ready
+        .recv_timeout(Duration::from_secs(2))
+        .map_err(|_| "agent run worker did not register a cancellable process in time".to_string())?
+        .map_err(|error| format!("agent run worker failed to start process: {error}"))?;
+
+    Ok(AgentRunCommandOutcome {
+        session_id: session.id,
+        run: running,
+        log_path: display_path(&log_path),
+    })
+}
+
+fn read_run_status_command_with_connection(
+    connection: &Connection,
+    run_id: String,
+) -> Result<AgentRunRecord, String> {
+    read_agent_run_required(connection, &run_id).map_err(repository_error_message)
+}
+
+fn stream_run_output_command_with_connection(
+    connection: &Connection,
+    request: AgentRunCommandStreamRequest,
+) -> Result<AgentRunCommandStreamChunk, String> {
+    let run =
+        read_agent_run_required(connection, &request.run_id).map_err(repository_error_message)?;
+    let log_reference_id = run
+        .log_reference_id
+        .clone()
+        .unwrap_or_else(|| format!("pending_{}", run.id));
+    let path = if let Some(actual_log_reference_id) = run.log_reference_id.as_deref() {
+        let relative_path = read_log_reference_relative_path(connection, actual_log_reference_id)
+            .map_err(repository_error_message)?;
+        request.logs_dir.join(relative_path)
+    } else {
+        request.logs_dir.join(format!("{}.log", run.id))
+    };
+    let offset = request.offset.unwrap_or(0);
+    let max_bytes = request.max_bytes.unwrap_or(4096).clamp(1, 64 * 1024);
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => {
+            return Err(format!(
+                "failed to read run log stream {}: {error}",
+                display_path(&path)
+            ))
+        }
+    };
+    let start = (offset as usize).min(bytes.len());
+    let end = (start + max_bytes).min(bytes.len());
+    let content = String::from_utf8_lossy(&bytes[start..end]).to_string();
+    let next_offset = end as u64;
+    let eof = run.status.is_terminal() && next_offset as usize >= bytes.len();
+
+    Ok(AgentRunCommandStreamChunk {
+        run_id: run.id,
+        log_reference_id,
+        offset,
+        next_offset,
+        eof,
+        status: run.status,
+        content,
+    })
+}
+
+fn cancel_run_command_with_connection(
+    connection: &Connection,
+    run_id: String,
+    request: AgentRunCommandCancelRequest,
+) -> Result<AgentRunRecord, String> {
+    if let Some(child) = active_run_children()
+        .lock()
+        .map_err(|_| "active run registry lock poisoned".to_string())?
+        .get(&run_id)
+        .cloned()
+    {
+        let _ = child
+            .lock()
+            .map_err(|_| "active child lock poisoned".to_string())?
+            .kill();
+    }
+    transition_agent_run_status(
+        connection,
+        &run_id,
+        AgentRunStatus::Cancelled,
+        AgentRunTransitionInput {
+            output_summary: Some(
+                request
+                    .reason
+                    .unwrap_or_else(|| "Run cancelled from Tauri bridge".to_string()),
+            ),
+            error_summary: None,
+            metadata_json: request.metadata_json.unwrap_or_else(|| "{}".to_string()),
+        },
+    )
+    .map_err(repository_error_message)
+}
+
+fn active_run_children() -> &'static Mutex<HashMap<String, Arc<Mutex<std::process::Child>>>> {
+    ACTIVE_RUN_CHILDREN.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn database_path_for_connection(connection: &Connection) -> Result<PathBuf, String> {
+    let database_path: String = connection
+        .query_row("pragma database_list", [], |row| row.get(2))
+        .map_err(|error| format!("failed to inspect sqlite database path: {error}"))?;
+    if database_path.trim().is_empty() {
+        return Err("async run bridge requires a file-backed SQLite database".to_string());
+    }
+    Ok(PathBuf::from(database_path))
+}
+
+fn spawn_agent_run_worker(
+    database_path: PathBuf,
+    run_id: String,
+    request: AgentCommandRunRequest,
+) -> mpsc::Receiver<Result<(), String>> {
+    let (ready_sender, ready_receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        if let Err(error) = run_agent_command_worker(&database_path, &run_id, request, ready_sender)
+        {
+            eprintln!("agent run worker failed for {run_id}: {error}");
+        }
+        if let Ok(mut active) = active_run_children().lock() {
+            active.remove(&run_id);
+        }
+    });
+    ready_receiver
+}
+
+fn run_agent_command_worker(
+    database_path: &Path,
+    run_id: &str,
+    request: AgentCommandRunRequest,
+    ready_sender: mpsc::Sender<Result<(), String>>,
+) -> Result<(), String> {
+    let connection = open_foundation_database(database_path).map_err(|error| error.to_string())?;
+    let profile = read_agent_profile(&connection, &request.profile_id)
+        .map_err(repository_error_message)?
+        .ok_or_else(|| format!("agent profile not found: {}", request.profile_id))?;
+    let command = profile.command.clone().unwrap_or_default();
+    ensure_directory(&request.logs_dir).map_err(|error| error.to_string())?;
+
+    let mut child = match Command::new(&command)
+        .args(&request.argv)
+        .current_dir(&request.cwd)
+        .stdin(if request.stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            let message = format!("process failed: {error}");
+            let _ = ready_sender.send(Err(message.clone()));
+            return Err(message);
+        }
+    };
+
+    if let Some(stdin_body) = request.stdin.as_deref() {
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(stdin_body.as_bytes())
+                .map_err(|error| format!("failed to write stdin: {error}"))?;
+        }
+    }
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let child = Arc::new(Mutex::new(child));
+    active_run_children()
+        .lock()
+        .map_err(|_| "active run registry lock poisoned".to_string())?
+        .insert(run_id.to_string(), child.clone());
+    let _ = ready_sender.send(Ok(()));
+
+    let (sender, receiver) = mpsc::channel::<(&'static str, Vec<u8>)>();
+    spawn_stream_reader("stdout", stdout, sender.clone());
+    spawn_stream_reader("stderr", stderr, sender);
+
+    let started = Instant::now();
+    let timeout = request
+        .timeout_ms
+        .map(|value| Duration::from_millis(value.max(1)));
+    let mut stdout_text = String::new();
+    let mut stderr_text = String::new();
+    let mut timed_out = false;
+    let mut exit_code = None;
+    let mut finished = false;
+
+    while !finished {
+        while let Ok((stream, chunk)) = receiver.try_recv() {
+            let text = String::from_utf8_lossy(&chunk).to_string();
+            if stream == "stdout" {
+                stdout_text.push_str(&text);
+            } else {
+                stderr_text.push_str(&text);
+            }
+            append_run_log_chunk(&connection, &request.logs_dir, run_id, stream, &text)
+                .map_err(repository_error_message)?;
+        }
+
+        if let Some(timeout) = timeout {
+            if started.elapsed() >= timeout {
+                timed_out = true;
+                let _ = child
+                    .lock()
+                    .map_err(|_| "active child lock poisoned".to_string())?
+                    .kill();
+            }
+        }
+
+        if let Some(status) = child
+            .lock()
+            .map_err(|_| "active child lock poisoned".to_string())?
+            .try_wait()
+            .map_err(|error| format!("failed to poll process: {error}"))?
+        {
+            exit_code = status.code().map(i64::from);
+            finished = true;
+        } else {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    while let Ok((stream, chunk)) = receiver.recv_timeout(Duration::from_millis(25)) {
+        let text = String::from_utf8_lossy(&chunk).to_string();
+        if stream == "stdout" {
+            stdout_text.push_str(&text);
+        } else {
+            stderr_text.push_str(&text);
+        }
+        append_run_log_chunk(&connection, &request.logs_dir, run_id, stream, &text)
+            .map_err(repository_error_message)?;
+    }
+
+    let status = if timed_out
+        || read_agent_run_required(&connection, run_id)
+            .map_err(repository_error_message)?
+            .status
+            == AgentRunStatus::Cancelled
+    {
+        AgentRunStatus::Cancelled
+    } else if exit_code == Some(0) {
+        AgentRunStatus::Completed
+    } else {
+        AgentRunStatus::Failed
+    };
+    if status == AgentRunStatus::Cancelled && stdout_text.is_empty() && stderr_text.is_empty() {
+        append_run_log_chunk(
+            &connection,
+            &request.logs_dir,
+            run_id,
+            "system",
+            "Run cancelled\n",
+        )
+        .map_err(repository_error_message)?;
+    }
+    let log_reference_id = read_log_reference_id(&connection, run_id, &format!("{run_id}.log"))
+        .map_err(repository_error_message)?;
+    let output_summary = summarize_output(&stdout_text, status);
+    let error_summary = if stderr_text.trim().is_empty() {
+        None
+    } else {
+        Some(summarize_text(&stderr_text))
+    };
+    let current = read_agent_run_required(&connection, run_id).map_err(repository_error_message)?;
+    let completed =
+        if status == AgentRunStatus::Cancelled && current.status == AgentRunStatus::Cancelled {
+            finalize_cancelled_run_evidence(
+                &connection,
+                run_id,
+                AgentRunCompletionInput {
+                    status,
+                    duration_ms: started.elapsed().as_millis().min(i64::MAX as u128).max(1) as i64,
+                    exit_code,
+                    log_reference_id: Some(log_reference_id),
+                    output_summary,
+                    error_summary,
+                    review_state: ReviewState::NotRequired,
+                    metadata_json: request.metadata_json,
+                },
+            )
+        } else {
+            complete_agent_run(
+                &connection,
+                run_id,
+                AgentRunCompletionInput {
+                    status,
+                    duration_ms: started.elapsed().as_millis().min(i64::MAX as u128).max(1) as i64,
+                    exit_code,
+                    log_reference_id: Some(log_reference_id),
+                    output_summary,
+                    error_summary,
+                    review_state: if status == AgentRunStatus::Completed {
+                        ReviewState::Required
+                    } else {
+                        ReviewState::NotRequired
+                    },
+                    metadata_json: request.metadata_json,
+                },
+            )
+        }
+        .map_err(repository_error_message)?;
+    create_run_result_notification(&connection, &completed).map_err(repository_error_message)?;
+    Ok(())
+}
+
+fn finalize_cancelled_run_evidence(
+    connection: &Connection,
+    run_id: &str,
+    input: AgentRunCompletionInput,
+) -> RepoResult<AgentRunRecord> {
+    if input.status != AgentRunStatus::Cancelled {
+        return Err(RepositoryError::Constraint {
+            entity: "agent_runs",
+            message: "cancelled evidence finalization requires cancelled status".to_string(),
+        });
+    }
+    if let Some(log_reference_id) = input.log_reference_id.as_deref() {
+        validate_log_reference_exists(connection, log_reference_id)?;
+    }
+    let output_summary = redact_secrets(&input.output_summary).text;
+    let error_summary = input
+        .error_summary
+        .as_deref()
+        .map(|value| redact_secrets(value).text);
+    connection
+        .execute(
+            "
+            update agent_runs
+            set updated_at = current_timestamp,
+                duration_ms = coalesce(duration_ms, ?2),
+                exit_code = coalesce(exit_code, ?3),
+                log_reference_id = coalesce(log_reference_id, ?4),
+                output_summary = coalesce(output_summary, ?5),
+                error_summary = coalesce(error_summary, ?6),
+                review_state = ?7,
+                metadata_json = ?8
+            where id = ?1 and status = 'cancelled'
+            ",
+            params![
+                run_id,
+                input.duration_ms,
+                input.exit_code,
+                input.log_reference_id,
+                output_summary,
+                error_summary,
+                input.review_state.as_str(),
+                input.metadata_json
+            ],
+        )
+        .map_err(|error| map_repository_error("agent_runs", error))?;
+    read_agent_run_required(connection, run_id)
+}
+
+fn spawn_stream_reader(
+    stream: &'static str,
+    reader: Option<impl Read + Send + 'static>,
+    sender: mpsc::Sender<(&'static str, Vec<u8>)>,
+) {
+    if let Some(mut reader) = reader {
+        std::thread::spawn(move || {
+            let mut buffer = [0_u8; 1024];
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        if sender.send((stream, buffer[..count].to_vec())).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+}
+
+fn append_run_log_chunk(
+    connection: &Connection,
+    logs_dir: &Path,
+    run_id: &str,
+    stream: &str,
+    text: &str,
+) -> RepoResult<()> {
+    let log_body = format!("{stream}:\n{text}");
+    write_safe_log(connection, logs_dir, run_id, &log_body).map_err(|error| {
+        RepositoryError::Constraint {
+            entity: "log_references",
+            message: format!("failed to persist redacted run log chunk: {error}"),
+        }
+    })?;
+    Ok(())
+}
+
+fn read_log_reference_relative_path(
+    connection: &Connection,
+    log_reference_id: &str,
+) -> RepoResult<String> {
+    connection
+        .query_row(
+            "select relative_path from log_references where id = ?1",
+            params![log_reference_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| map_repository_error("log_references", error))?
+        .ok_or_else(|| RepositoryError::NotFound {
+            entity: "log_references",
+            key: log_reference_id.to_string(),
+        })
 }
 
 fn get_workspace_registry_with_connection(
@@ -6847,7 +7402,11 @@ pub fn run() {
             update_task_command,
             update_task_status_command,
             archive_task_command,
-            delete_task_command
+            delete_task_command,
+            start_agent_run_command,
+            read_run_status_command,
+            stream_run_output_command,
+            cancel_run_command
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
