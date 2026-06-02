@@ -3080,7 +3080,7 @@ fn integration_status_service_rejects_secret_config_invalid_json_and_raw_credent
 
 #[test]
 fn tauri_bridge_command_surface_lists_registered_p116_commands() {
-    assert_eq!(TAURI_BRIDGE_COMMAND_NAMES.len(), 23);
+    assert_eq!(TAURI_BRIDGE_COMMAND_NAMES.len(), 33);
     for command_name in [
         "get_foundation_status",
         "get_workspace_registry",
@@ -3105,6 +3105,16 @@ fn tauri_bridge_command_surface_lists_registered_p116_commands() {
         "read_run_status_command",
         "stream_run_output_command",
         "cancel_run_command",
+        "create_manual_review_command",
+        "read_review_record_command",
+        "create_notification_command",
+        "read_notification_command",
+        "list_inbox_notifications_command",
+        "update_notification_state_command",
+        "list_task_history_command",
+        "list_run_history_command",
+        "list_notification_history_command",
+        "list_entity_history_command",
     ] {
         assert!(
             TAURI_BRIDGE_COMMAND_NAMES.contains(&command_name),
@@ -6782,4 +6792,289 @@ fn p208_p215_task_and_notification_services_wrap_reviewed_repositories() {
     assert!(active_after_archive
         .iter()
         .all(|task| task.id != created.id));
+}
+
+#[test]
+fn p219_review_notification_and_inbox_bridge_commands_preserve_services() {
+    let connection = migrated_in_memory_connection();
+    let task = p204_task(&connection, "P2.19 bridge review task");
+    let profile = p204_profile(&connection, true);
+    let session = p204_session(&connection, &task, &profile);
+    let run = create_agent_run(
+        &connection,
+        AgentRunCreateInput {
+            task_id: task.id.clone(),
+            profile_id: profile.id.clone(),
+            session_id: session.id,
+            cwd: "/tmp".to_string(),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect("create agent run for bridge review");
+
+    let review = create_manual_review_command_with_connection(
+        &connection,
+        ManualReviewCommandCreateRequest {
+            task_id: task.id.clone(),
+            run_id: Some(run.id.clone()),
+            reviewer_profile_id: None,
+            verdict: "required_fixes".to_string(),
+            evidence_summary: "Needs follow-up evidence".to_string(),
+            required_fixes_json: "[\"add test proof\"]".to_string(),
+            metadata_json: Some("{\"source\":\"p219\"}".to_string()),
+        },
+    )
+    .expect("create review through bridge helper");
+    assert_eq!(review.task_id, task.id);
+    assert_eq!(review.run_id.as_deref(), Some(run.id.as_str()));
+    assert_eq!(review.verdict, ReviewVerdict::RequiredFixes);
+
+    let read_review = read_review_record_command_with_connection(&connection, review.id.clone())
+        .expect("read review through bridge helper");
+    assert_eq!(read_review, review);
+
+    let notification = create_notification_command_with_connection(
+        &connection,
+        NotificationCommandCreateRequest {
+            notification_type: "review_required".to_string(),
+            title: "Review attention".to_string(),
+            message: "Bridge notification".to_string(),
+            severity: "warning".to_string(),
+            action_route: Some(format!("zoid://tasks/{}", task.id)),
+            task_id: Some(task.id.clone()),
+            run_id: Some(run.id.clone()),
+            review_record_id: Some(review.id.clone()),
+            metadata_json: Some("{\"source\":\"p219\"}".to_string()),
+        },
+    )
+    .expect("create notification through bridge helper");
+    assert_eq!(notification.state, NotificationState::Pending);
+    assert_eq!(
+        notification.review_record_id.as_deref(),
+        Some(review.id.as_str())
+    );
+    let read_notification =
+        read_notification_command_with_connection(&connection, notification.id.clone())
+            .expect("read notification through bridge helper");
+    assert_eq!(read_notification, notification);
+
+    let review_count_before_secret = count_rows(&connection, "select count(*) from review_records");
+    let secret_review = create_manual_review_command_with_connection(
+        &connection,
+        ManualReviewCommandCreateRequest {
+            task_id: task.id.clone(),
+            run_id: Some(run.id.clone()),
+            reviewer_profile_id: None,
+            verdict: "approved".to_string(),
+            evidence_summary: "Reviewed output containing api_key=sk-raw...alue".to_string(),
+            required_fixes_json: "[]".to_string(),
+            metadata_json: Some("{\"token\":\"sk-raw...alue\"}".to_string()),
+        },
+    )
+    .expect_err("bridge review secret metadata must be rejected before persistence");
+    assert!(secret_review.contains("secret"));
+    assert_eq!(
+        count_rows(&connection, "select count(*) from review_records"),
+        review_count_before_secret
+    );
+
+    let notification_count_before_secret =
+        count_rows(&connection, "select count(*) from notifications");
+    let secret_notification = create_notification_command_with_connection(
+        &connection,
+        NotificationCommandCreateRequest {
+            notification_type: "failure".to_string(),
+            title: "Secret failure".to_string(),
+            message: "Raw secret sk-raw...alue leaked".to_string(),
+            severity: "error".to_string(),
+            action_route: Some("zoid://tasks/secret?token=secret-token-value".to_string()),
+            task_id: Some(task.id.clone()),
+            run_id: None,
+            review_record_id: None,
+            metadata_json: Some("{\"api_key\":\"sk-raw...alue\"}".to_string()),
+        },
+    )
+    .expect_err("bridge notification secret material must be rejected");
+    assert!(secret_notification.contains("secret"));
+    assert_eq!(
+        count_rows(&connection, "select count(*) from notifications"),
+        notification_count_before_secret
+    );
+
+    let delivered = update_notification_state_command_with_connection(
+        &connection,
+        notification.id.clone(),
+        NotificationCommandStateRequest {
+            state: "delivered".to_string(),
+        },
+    )
+    .expect("mark delivered");
+    assert_eq!(delivered.state, NotificationState::Delivered);
+    let action_required = update_notification_state_command_with_connection(
+        &connection,
+        notification.id.clone(),
+        NotificationCommandStateRequest {
+            state: "action_required".to_string(),
+        },
+    )
+    .expect("mark action required");
+    assert_eq!(action_required.state, NotificationState::ActionRequired);
+
+    let inbox = list_inbox_notifications_command_with_connection(
+        &connection,
+        InboxNotificationCommandListRequest {
+            active_only: Some(true),
+            limit: Some(10),
+        },
+    )
+    .expect("list inbox through bridge helper");
+    assert_eq!(
+        inbox.first().map(|item| item.id.as_str()),
+        Some(notification.id.as_str())
+    );
+
+    let read = update_notification_state_command_with_connection(
+        &connection,
+        notification.id.clone(),
+        NotificationCommandStateRequest {
+            state: "read".to_string(),
+        },
+    )
+    .expect("mark read");
+    assert_eq!(read.state, NotificationState::Read);
+    assert!(read.read_at.is_some());
+
+    let resolved = update_notification_state_command_with_connection(
+        &connection,
+        notification.id.clone(),
+        NotificationCommandStateRequest {
+            state: "resolved".to_string(),
+        },
+    )
+    .expect("resolve notification");
+    assert_eq!(resolved.state, NotificationState::Resolved);
+    assert!(resolved.resolved_at.is_some());
+
+    let invalid_state = update_notification_state_command_with_connection(
+        &connection,
+        notification.id,
+        NotificationCommandStateRequest {
+            state: "snoozed".to_string(),
+        },
+    )
+    .expect_err("unsupported bridge state action must fail");
+    assert!(invalid_state.contains("unsupported notification bridge state action"));
+}
+
+#[test]
+fn p219_history_bridge_commands_query_task_run_notification_and_entity_without_raw_logs() {
+    let connection = migrated_in_memory_connection();
+    let task = p204_task(&connection, "P2.19 bridge history task");
+    let profile = p204_profile(&connection, true);
+    let session = p204_session(&connection, &task, &profile);
+    let run = create_agent_run(
+        &connection,
+        AgentRunCreateInput {
+            task_id: task.id.clone(),
+            profile_id: profile.id,
+            session_id: session.id,
+            cwd: "/tmp".to_string(),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect("create run");
+    let review = create_manual_review_command_with_connection(
+        &connection,
+        ManualReviewCommandCreateRequest {
+            task_id: task.id.clone(),
+            run_id: Some(run.id.clone()),
+            reviewer_profile_id: None,
+            verdict: "approved".to_string(),
+            evidence_summary: "Looks good after checking log reference, not raw log body"
+                .to_string(),
+            required_fixes_json: "[]".to_string(),
+            metadata_json: None,
+        },
+    )
+    .expect("create review");
+    let notification = create_notification_command_with_connection(
+        &connection,
+        NotificationCommandCreateRequest {
+            notification_type: "completion".to_string(),
+            title: "Completed".to_string(),
+            message: "Task completed".to_string(),
+            severity: "success".to_string(),
+            action_route: None,
+            task_id: Some(task.id.clone()),
+            run_id: Some(run.id.clone()),
+            review_record_id: Some(review.id),
+            metadata_json: None,
+        },
+    )
+    .expect("create notification");
+
+    let task_history = list_task_history_command_with_connection(
+        &connection,
+        task.id.clone(),
+        HistoryCommandListRequest {
+            limit: Some(50),
+            before: None,
+        },
+    )
+    .expect("task history through bridge helper");
+    assert!(task_history
+        .iter()
+        .any(|item| item.event.action_type == "task.created"));
+    assert!(task_history
+        .iter()
+        .any(|item| item.event.action_type == "review.created"));
+    assert!(task_history
+        .iter()
+        .any(|item| item.event.action_type == "notification.created"));
+
+    let run_history = list_run_history_command_with_connection(
+        &connection,
+        run.id.clone(),
+        HistoryCommandListRequest {
+            limit: Some(50),
+            before: None,
+        },
+    )
+    .expect("run history through bridge helper");
+    assert!(run_history
+        .iter()
+        .any(|item| item.event.action_type == "run.queued"));
+    assert!(run_history
+        .iter()
+        .any(|item| item.event.action_type == "review.created"));
+
+    let notification_history = list_notification_history_command_with_connection(
+        &connection,
+        notification.id.clone(),
+        HistoryCommandListRequest {
+            limit: Some(50),
+            before: None,
+        },
+    )
+    .expect("notification history through bridge helper");
+    assert!(notification_history
+        .iter()
+        .any(|item| item.event.action_type == "notification.created"));
+
+    let entity_history = list_entity_history_command_with_connection(
+        &connection,
+        HistoryCommandEntityListRequest {
+            entity_type: "task".to_string(),
+            entity_id: task.id,
+            include_related: Some(false),
+            limit: Some(1_000),
+            before: None,
+        },
+    )
+    .expect("entity history through bridge helper");
+    assert!(!entity_history.is_empty());
+    assert!(entity_history.len() <= 200);
+    let serialized = serde_json::to_string(&entity_history).expect("serialize history");
+    assert!(!serialized.contains("raw_log"));
+    assert!(!serialized.contains("stdout:"));
 }

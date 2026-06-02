@@ -1685,6 +1685,16 @@ const TAURI_BRIDGE_COMMAND_NAMES: &[&str] = &[
     "read_run_status_command",
     "stream_run_output_command",
     "cancel_run_command",
+    "create_manual_review_command",
+    "read_review_record_command",
+    "create_notification_command",
+    "read_notification_command",
+    "list_inbox_notifications_command",
+    "update_notification_state_command",
+    "list_task_history_command",
+    "list_run_history_command",
+    "list_notification_history_command",
+    "list_entity_history_command",
 ];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1734,6 +1744,62 @@ struct AgentRunCommandStreamRequest {
 struct AgentRunCommandCancelRequest {
     reason: Option<String>,
     metadata_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ManualReviewCommandCreateRequest {
+    task_id: String,
+    run_id: Option<String>,
+    reviewer_profile_id: Option<String>,
+    verdict: String,
+    evidence_summary: String,
+    required_fixes_json: String,
+    metadata_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct NotificationCommandCreateRequest {
+    notification_type: String,
+    title: String,
+    message: String,
+    severity: String,
+    action_route: Option<String>,
+    task_id: Option<String>,
+    run_id: Option<String>,
+    review_record_id: Option<String>,
+    metadata_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct InboxNotificationCommandListRequest {
+    active_only: Option<bool>,
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct NotificationCommandStateRequest {
+    state: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct HistoryCommandCursorRequest {
+    timestamp: String,
+    event_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct HistoryCommandListRequest {
+    limit: Option<usize>,
+    before: Option<HistoryCommandCursorRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct HistoryCommandEntityListRequest {
+    entity_type: String,
+    entity_id: String,
+    include_related: Option<bool>,
+    limit: Option<usize>,
+    before: Option<HistoryCommandCursorRequest>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1890,6 +1956,86 @@ fn cancel_run_command(
 ) -> Result<AgentRunRecord, String> {
     let connection = open_ready_connection()?;
     cancel_run_command_with_connection(&connection, run_id, request)
+}
+
+#[tauri::command]
+fn create_manual_review_command(
+    request: ManualReviewCommandCreateRequest,
+) -> Result<ReviewRecord, String> {
+    let connection = open_ready_connection()?;
+    create_manual_review_command_with_connection(&connection, request)
+}
+
+#[tauri::command]
+fn read_review_record_command(review_record_id: String) -> Result<ReviewRecord, String> {
+    let connection = open_ready_connection()?;
+    read_review_record_command_with_connection(&connection, review_record_id)
+}
+
+#[tauri::command]
+fn create_notification_command(
+    request: NotificationCommandCreateRequest,
+) -> Result<NotificationRecord, String> {
+    let connection = open_ready_connection()?;
+    create_notification_command_with_connection(&connection, request)
+}
+
+#[tauri::command]
+fn read_notification_command(notification_id: String) -> Result<NotificationRecord, String> {
+    let connection = open_ready_connection()?;
+    read_notification_command_with_connection(&connection, notification_id)
+}
+
+#[tauri::command]
+fn list_inbox_notifications_command(
+    request: InboxNotificationCommandListRequest,
+) -> Result<Vec<NotificationRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_inbox_notifications_command_with_connection(&connection, request)
+}
+
+#[tauri::command]
+fn update_notification_state_command(
+    notification_id: String,
+    request: NotificationCommandStateRequest,
+) -> Result<NotificationRecord, String> {
+    let connection = open_ready_connection()?;
+    update_notification_state_command_with_connection(&connection, notification_id, request)
+}
+
+#[tauri::command]
+fn list_task_history_command(
+    task_id: String,
+    request: HistoryCommandListRequest,
+) -> Result<Vec<HistoryTimelineItem>, String> {
+    let connection = open_ready_connection()?;
+    list_task_history_command_with_connection(&connection, task_id, request)
+}
+
+#[tauri::command]
+fn list_run_history_command(
+    run_id: String,
+    request: HistoryCommandListRequest,
+) -> Result<Vec<HistoryTimelineItem>, String> {
+    let connection = open_ready_connection()?;
+    list_run_history_command_with_connection(&connection, run_id, request)
+}
+
+#[tauri::command]
+fn list_notification_history_command(
+    notification_id: String,
+    request: HistoryCommandListRequest,
+) -> Result<Vec<HistoryTimelineItem>, String> {
+    let connection = open_ready_connection()?;
+    list_notification_history_command_with_connection(&connection, notification_id, request)
+}
+
+#[tauri::command]
+fn list_entity_history_command(
+    request: HistoryCommandEntityListRequest,
+) -> Result<Vec<HistoryTimelineItem>, String> {
+    let connection = open_ready_connection()?;
+    list_entity_history_command_with_connection(&connection, request)
 }
 
 #[tauri::command]
@@ -2226,6 +2372,172 @@ fn cancel_run_command_with_connection(
         },
     )
     .map_err(repository_error_message)
+}
+
+fn create_manual_review_command_with_connection(
+    connection: &Connection,
+    request: ManualReviewCommandCreateRequest,
+) -> Result<ReviewRecord, String> {
+    let verdict = ReviewVerdict::from_str(&request.verdict).map_err(repository_error_message)?;
+    create_manual_review_service(
+        connection,
+        ManualReviewServiceCreateInput {
+            task_id: request.task_id,
+            run_id: request.run_id,
+            reviewer_profile_id: request.reviewer_profile_id,
+            verdict,
+            evidence_summary: request.evidence_summary,
+            required_fixes_json: request.required_fixes_json,
+            metadata_json: request.metadata_json.unwrap_or_else(|| "{}".to_string()),
+        },
+    )
+    .map_err(repository_error_message)
+}
+
+fn read_review_record_command_with_connection(
+    connection: &Connection,
+    review_record_id: String,
+) -> Result<ReviewRecord, String> {
+    read_review_record(connection, &review_record_id)
+        .map_err(repository_error_message)?
+        .ok_or_else(|| {
+            repository_error_message(RepositoryError::NotFound {
+                entity: "review_records",
+                key: review_record_id,
+            })
+        })
+}
+
+fn create_notification_command_with_connection(
+    connection: &Connection,
+    request: NotificationCommandCreateRequest,
+) -> Result<NotificationRecord, String> {
+    let notification_type =
+        NotificationType::from_str(&request.notification_type).map_err(repository_error_message)?;
+    let severity =
+        NotificationSeverity::from_str(&request.severity).map_err(repository_error_message)?;
+    create_notification_service(
+        connection,
+        NotificationServiceCreateInput {
+            notification_type,
+            title: request.title,
+            message: request.message,
+            severity,
+            action_route: request.action_route,
+            task_id: request.task_id,
+            run_id: request.run_id,
+            review_record_id: request.review_record_id,
+            metadata_json: request.metadata_json.unwrap_or_else(|| "{}".to_string()),
+        },
+    )
+    .map_err(repository_error_message)
+}
+
+fn read_notification_command_with_connection(
+    connection: &Connection,
+    notification_id: String,
+) -> Result<NotificationRecord, String> {
+    read_notification_service(connection, &notification_id).map_err(repository_error_message)
+}
+
+fn list_inbox_notifications_command_with_connection(
+    connection: &Connection,
+    request: InboxNotificationCommandListRequest,
+) -> Result<Vec<NotificationRecord>, String> {
+    list_inbox_notification_service(
+        connection,
+        request.active_only.unwrap_or(true),
+        request.limit.unwrap_or(50),
+    )
+    .map_err(repository_error_message)
+}
+
+fn update_notification_state_command_with_connection(
+    connection: &Connection,
+    notification_id: String,
+    request: NotificationCommandStateRequest,
+) -> Result<NotificationRecord, String> {
+    match request.state.trim() {
+        "delivered" => deliver_notification_service(connection, &notification_id),
+        "action_required" => require_notification_action_service(connection, &notification_id),
+        "failed" => fail_notification_service(connection, &notification_id),
+        "read" => read_mark_notification_service(connection, &notification_id),
+        "dismissed" => dismiss_notification_service(connection, &notification_id),
+        "resolved" => resolve_notification_service(connection, &notification_id),
+        other => Err(RepositoryError::Constraint {
+            entity: "notifications",
+            message: format!("unsupported notification bridge state action: {other}"),
+        }),
+    }
+    .map_err(repository_error_message)
+}
+
+fn list_task_history_command_with_connection(
+    connection: &Connection,
+    task_id: String,
+    request: HistoryCommandListRequest,
+) -> Result<Vec<HistoryTimelineItem>, String> {
+    list_task_history(
+        connection,
+        &task_id,
+        request.limit.unwrap_or(50),
+        history_command_cursor(request.before),
+    )
+    .map_err(repository_error_message)
+}
+
+fn list_run_history_command_with_connection(
+    connection: &Connection,
+    run_id: String,
+    request: HistoryCommandListRequest,
+) -> Result<Vec<HistoryTimelineItem>, String> {
+    list_run_history(
+        connection,
+        &run_id,
+        request.limit.unwrap_or(50),
+        history_command_cursor(request.before),
+    )
+    .map_err(repository_error_message)
+}
+
+fn list_notification_history_command_with_connection(
+    connection: &Connection,
+    notification_id: String,
+    request: HistoryCommandListRequest,
+) -> Result<Vec<HistoryTimelineItem>, String> {
+    list_notification_history(
+        connection,
+        &notification_id,
+        request.limit.unwrap_or(50),
+        history_command_cursor(request.before),
+    )
+    .map_err(repository_error_message)
+}
+
+fn list_entity_history_command_with_connection(
+    connection: &Connection,
+    request: HistoryCommandEntityListRequest,
+) -> Result<Vec<HistoryTimelineItem>, String> {
+    list_entity_history(
+        connection,
+        HistoryQuery {
+            primary: HistoryEntityRef {
+                entity_type: request.entity_type,
+                entity_id: request.entity_id,
+            },
+            include_related: request.include_related.unwrap_or(true),
+            limit: request.limit.unwrap_or(50),
+            before: history_command_cursor(request.before),
+        },
+    )
+    .map_err(repository_error_message)
+}
+
+fn history_command_cursor(cursor: Option<HistoryCommandCursorRequest>) -> Option<HistoryCursor> {
+    cursor.map(|cursor| HistoryCursor {
+        timestamp: cursor.timestamp,
+        event_id: cursor.event_id,
+    })
 }
 
 fn active_run_children() -> &'static Mutex<HashMap<String, Arc<Mutex<std::process::Child>>>> {
@@ -7406,7 +7718,17 @@ pub fn run() {
             start_agent_run_command,
             read_run_status_command,
             stream_run_output_command,
-            cancel_run_command
+            cancel_run_command,
+            create_manual_review_command,
+            read_review_record_command,
+            create_notification_command,
+            read_notification_command,
+            list_inbox_notifications_command,
+            update_notification_state_command,
+            list_task_history_command,
+            list_run_history_command,
+            list_notification_history_command,
+            list_entity_history_command
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
