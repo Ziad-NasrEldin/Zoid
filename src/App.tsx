@@ -37,6 +37,8 @@ import {
 } from "./taskBridgeIntegration";
 import type { TaskFormDraft } from "./taskViewModel";
 import { TaskWorkspace } from "./taskWorkspace";
+import { loadTaskLinkedPanelsFromBridge, type TaskLinkedPanelsState } from "./taskLinkedPanels";
+import { TaskLinkedPanels } from "./taskLinkedPanelsView";
 import {
   buildWorkspaceChromeView,
   buildWorkspaceRegistryView,
@@ -516,6 +518,7 @@ function App() {
   const [todayTasks, setTodayTasks] = useState<TodayDataState<TodayTaskRecord>>({ state: "checking" });
   const [todayInbox, setTodayInbox] = useState<TodayDataState<TodayNotificationRecord>>({ state: "checking" });
   const [taskBridgeUi, setTaskBridgeUi] = useState<TaskBridgeUiState>(() => createInitialTaskBridgeState("tasks"));
+  const [taskLinkedPanels, setTaskLinkedPanels] = useState<TaskLinkedPanelsState>({ mode: "idle", taskId: null });
 
   useEffect(() => {
     invoke<FoundationStatus>("get_foundation_status")
@@ -535,6 +538,11 @@ function App() {
     setTaskBridgeUi((current) => ({ ...current, state: { mode: "loading", selectedTaskId } }));
     applyTaskState(await refreshTasksFromBridge(taskInvoke, { selectedTaskId }));
   }, [applyTaskState]);
+
+  const loadLinkedPanels = useCallback(async (taskId: string) => {
+    setTaskLinkedPanels({ mode: "loading", taskId });
+    setTaskLinkedPanels(await loadTaskLinkedPanelsFromBridge(taskInvoke, taskId));
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -571,6 +579,7 @@ function App() {
         ? { ...current.state, selectedTaskId: null }
         : { mode: "loading", selectedTaskId: null },
     }));
+    setTaskLinkedPanels({ mode: "idle", taskId: null });
   }, []);
 
   const handleCreateTask = useCallback(async (form: TaskFormDraft) => {
@@ -578,14 +587,16 @@ function App() {
     setTaskBridgeUi(next);
     if (next.state.mode === "ready") setTodayTasks({ state: "ready", records: next.state.tasks });
     if (next.state.mode === "error") setTodayTasks({ state: "unavailable", reason: bridgeErrorReason("Native task", next.state.error) });
-  }, []);
+    if (next.state.mode === "ready" && next.state.selectedTaskId) await loadLinkedPanels(next.state.selectedTaskId);
+  }, [loadLinkedPanels]);
 
   const handleUpdateTask = useCallback(async (taskId: string, form: TaskFormDraft) => {
     const next = await updateTaskThroughBridge(taskInvoke, taskId, form);
     setTaskBridgeUi(next);
     if (next.state.mode === "ready") setTodayTasks({ state: "ready", records: next.state.tasks });
     if (next.state.mode === "error") setTodayTasks({ state: "unavailable", reason: bridgeErrorReason("Native task", next.state.error) });
-  }, []);
+    if (next.state.mode === "ready" && next.state.selectedTaskId) await loadLinkedPanels(next.state.selectedTaskId);
+  }, [loadLinkedPanels]);
 
   const handleSelectTask = useCallback(async (taskId: string) => {
     const state = await selectTaskThroughBridge(taskInvoke, taskId);
@@ -600,7 +611,8 @@ function App() {
     });
     if (state.mode === "ready") setTodayTasks({ state: "ready", records: state.tasks });
     if (state.mode === "error") setTodayTasks({ state: "unavailable", reason: bridgeErrorReason("Native task", state.error) });
-  }, [applyTaskState]);
+    if (state.mode === "ready" && state.selectedTaskId) await loadLinkedPanels(state.selectedTaskId);
+  }, [loadLinkedPanels]);
 
   const workspaceRegistry = useMemo(() => buildWorkspaceRegistryView(status, statusError), [status, statusError]);
   const workspaces = workspaceRegistry.workspaces;
@@ -717,6 +729,7 @@ function App() {
                 onRefresh={() => loadTaskWorkspace(taskBridgeUi.state.selectedTaskId)}
                 onSelectTask={handleSelectTask}
                 onUpdateTask={handleUpdateTask}
+                linkedPanels={<TaskLinkedPanels state={taskLinkedPanels} onRefresh={loadLinkedPanels} />}
                 state={taskBridgeUi.state}
               />
             ) : (

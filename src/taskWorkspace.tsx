@@ -1,4 +1,4 @@
-import type { FormEvent } from "react";
+import type { FormEvent, ReactNode } from "react";
 import {
   buildTaskWorkspaceView,
   createInitialTaskForm,
@@ -22,6 +22,7 @@ export type TaskWorkspaceProps = {
   onNewTask?: () => void;
   onSelectTask?: (taskId: string) => void;
   onRefresh?: () => void;
+  linkedPanels?: ReactNode;
 };
 
 function taskToForm(task: TaskRecord): TaskFormDraft {
@@ -120,6 +121,7 @@ export function TaskWorkspace({
   onNewTask,
   onSelectTask,
   onRefresh,
+  linkedPanels,
 }: TaskWorkspaceProps) {
   const view = buildTaskWorkspaceView(state);
   const selectedTask = view.detail.kind === "task" ? view.detail.task : null;
@@ -165,6 +167,8 @@ export function TaskWorkspace({
           </>
         ) : <p>{view.detail.copy}</p>}
       </article>
+
+      {selectedTask ? linkedPanels : null}
 
       <section aria-label="Create or edit task">
         <h3>{selectedTask ? "Edit persisted task" : "Create task"}</h3>
