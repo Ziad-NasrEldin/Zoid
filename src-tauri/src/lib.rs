@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 static CONFIRMATION_DECISION_COUNTER: AtomicU64 = AtomicU64::new(0);
 static EVENT_COUNTER: AtomicU64 = AtomicU64::new(0);
+static TASK_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const SAFE_LOG_MAX_BYTES: usize = 4096;
 const SAFE_LOG_ROTATED_SUFFIX: &str = "1";
@@ -19,6 +20,8 @@ const EVENT_CREATE_MAX_SUMMARY_BYTES: usize = 4096;
 const EVENT_CREATE_MAX_METADATA_JSON_BYTES: usize = 16_384;
 const EVENT_CREATE_MAX_SMALL_FIELD_BYTES: usize = 256;
 const EVENT_CREATE_MAX_SOURCE_BYTES: usize = 512;
+const TASK_TITLE_MAX_BYTES: usize = 256;
+const TASK_DETAIL_MAX_BYTES: usize = 4_096;
 
 const WORKSPACE_REGISTRY: &[WorkspaceDefinition] = &[
     WorkspaceDefinition {
@@ -231,6 +234,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 4,
         name: "confirmation_actor_type_check",
         sql: include_str!("../migrations/0004_confirmation_actor_type_check.sql"),
+    },
+    Migration {
+        version: 5,
+        name: "phase2_tasks",
+        sql: include_str!("../migrations/0005_phase2_tasks.sql"),
     },
 ];
 
@@ -747,6 +755,138 @@ struct EventListFilter<'a> {
     outcome: Option<&'a str>,
     source: Option<&'a str>,
     limit: usize,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum TaskStatus {
+    Inbox,
+    Planned,
+    Active,
+    Waiting,
+    ReviewRequired,
+    Blocked,
+    Completed,
+    Failed,
+    Cancelled,
+    Archived,
+    Deleted,
+}
+
+#[allow(dead_code)]
+impl TaskStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Inbox => "inbox",
+            Self::Planned => "planned",
+            Self::Active => "active",
+            Self::Waiting => "waiting",
+            Self::ReviewRequired => "review_required",
+            Self::Blocked => "blocked",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Archived => "archived",
+            Self::Deleted => "deleted",
+        }
+    }
+
+    fn from_str(value: &str) -> RepoResult<Self> {
+        match value {
+            "inbox" => Ok(Self::Inbox),
+            "planned" => Ok(Self::Planned),
+            "active" => Ok(Self::Active),
+            "waiting" => Ok(Self::Waiting),
+            "review_required" => Ok(Self::ReviewRequired),
+            "blocked" => Ok(Self::Blocked),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            "cancelled" => Ok(Self::Cancelled),
+            "archived" => Ok(Self::Archived),
+            "deleted" => Ok(Self::Deleted),
+            other => Err(RepositoryError::Constraint {
+                entity: "tasks",
+                message: format!("invalid task status: {other}"),
+            }),
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum TaskPriority {
+    Low,
+    Normal,
+    High,
+    Urgent,
+}
+
+#[allow(dead_code)]
+impl TaskPriority {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Normal => "normal",
+            Self::High => "high",
+            Self::Urgent => "urgent",
+        }
+    }
+
+    fn from_str(value: &str) -> RepoResult<Self> {
+        match value {
+            "low" => Ok(Self::Low),
+            "normal" => Ok(Self::Normal),
+            "high" => Ok(Self::High),
+            "urgent" => Ok(Self::Urgent),
+            other => Err(RepositoryError::Constraint {
+                entity: "tasks",
+                message: format!("invalid task priority: {other}"),
+            }),
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct TaskRecord {
+    id: String,
+    title: String,
+    detail: Option<String>,
+    status: TaskStatus,
+    priority: TaskPriority,
+    workspace_key: String,
+    created_at: String,
+    updated_at: String,
+    archived_at: Option<String>,
+    deleted_at: Option<String>,
+    metadata_json: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct TaskCreateInput {
+    title: String,
+    detail: Option<String>,
+    status: Option<TaskStatus>,
+    priority: Option<TaskPriority>,
+    workspace_key: Option<String>,
+    metadata_json: String,
+}
+
+#[allow(dead_code)]
+impl TaskCreateInput {
+    fn new(title: &str, priority: Option<TaskPriority>) -> Self {
+        Self {
+            title: title.to_string(),
+            detail: None,
+            status: None,
+            priority,
+            workspace_key: None,
+            metadata_json: "{}".to_string(),
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -1849,6 +1989,350 @@ fn map_repository_error(entity: &'static str, error: rusqlite::Error) -> Reposit
             message: other.to_string(),
         },
     }
+}
+
+#[allow(dead_code)]
+fn create_task_record(connection: &Connection, input: TaskCreateInput) -> RepoResult<TaskRecord> {
+    let title = normalize_task_title(&input.title)?;
+    let detail = normalize_task_detail(input.detail.as_deref())?;
+    validate_no_secret_json("metadata_json", &input.metadata_json)?;
+
+    let status = input.status.unwrap_or(TaskStatus::Inbox);
+    let priority = input.priority.unwrap_or(TaskPriority::Normal);
+    let workspace_key = normalize_task_workspace_key(input.workspace_key.as_deref())?;
+    let task_id = next_task_id();
+
+    connection
+        .execute_batch("savepoint create_task_record")
+        .map_err(|error| map_repository_error("tasks", error))?;
+
+    let create_result = (|| -> RepoResult<TaskRecord> {
+        connection
+            .execute(
+                "
+                insert into tasks (id, title, detail, status, priority, workspace_key, metadata_json)
+                values (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                ",
+                params![
+                    task_id,
+                    title,
+                    detail,
+                    status.as_str(),
+                    priority.as_str(),
+                    workspace_key,
+                    input.metadata_json
+                ],
+            )
+            .map_err(|error| map_repository_error("tasks", error))?;
+
+        let task = read_task_record(connection, &task_id)?;
+        create_event_record(
+            connection,
+            EventCreateInput {
+                action_type: "task.created",
+                outcome: "succeeded",
+                actor_type: "system",
+                actor_id: None,
+                workspace_key: Some(&task.workspace_key),
+                summary: &format!("Created task: {}", task.title),
+                source: "task_repository",
+                metadata_json: &format!(
+                    "{{\"task_id\":{},\"title\":{},\"status\":{},\"priority\":{},\"metadata\":{}}}",
+                    serde_json::to_string(&task.id).unwrap_or_else(|_| "null".to_string()),
+                    serde_json::to_string(&task.title).unwrap_or_else(|_| "null".to_string()),
+                    serde_json::to_string(status.as_str()).unwrap_or_else(|_| "null".to_string()),
+                    serde_json::to_string(priority.as_str()).unwrap_or_else(|_| "null".to_string()),
+                    task.metadata_json
+                ),
+                targets: vec![EventTargetInput {
+                    entity_type: "task",
+                    entity_id: &task.id,
+                    relation_type: "primary",
+                }],
+            },
+        )?;
+        Ok(task)
+    })();
+
+    match create_result {
+        Ok(task) => {
+            connection
+                .execute_batch("release savepoint create_task_record")
+                .map_err(|error| map_repository_error("tasks", error))?;
+            Ok(task)
+        }
+        Err(error) => {
+            let _ = connection.execute_batch(
+                "rollback to savepoint create_task_record; release savepoint create_task_record",
+            );
+            Err(error)
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn read_task_record(connection: &Connection, task_id: &str) -> RepoResult<TaskRecord> {
+    connection
+        .query_row(
+            "
+            select id, title, detail, status, priority, workspace_key, created_at, updated_at, archived_at, deleted_at, metadata_json
+            from tasks
+            where id = ?1
+            ",
+            params![task_id],
+            task_record_from_row,
+        )
+        .optional()
+        .map_err(|error| map_repository_error("tasks", error))?
+        .ok_or_else(|| RepositoryError::NotFound {
+            entity: "tasks",
+            key: task_id.to_string(),
+        })
+}
+
+#[allow(dead_code)]
+fn list_active_tasks(connection: &Connection) -> RepoResult<Vec<TaskRecord>> {
+    let mut statement = connection
+        .prepare(
+            "
+            select id, title, detail, status, priority, workspace_key, created_at, updated_at, archived_at, deleted_at, metadata_json
+            from tasks
+            where archived_at is null
+                and deleted_at is null
+                and status not in ('archived', 'deleted')
+            order by
+                case priority when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 when 'low' then 3 else 4 end,
+                updated_at desc,
+                created_at desc,
+                id asc
+            ",
+        )
+        .map_err(|error| map_repository_error("tasks", error))?;
+    let rows = statement
+        .query_map([], task_record_from_row)
+        .map_err(|error| map_repository_error("tasks", error))?;
+
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row.map_err(|error| map_repository_error("tasks", error))?);
+    }
+    Ok(records)
+}
+
+#[allow(dead_code)]
+fn update_task_status(
+    connection: &Connection,
+    task_id: &str,
+    status: TaskStatus,
+) -> RepoResult<TaskRecord> {
+    let before = read_task_record(connection, task_id)?;
+    if before.status == status {
+        return Ok(before);
+    }
+
+    connection
+        .execute_batch("savepoint update_task_status")
+        .map_err(|error| map_repository_error("tasks", error))?;
+
+    let update_result = (|| -> RepoResult<TaskRecord> {
+        connection
+            .execute(
+                "
+                update tasks
+                set status = ?2,
+                    updated_at = current_timestamp,
+                    archived_at = case when ?2 = 'archived' then coalesce(archived_at, current_timestamp) else archived_at end,
+                    deleted_at = case when ?2 = 'deleted' then coalesce(deleted_at, current_timestamp) else deleted_at end
+                where id = ?1
+                ",
+                params![task_id, status.as_str()],
+            )
+            .map_err(|error| map_repository_error("tasks", error))?;
+
+        let task = read_task_record(connection, task_id)?;
+        create_event_record(
+            connection,
+            EventCreateInput {
+                action_type: "task.status_changed",
+                outcome: "succeeded",
+                actor_type: "system",
+                actor_id: None,
+                workspace_key: Some(&task.workspace_key),
+                summary: &format!(
+                    "Task status changed from {} to {}: {}",
+                    before.status.as_str(),
+                    status.as_str(),
+                    task.title
+                ),
+                source: "task_repository",
+                metadata_json: &format!(
+                    "{{\"task_id\":{},\"from_status\":{},\"to_status\":{},\"title\":{}}}",
+                    serde_json::to_string(&task.id).unwrap_or_else(|_| "null".to_string()),
+                    serde_json::to_string(before.status.as_str())
+                        .unwrap_or_else(|_| "null".to_string()),
+                    serde_json::to_string(status.as_str()).unwrap_or_else(|_| "null".to_string()),
+                    serde_json::to_string(&task.title).unwrap_or_else(|_| "null".to_string())
+                ),
+                targets: vec![EventTargetInput {
+                    entity_type: "task",
+                    entity_id: &task.id,
+                    relation_type: "primary",
+                }],
+            },
+        )?;
+        Ok(task)
+    })();
+
+    match update_result {
+        Ok(task) => {
+            connection
+                .execute_batch("release savepoint update_task_status")
+                .map_err(|error| map_repository_error("tasks", error))?;
+            Ok(task)
+        }
+        Err(error) => {
+            let _ = connection.execute_batch(
+                "rollback to savepoint update_task_status; release savepoint update_task_status",
+            );
+            Err(error)
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn archive_task(connection: &Connection, task_id: &str) -> RepoResult<TaskRecord> {
+    let task = update_task_status(connection, task_id, TaskStatus::Archived)?;
+    create_task_lifecycle_event(connection, &task, "task.archived", "Archived task")?;
+    Ok(task)
+}
+
+#[allow(dead_code)]
+fn soft_delete_task(connection: &Connection, task_id: &str) -> RepoResult<TaskRecord> {
+    let task = update_task_status(connection, task_id, TaskStatus::Deleted)?;
+    create_task_lifecycle_event(connection, &task, "task.deleted", "Deleted task")?;
+    Ok(task)
+}
+
+#[allow(dead_code)]
+fn create_task_lifecycle_event(
+    connection: &Connection,
+    task: &TaskRecord,
+    action_type: &str,
+    summary_prefix: &str,
+) -> RepoResult<()> {
+    create_event_record(
+        connection,
+        EventCreateInput {
+            action_type,
+            outcome: "succeeded",
+            actor_type: "system",
+            actor_id: None,
+            workspace_key: Some(&task.workspace_key),
+            summary: &format!("{summary_prefix}: {}", task.title),
+            source: "task_repository",
+            metadata_json: &format!(
+                "{{\"task_id\":{},\"status\":{},\"title\":{}}}",
+                serde_json::to_string(&task.id).unwrap_or_else(|_| "null".to_string()),
+                serde_json::to_string(task.status.as_str()).unwrap_or_else(|_| "null".to_string()),
+                serde_json::to_string(&task.title).unwrap_or_else(|_| "null".to_string())
+            ),
+            targets: vec![EventTargetInput {
+                entity_type: "task",
+                entity_id: &task.id,
+                relation_type: "primary",
+            }],
+        },
+    )?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn task_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRecord> {
+    let status_text: String = row.get(3)?;
+    let priority_text: String = row.get(4)?;
+    let status = TaskStatus::from_str(&status_text).map_err(repository_error_to_rusqlite)?;
+    let priority = TaskPriority::from_str(&priority_text).map_err(repository_error_to_rusqlite)?;
+
+    Ok(TaskRecord {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        detail: row.get(2)?,
+        status,
+        priority,
+        workspace_key: row.get(5)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
+        archived_at: row.get(8)?,
+        deleted_at: row.get(9)?,
+        metadata_json: row.get(10)?,
+    })
+}
+
+#[allow(dead_code)]
+fn normalize_task_title(title: &str) -> RepoResult<String> {
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        return Err(RepositoryError::Constraint {
+            entity: "tasks",
+            message: "task title cannot be empty".to_string(),
+        });
+    }
+    if trimmed.len() > TASK_TITLE_MAX_BYTES {
+        return Err(RepositoryError::Constraint {
+            entity: "tasks",
+            message: format!("task title exceeds {TASK_TITLE_MAX_BYTES} bytes"),
+        });
+    }
+    Ok(trimmed.to_string())
+}
+
+#[allow(dead_code)]
+fn normalize_task_detail(detail: Option<&str>) -> RepoResult<Option<String>> {
+    match detail {
+        Some(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                return Err(RepositoryError::Constraint {
+                    entity: "tasks",
+                    message: "task detail cannot be empty when provided".to_string(),
+                });
+            }
+            if trimmed.len() > TASK_DETAIL_MAX_BYTES {
+                return Err(RepositoryError::Constraint {
+                    entity: "tasks",
+                    message: format!("task detail exceeds {TASK_DETAIL_MAX_BYTES} bytes"),
+                });
+            }
+            Ok(Some(trimmed.to_string()))
+        }
+        None => Ok(None),
+    }
+}
+
+#[allow(dead_code)]
+fn normalize_task_workspace_key(workspace_key: Option<&str>) -> RepoResult<String> {
+    match workspace_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) if value.len() <= EVENT_CREATE_MAX_SMALL_FIELD_BYTES => Ok(value.to_string()),
+        Some(_) => Err(RepositoryError::Constraint {
+            entity: "tasks",
+            message: "task workspace_key is too large".to_string(),
+        }),
+        None => Ok("tasks".to_string()),
+    }
+}
+
+#[allow(dead_code)]
+fn next_task_id() -> String {
+    let sequence = TASK_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "task_{}_{:010}_{:020}",
+        now_millis(),
+        process::id(),
+        sequence
+    )
 }
 
 #[allow(dead_code)]
@@ -4236,6 +4720,322 @@ mod tests {
             .collect()
     }
 
+    fn migrated_in_memory_connection() -> Connection {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&connection).expect("run migrations");
+        connection
+    }
+
+    #[test]
+    fn p203_task_create_defaults_and_created_event_target_are_persisted() {
+        let connection = migrated_in_memory_connection();
+
+        let task = create_task_record(
+            &connection,
+            TaskCreateInput {
+                title: "Draft P2 task".to_string(),
+                detail: Some("Implement repository coverage".to_string()),
+                status: None,
+                priority: None,
+                workspace_key: None,
+                metadata_json: "{\"source\":\"test\"}".to_string(),
+            },
+        )
+        .expect("create task");
+
+        assert!(task.id.starts_with("task_"));
+        assert_eq!(task.title, "Draft P2 task");
+        assert_eq!(
+            task.detail.as_deref(),
+            Some("Implement repository coverage")
+        );
+        assert_eq!(task.status, TaskStatus::Inbox);
+        assert_eq!(task.priority, TaskPriority::Normal);
+        assert_eq!(task.workspace_key, "tasks");
+        assert_eq!(task.metadata_json, "{\"source\":\"test\"}");
+        assert!(task.archived_at.is_none());
+        assert!(task.deleted_at.is_none());
+        assert!(!task.created_at.is_empty());
+        assert!(!task.updated_at.is_empty());
+
+        let read = read_task_record(&connection, &task.id).expect("read task");
+        assert_eq!(read, task);
+
+        let events = list_event_records(
+            &connection,
+            EventListFilter {
+                workspace_key: Some("tasks"),
+                action_type: Some("task.created"),
+                outcome: Some("succeeded"),
+                source: Some("task_repository"),
+                limit: 10,
+            },
+        )
+        .expect("list events");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].targets.len(), 1);
+        assert_eq!(events[0].targets[0].entity_type, "task");
+        assert_eq!(events[0].targets[0].entity_id, task.id);
+        assert_eq!(events[0].targets[0].relation_type, "primary");
+    }
+
+    #[test]
+    fn p203_task_validation_rejects_empty_oversized_invalid_metadata_and_invalid_enums() {
+        let connection = migrated_in_memory_connection();
+
+        let empty_title_error = create_task_record(
+            &connection,
+            TaskCreateInput {
+                title: "   \n\t".to_string(),
+                detail: None,
+                status: None,
+                priority: None,
+                workspace_key: None,
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect_err("empty title must fail");
+        assert!(matches!(
+            empty_title_error,
+            RepositoryError::Constraint {
+                entity: "tasks",
+                ..
+            }
+        ));
+
+        let oversized_title = "x".repeat(TASK_TITLE_MAX_BYTES + 1);
+        let oversized_title_error = create_task_record(
+            &connection,
+            TaskCreateInput {
+                title: oversized_title,
+                detail: None,
+                status: None,
+                priority: None,
+                workspace_key: None,
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect_err("oversized title must fail");
+        assert!(matches!(
+            oversized_title_error,
+            RepositoryError::Constraint {
+                entity: "tasks",
+                ..
+            }
+        ));
+
+        let empty_detail_error = create_task_record(
+            &connection,
+            TaskCreateInput {
+                title: "Empty detail".to_string(),
+                detail: Some("   \n\t".to_string()),
+                status: None,
+                priority: None,
+                workspace_key: None,
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect_err("empty detail must fail");
+        assert!(matches!(
+            empty_detail_error,
+            RepositoryError::Constraint {
+                entity: "tasks",
+                ..
+            }
+        ));
+
+        let oversized_detail_error = create_task_record(
+            &connection,
+            TaskCreateInput {
+                title: "Oversized detail".to_string(),
+                detail: Some("x".repeat(TASK_DETAIL_MAX_BYTES + 1)),
+                status: None,
+                priority: None,
+                workspace_key: None,
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect_err("oversized detail must fail");
+        assert!(matches!(
+            oversized_detail_error,
+            RepositoryError::Constraint {
+                entity: "tasks",
+                ..
+            }
+        ));
+
+        let invalid_json_error = create_task_record(
+            &connection,
+            TaskCreateInput {
+                title: "Bad metadata".to_string(),
+                detail: None,
+                status: None,
+                priority: None,
+                workspace_key: None,
+                metadata_json: "{not json}".to_string(),
+            },
+        )
+        .expect_err("invalid metadata json must fail");
+        assert!(matches!(
+            invalid_json_error,
+            RepositoryError::InvalidJson {
+                field: "metadata_json",
+                ..
+            }
+        ));
+
+        let secret_metadata_error = create_task_record(
+            &connection,
+            TaskCreateInput {
+                title: "Secret metadata".to_string(),
+                detail: None,
+                status: None,
+                priority: None,
+                workspace_key: None,
+                metadata_json: "{\"token\":\"raw-secret-value\"}".to_string(),
+            },
+        )
+        .expect_err("secret-like metadata must fail");
+        assert!(matches!(
+            secret_metadata_error,
+            RepositoryError::SecretRejected {
+                field: "metadata_json",
+                ..
+            }
+        ));
+
+        assert!(TaskStatus::from_str("done").is_err());
+        assert!(TaskPriority::from_str("medium").is_err());
+    }
+
+    #[test]
+    fn p203_task_list_active_excludes_archived_and_deleted_and_orders_deterministically() {
+        let connection = migrated_in_memory_connection();
+        let low = create_task_record(
+            &connection,
+            TaskCreateInput::new("Low", Some(TaskPriority::Low)),
+        )
+        .expect("create low");
+        let urgent = create_task_record(
+            &connection,
+            TaskCreateInput::new("Urgent", Some(TaskPriority::Urgent)),
+        )
+        .expect("create urgent");
+        let high = create_task_record(
+            &connection,
+            TaskCreateInput::new("High", Some(TaskPriority::High)),
+        )
+        .expect("create high");
+
+        archive_task(&connection, &low.id).expect("archive low");
+        soft_delete_task(&connection, &high.id).expect("delete high");
+
+        let archived = create_task_record(
+            &connection,
+            TaskCreateInput {
+                title: "Initially archived".to_string(),
+                detail: None,
+                status: Some(TaskStatus::Archived),
+                priority: Some(TaskPriority::Urgent),
+                workspace_key: None,
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect("create initially archived");
+        let deleted = create_task_record(
+            &connection,
+            TaskCreateInput {
+                title: "Initially deleted".to_string(),
+                detail: None,
+                status: Some(TaskStatus::Deleted),
+                priority: Some(TaskPriority::Urgent),
+                workspace_key: None,
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect("create initially deleted");
+
+        let active = list_active_tasks(&connection).expect("list active tasks");
+        assert_eq!(
+            active
+                .iter()
+                .map(|task| task.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![urgent.id.as_str()]
+        );
+        assert!(active[0].archived_at.is_none());
+        assert!(active[0].deleted_at.is_none());
+        assert!(active.iter().all(|task| task.id != archived.id));
+        assert!(active.iter().all(|task| task.id != deleted.id));
+    }
+
+    #[test]
+    fn p203_task_status_update_writes_meaningful_event_and_secret_text_is_redacted() {
+        let connection = migrated_in_memory_connection();
+        let task = create_task_record(
+            &connection,
+            TaskCreateInput {
+                title: "Rotate api_key=secret-value".to_string(),
+                detail: None,
+                status: None,
+                priority: Some(TaskPriority::High),
+                workspace_key: None,
+                metadata_json: "{\"safe\":\"kept\"}".to_string(),
+            },
+        )
+        .expect("create task");
+
+        update_task_status(&connection, &task.id, TaskStatus::Active).expect("update status");
+        update_task_status(&connection, &task.id, TaskStatus::Active)
+            .expect("same status no event");
+        archive_task(&connection, &task.id).expect("archive task");
+        soft_delete_task(&connection, &task.id).expect("delete task");
+
+        let events = list_event_records(
+            &connection,
+            EventListFilter {
+                workspace_key: Some("tasks"),
+                action_type: Some("task.status_changed"),
+                outcome: Some("succeeded"),
+                source: Some("task_repository"),
+                limit: 10,
+            },
+        )
+        .expect("list status events");
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].targets[0].entity_id, task.id);
+        assert!(!events[0].summary.contains("secret-value"));
+        assert!(!events[0].metadata_json.contains("raw-secret-value"));
+
+        let archived_events = list_event_records(
+            &connection,
+            EventListFilter {
+                workspace_key: Some("tasks"),
+                action_type: Some("task.archived"),
+                outcome: Some("succeeded"),
+                source: Some("task_repository"),
+                limit: 10,
+            },
+        )
+        .expect("list archived events");
+        assert_eq!(archived_events.len(), 1);
+        assert_eq!(archived_events[0].targets[0].entity_id, task.id);
+
+        let deleted_events = list_event_records(
+            &connection,
+            EventListFilter {
+                workspace_key: Some("tasks"),
+                action_type: Some("task.deleted"),
+                outcome: Some("succeeded"),
+                source: Some("task_repository"),
+                limit: 10,
+            },
+        )
+        .expect("list deleted events");
+        assert_eq!(deleted_events.len(), 1);
+        assert_eq!(deleted_events[0].targets[0].entity_id, task.id);
+    }
+
     #[test]
     fn visible_user_paths_have_expected_starter_directory_layout() {
         let home = PathBuf::from("/Users/example");
@@ -4711,7 +5511,13 @@ mod tests {
             .map(|workspace| workspace.id)
             .collect();
 
-        assert_eq!(get_migration_version(&connection).unwrap(), 4);
+        assert_eq!(
+            get_migration_version(&connection).unwrap(),
+            MIGRATIONS
+                .last()
+                .expect("at least one migration is registered")
+                .version
+        );
         assert_eq!(workspace_ids, canonical_workspace_ids());
     }
 
@@ -6185,7 +6991,34 @@ mod tests {
         let connection = Connection::open_in_memory().expect("open in-memory sqlite");
         run_migrations(&connection).expect("run migrations");
 
-        assert_eq!(get_migration_version(&connection).unwrap(), 4);
+        assert_eq!(
+            get_migration_version(&connection).unwrap(),
+            MIGRATIONS
+                .last()
+                .expect("at least one migration is registered")
+                .version
+        );
+
+        assert_table_has_columns(
+            &connection,
+            "tasks",
+            &[
+                "id",
+                "title",
+                "detail",
+                "status",
+                "priority",
+                "workspace_key",
+                "created_at",
+                "updated_at",
+                "archived_at",
+                "deleted_at",
+                "metadata_json",
+            ],
+        );
+        assert_index_exists(&connection, "tasks", "idx_tasks_active_priority_time");
+        assert_index_exists(&connection, "tasks", "idx_tasks_status");
+        assert_index_exists(&connection, "tasks", "idx_tasks_workspace_active");
 
         assert_table_has_columns(
             &connection,
@@ -6418,7 +7251,13 @@ mod tests {
         run_migrations(&connection).expect("run p105 migration first time");
         run_migrations(&connection).expect("run p105 migration second time");
 
-        assert_eq!(get_migration_version(&connection).unwrap(), 4);
+        assert_eq!(
+            get_migration_version(&connection).unwrap(),
+            MIGRATIONS
+                .last()
+                .expect("at least one migration is registered")
+                .version
+        );
 
         let p105_rows: i64 = connection
             .query_row(
@@ -6515,7 +7354,13 @@ mod tests {
         seed_workspaces(&connection).expect("seed new workspaces");
         write_foundation_event(&connection).expect("backfill event target");
 
-        assert_eq!(get_migration_version(&connection).unwrap(), 4);
+        assert_eq!(
+            get_migration_version(&connection).unwrap(),
+            MIGRATIONS
+                .last()
+                .expect("at least one migration is registered")
+                .version
+        );
         assert_eq!(count_table(&connection, "workspaces").unwrap(), 14);
 
         let event_fields: (String, String, String) = connection
