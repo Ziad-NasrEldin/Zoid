@@ -15,6 +15,7 @@ static TASK_COUNTER: AtomicU64 = AtomicU64::new(0);
 static CLI_SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 static AGENT_RUN_COUNTER: AtomicU64 = AtomicU64::new(0);
 static REVIEW_RECORD_COUNTER: AtomicU64 = AtomicU64::new(0);
+static NOTIFICATION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const SAFE_LOG_MAX_BYTES: usize = 4096;
 const SAFE_LOG_ROTATED_SUFFIX: &str = "1";
@@ -252,6 +253,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 7,
         name: "phase2_review_records",
         sql: include_str!("../migrations/0007_phase2_review_records.sql"),
+    },
+    Migration {
+        version: 8,
+        name: "phase2_notifications",
+        sql: include_str!("../migrations/0008_phase2_notifications.sql"),
     },
 ];
 
@@ -1243,6 +1249,168 @@ struct ReviewRecordCreateInput {
     verdict: ReviewVerdict,
     evidence_summary: String,
     required_fixes_json: String,
+    metadata_json: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum NotificationType {
+    Completion,
+    Blocker,
+    Failure,
+    ReviewRequired,
+    Attention,
+}
+
+#[allow(dead_code)]
+impl NotificationType {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Completion => "completion",
+            Self::Blocker => "blocker",
+            Self::Failure => "failure",
+            Self::ReviewRequired => "review_required",
+            Self::Attention => "attention",
+        }
+    }
+
+    fn from_str(value: &str) -> RepoResult<Self> {
+        match value {
+            "completion" => Ok(Self::Completion),
+            "blocker" => Ok(Self::Blocker),
+            "failure" => Ok(Self::Failure),
+            "review_required" => Ok(Self::ReviewRequired),
+            "attention" => Ok(Self::Attention),
+            other => Err(RepositoryError::Constraint {
+                entity: "notifications",
+                message: format!("invalid notification_type: {other}"),
+            }),
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum NotificationSeverity {
+    Info,
+    Success,
+    Warning,
+    Error,
+    Critical,
+}
+
+#[allow(dead_code)]
+impl NotificationSeverity {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Success => "success",
+            Self::Warning => "warning",
+            Self::Error => "error",
+            Self::Critical => "critical",
+        }
+    }
+
+    fn from_str(value: &str) -> RepoResult<Self> {
+        match value {
+            "info" => Ok(Self::Info),
+            "success" => Ok(Self::Success),
+            "warning" => Ok(Self::Warning),
+            "error" => Ok(Self::Error),
+            "critical" => Ok(Self::Critical),
+            other => Err(RepositoryError::Constraint {
+                entity: "notifications",
+                message: format!("invalid notification severity: {other}"),
+            }),
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum NotificationState {
+    Pending,
+    Delivered,
+    Read,
+    ActionRequired,
+    Resolved,
+    Dismissed,
+    Failed,
+}
+
+#[allow(dead_code)]
+impl NotificationState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Delivered => "delivered",
+            Self::Read => "read",
+            Self::ActionRequired => "action_required",
+            Self::Resolved => "resolved",
+            Self::Dismissed => "dismissed",
+            Self::Failed => "failed",
+        }
+    }
+
+    fn from_str(value: &str) -> RepoResult<Self> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "delivered" => Ok(Self::Delivered),
+            "read" => Ok(Self::Read),
+            "action_required" => Ok(Self::ActionRequired),
+            "resolved" => Ok(Self::Resolved),
+            "dismissed" => Ok(Self::Dismissed),
+            "failed" => Ok(Self::Failed),
+            other => Err(RepositoryError::Constraint {
+                entity: "notifications",
+                message: format!("invalid notification state: {other}"),
+            }),
+        }
+    }
+
+    fn is_active_inbox(self) -> bool {
+        matches!(
+            self,
+            Self::Pending | Self::Delivered | Self::ActionRequired | Self::Failed
+        )
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct NotificationRecord {
+    id: String,
+    notification_type: NotificationType,
+    title: String,
+    message: String,
+    severity: NotificationSeverity,
+    state: NotificationState,
+    action_route: Option<String>,
+    task_id: Option<String>,
+    run_id: Option<String>,
+    review_record_id: Option<String>,
+    read_at: Option<String>,
+    dismissed_at: Option<String>,
+    resolved_at: Option<String>,
+    created_at: String,
+    updated_at: String,
+    metadata_json: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct NotificationCreateInput {
+    notification_type: NotificationType,
+    title: String,
+    message: String,
+    severity: NotificationSeverity,
+    action_route: Option<String>,
+    task_id: Option<String>,
+    run_id: Option<String>,
+    review_record_id: Option<String>,
     metadata_json: String,
 }
 
@@ -3493,6 +3661,494 @@ fn create_review_event(
         },
     )?;
     Ok(())
+}
+
+#[allow(dead_code)]
+fn create_notification(
+    connection: &Connection,
+    input: NotificationCreateInput,
+) -> RepoResult<NotificationRecord> {
+    validate_notification_input(connection, &input)?;
+    let notification_id = next_notification_id();
+    let title = input.title.trim().to_string();
+    let message = input.message.trim().to_string();
+    let metadata_json = redact_metadata_json(&input.metadata_json);
+
+    connection
+        .execute_batch("savepoint create_notification")
+        .map_err(|error| map_repository_error("notifications", error))?;
+
+    let create_result = (|| -> RepoResult<NotificationRecord> {
+        connection
+            .execute(
+                "
+                insert into notifications (
+                    id, notification_type, title, message, severity, state,
+                    action_route, task_id, run_id, review_record_id, metadata_json
+                ) values (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8, ?9, ?10)
+                ",
+                params![
+                    notification_id,
+                    input.notification_type.as_str(),
+                    title,
+                    message,
+                    input.severity.as_str(),
+                    input.action_route,
+                    input.task_id,
+                    input.run_id,
+                    input.review_record_id,
+                    metadata_json
+                ],
+            )
+            .map_err(|error| map_repository_error("notifications", error))?;
+
+        let notification =
+            read_notification(connection, &notification_id)?.ok_or(RepositoryError::NotFound {
+                entity: "notifications",
+                key: notification_id.clone(),
+            })?;
+        link_notification(connection, &notification)?;
+        create_notification_event(connection, &notification, "notification.created")?;
+        Ok(notification)
+    })();
+
+    match create_result {
+        Ok(notification) => {
+            connection
+                .execute_batch("release savepoint create_notification")
+                .map_err(|error| map_repository_error("notifications", error))?;
+            Ok(notification)
+        }
+        Err(error) => {
+            let _ = connection.execute_batch(
+                "rollback to savepoint create_notification; release savepoint create_notification",
+            );
+            Err(error)
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn read_notification(connection: &Connection, id: &str) -> RepoResult<Option<NotificationRecord>> {
+    connection
+        .query_row(
+            "
+            select id, notification_type, title, message, severity, state, action_route,
+                   task_id, run_id, review_record_id, read_at, dismissed_at, resolved_at,
+                   created_at, updated_at, metadata_json
+            from notifications where id = ?1
+            ",
+            params![id],
+            notification_from_row,
+        )
+        .optional()
+        .map_err(|error| map_repository_error("notifications", error))
+}
+
+#[allow(dead_code)]
+fn list_inbox_notifications(
+    connection: &Connection,
+    active_only: bool,
+    limit: i64,
+) -> RepoResult<Vec<NotificationRecord>> {
+    let bounded_limit = limit.clamp(1, 100);
+    connection
+        .prepare(
+            "
+            select id, notification_type, title, message, severity, state, action_route,
+                   task_id, run_id, review_record_id, read_at, dismissed_at, resolved_at,
+                   created_at, updated_at, metadata_json
+            from notifications
+            where (?1 = 0 or state in ('pending', 'delivered', 'action_required', 'failed'))
+            order by case severity
+                         when 'critical' then 0
+                         when 'error' then 1
+                         when 'warning' then 2
+                         when 'success' then 3
+                         else 4
+                     end,
+                     created_at desc,
+                     id desc
+            limit ?2
+            ",
+        )
+        .and_then(|mut statement| {
+            let rows = statement.query_map(
+                params![if active_only { 1 } else { 0 }, bounded_limit],
+                notification_from_row,
+            )?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map_err(|error| map_repository_error("notifications", error))
+}
+
+#[allow(dead_code)]
+fn notification_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NotificationRecord> {
+    let notification_type: String = row.get(1)?;
+    let severity: String = row.get(4)?;
+    let state: String = row.get(5)?;
+    Ok(NotificationRecord {
+        id: row.get(0)?,
+        notification_type: NotificationType::from_str(&notification_type)
+            .map_err(repository_error_to_rusqlite)?,
+        title: row.get(2)?,
+        message: row.get(3)?,
+        severity: NotificationSeverity::from_str(&severity)
+            .map_err(repository_error_to_rusqlite)?,
+        state: NotificationState::from_str(&state).map_err(repository_error_to_rusqlite)?,
+        action_route: row.get(6)?,
+        task_id: row.get(7)?,
+        run_id: row.get(8)?,
+        review_record_id: row.get(9)?,
+        read_at: row.get(10)?,
+        dismissed_at: row.get(11)?,
+        resolved_at: row.get(12)?,
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
+        metadata_json: row.get(15)?,
+    })
+}
+
+#[allow(dead_code)]
+fn mark_notification_delivered(
+    connection: &Connection,
+    id: &str,
+) -> RepoResult<NotificationRecord> {
+    transition_notification_state(
+        connection,
+        id,
+        NotificationState::Delivered,
+        "notification.delivered",
+    )
+}
+
+#[allow(dead_code)]
+fn require_notification_action(
+    connection: &Connection,
+    id: &str,
+) -> RepoResult<NotificationRecord> {
+    transition_notification_state(
+        connection,
+        id,
+        NotificationState::ActionRequired,
+        "notification.action_required",
+    )
+}
+
+#[allow(dead_code)]
+fn mark_notification_failed(connection: &Connection, id: &str) -> RepoResult<NotificationRecord> {
+    transition_notification_state(
+        connection,
+        id,
+        NotificationState::Failed,
+        "notification.failed",
+    )
+}
+
+#[allow(dead_code)]
+fn mark_notification_read(connection: &Connection, id: &str) -> RepoResult<NotificationRecord> {
+    transition_notification_state(connection, id, NotificationState::Read, "notification.read")
+}
+
+#[allow(dead_code)]
+fn dismiss_notification(connection: &Connection, id: &str) -> RepoResult<NotificationRecord> {
+    transition_notification_state(
+        connection,
+        id,
+        NotificationState::Dismissed,
+        "notification.dismissed",
+    )
+}
+
+#[allow(dead_code)]
+fn resolve_notification(connection: &Connection, id: &str) -> RepoResult<NotificationRecord> {
+    transition_notification_state(
+        connection,
+        id,
+        NotificationState::Resolved,
+        "notification.resolved",
+    )
+}
+
+#[allow(dead_code)]
+fn transition_notification_state(
+    connection: &Connection,
+    id: &str,
+    state: NotificationState,
+    action_type: &str,
+) -> RepoResult<NotificationRecord> {
+    if read_notification(connection, id)?.is_none() {
+        return Err(RepositoryError::NotFound {
+            entity: "notifications",
+            key: id.to_string(),
+        });
+    }
+    let (read_expr, dismissed_expr, resolved_expr) = match state {
+        NotificationState::Read => (
+            "coalesce(read_at, current_timestamp)",
+            "dismissed_at",
+            "resolved_at",
+        ),
+        NotificationState::Dismissed => (
+            "read_at",
+            "coalesce(dismissed_at, current_timestamp)",
+            "resolved_at",
+        ),
+        NotificationState::Resolved => (
+            "read_at",
+            "dismissed_at",
+            "coalesce(resolved_at, current_timestamp)",
+        ),
+        NotificationState::Pending
+        | NotificationState::Delivered
+        | NotificationState::ActionRequired
+        | NotificationState::Failed => ("null", "null", "null"),
+    };
+    let sql = format!(
+        "
+        update notifications
+        set state = ?2,
+            read_at = {read_expr},
+            dismissed_at = {dismissed_expr},
+            resolved_at = {resolved_expr},
+            updated_at = current_timestamp
+        where id = ?1
+        "
+    );
+    connection
+        .execute(&sql, params![id, state.as_str()])
+        .map_err(|error| map_repository_error("notifications", error))?;
+    let notification = read_notification(connection, id)?.ok_or(RepositoryError::NotFound {
+        entity: "notifications",
+        key: id.to_string(),
+    })?;
+    create_notification_event(connection, &notification, action_type)?;
+    Ok(notification)
+}
+
+#[allow(dead_code)]
+fn validate_notification_input(
+    connection: &Connection,
+    input: &NotificationCreateInput,
+) -> RepoResult<()> {
+    let title = normalize_small_text("notifications", "title", input.title.as_str())?;
+    validate_notification_text_no_secret("title", &title)?;
+    if input.message.trim().is_empty() || input.message.len() > EVENT_CREATE_MAX_SUMMARY_BYTES {
+        return Err(RepositoryError::Constraint {
+            entity: "notifications",
+            message: "message must be non-empty and within safe summary limits".to_string(),
+        });
+    }
+    validate_notification_text_no_secret("message", &input.message)?;
+    if let Some(action_route) = input.action_route.as_deref() {
+        normalize_small_text("notifications", "action_route", action_route)?;
+        validate_notification_text_no_secret("action_route", action_route)?;
+    }
+    validate_no_secret_json("metadata_json", &input.metadata_json)?;
+    if input.task_id.is_none() && input.run_id.is_none() && input.review_record_id.is_none() {
+        return Err(RepositoryError::Constraint {
+            entity: "notifications",
+            message: "notification must link to at least one task, run, or review".to_string(),
+        });
+    }
+    if let Some(task_id) = input.task_id.as_deref() {
+        let task = read_task_record(connection, task_id)?;
+        if task.status == TaskStatus::Deleted || task.deleted_at.is_some() {
+            return Err(RepositoryError::Constraint {
+                entity: "notifications",
+                message: "deleted task cannot receive notification".to_string(),
+            });
+        }
+    }
+    if let Some(run_id) = input.run_id.as_deref() {
+        let run = read_agent_run_required(connection, run_id)?;
+        if let Some(task_id) = input.task_id.as_deref() {
+            if run.task_id != task_id {
+                return Err(RepositoryError::Constraint {
+                    entity: "notifications",
+                    message: "notification run must belong to task_id".to_string(),
+                });
+            }
+        }
+    }
+    if let Some(review_id) = input.review_record_id.as_deref() {
+        let review =
+            read_review_record(connection, review_id)?.ok_or(RepositoryError::NotFound {
+                entity: "review_records",
+                key: review_id.to_string(),
+            })?;
+        if let Some(task_id) = input.task_id.as_deref() {
+            if review.task_id != task_id {
+                return Err(RepositoryError::Constraint {
+                    entity: "notifications",
+                    message: "notification review must belong to task_id".to_string(),
+                });
+            }
+        }
+        if let Some(run_id) = input.run_id.as_deref() {
+            let run = read_agent_run_required(connection, run_id)?;
+            if run.task_id != review.task_id {
+                return Err(RepositoryError::Constraint {
+                    entity: "notifications",
+                    message: "notification review task and run must share task ownership"
+                        .to_string(),
+                });
+            }
+            if let Some(review_run_id) = review.run_id.as_deref() {
+                if review_run_id != run_id {
+                    return Err(RepositoryError::Constraint {
+                        entity: "notifications",
+                        message: "notification review must belong to run_id".to_string(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn validate_notification_text_no_secret(field: &'static str, value: &str) -> RepoResult<()> {
+    let lower = value.to_ascii_lowercase();
+    if lower.contains("token=")
+        || lower.contains("api_key")
+        || lower.contains("apikey")
+        || lower.contains("authorization:")
+        || lower.contains("authorization=")
+        || value.split_whitespace().any(looks_like_secret_material)
+    {
+        return Err(reject_secret(
+            field,
+            "notification field contains secret-like material; store raw secrets only in Keychain",
+        ));
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn link_notification(connection: &Connection, notification: &NotificationRecord) -> RepoResult<()> {
+    if let Some(task_id) = notification.task_id.as_deref() {
+        insert_or_get_entity_link(
+            connection,
+            EntityLinkInput {
+                id: &format!("link_task_notification_{}", notification.id),
+                source_type: "task",
+                source_id: task_id,
+                target_type: "notification",
+                target_id: &notification.id,
+                relation_type: "notifies",
+                created_by_actor_type: "system",
+                metadata_json: "{}",
+            },
+        )?;
+    }
+    if let Some(run_id) = notification.run_id.as_deref() {
+        insert_or_get_entity_link(
+            connection,
+            EntityLinkInput {
+                id: &format!("link_run_notification_{}", notification.id),
+                source_type: "agent_run",
+                source_id: run_id,
+                target_type: "notification",
+                target_id: &notification.id,
+                relation_type: "notifies",
+                created_by_actor_type: "system",
+                metadata_json: "{}",
+            },
+        )?;
+    }
+    if let Some(review_id) = notification.review_record_id.as_deref() {
+        insert_or_get_entity_link(
+            connection,
+            EntityLinkInput {
+                id: &format!("link_review_notification_{}", notification.id),
+                source_type: "review_record",
+                source_id: review_id,
+                target_type: "notification",
+                target_id: &notification.id,
+                relation_type: "notifies",
+                created_by_actor_type: "system",
+                metadata_json: "{}",
+            },
+        )?;
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn create_notification_event(
+    connection: &Connection,
+    notification: &NotificationRecord,
+    action_type: &str,
+) -> RepoResult<()> {
+    let metadata = serde_json::json!({
+        "notification_id": notification.id,
+        "notification_type": notification.notification_type.as_str(),
+        "severity": notification.severity.as_str(),
+        "state": notification.state.as_str(),
+        "task_id": notification.task_id,
+        "run_id": notification.run_id,
+        "review_record_id": notification.review_record_id,
+        "action_route": notification.action_route,
+        "input_metadata": serde_json::from_str::<Value>(&notification.metadata_json).unwrap_or(Value::Null),
+    })
+    .to_string();
+    let mut targets = vec![EventTargetInput {
+        entity_type: "notification",
+        entity_id: &notification.id,
+        relation_type: "primary",
+    }];
+    if let Some(task_id) = notification.task_id.as_deref() {
+        targets.push(EventTargetInput {
+            entity_type: "task",
+            entity_id: task_id,
+            relation_type: "owner",
+        });
+    }
+    if let Some(run_id) = notification.run_id.as_deref() {
+        targets.push(EventTargetInput {
+            entity_type: "agent_run",
+            entity_id: run_id,
+            relation_type: "run",
+        });
+    }
+    if let Some(review_id) = notification.review_record_id.as_deref() {
+        targets.push(EventTargetInput {
+            entity_type: "review_record",
+            entity_id: review_id,
+            relation_type: "review",
+        });
+    }
+    create_event_record(
+        connection,
+        EventCreateInput {
+            action_type,
+            outcome: "succeeded",
+            actor_type: "system",
+            actor_id: None,
+            workspace_key: Some("inbox"),
+            summary: &format!(
+                "Notification {}: {}",
+                notification.state.as_str(),
+                notification.title
+            ),
+            source: "notification_repository",
+            metadata_json: &metadata,
+            targets,
+        },
+    )?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn next_notification_id() -> String {
+    let sequence = NOTIFICATION_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "notification_{}_{:010}_{:020}",
+        now_millis(),
+        process::id(),
+        sequence
+    )
 }
 
 #[allow(dead_code)]
@@ -6586,9 +7242,9 @@ mod tests {
     #[test]
     fn p205_schema_version_seven_has_review_records_table() {
         let connection = migrated_in_memory_connection();
-        assert_eq!(
-            get_migration_version(&connection).expect("migration version"),
-            7
+        assert!(
+            get_migration_version(&connection).expect("migration version") >= 7,
+            "P2.05 schema must remain present after later migrations"
         );
         assert_table_has_columns(
             &connection,
@@ -6936,6 +7592,517 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn p206_review(
+        connection: &Connection,
+        task: &TaskRecord,
+        run: &AgentRunRecord,
+    ) -> ReviewRecord {
+        create_review_record(
+            connection,
+            ReviewRecordCreateInput {
+                subject_type: ReviewSubjectType::AgentRun,
+                subject_id: run.id.clone(),
+                task_id: task.id.clone(),
+                run_id: Some(run.id.clone()),
+                reviewer_profile_id: None,
+                verdict: ReviewVerdict::Approved,
+                evidence_summary: "Reviewer verified summarized evidence".to_string(),
+                required_fixes_json: "[]".to_string(),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect("create p206 review")
+    }
+
+    #[test]
+    fn p206_schema_version_eight_has_notifications_table_and_constraints() {
+        let connection = migrated_in_memory_connection();
+        assert_eq!(
+            get_migration_version(&connection).expect("migration version"),
+            8
+        );
+        assert_table_has_columns(
+            &connection,
+            "notifications",
+            &[
+                "id",
+                "notification_type",
+                "title",
+                "message",
+                "severity",
+                "state",
+                "action_route",
+                "task_id",
+                "run_id",
+                "review_record_id",
+                "read_at",
+                "dismissed_at",
+                "resolved_at",
+                "created_at",
+                "updated_at",
+                "metadata_json",
+            ],
+        );
+
+        let task_a = p204_task(&connection, "Notification DB task A");
+        let run_a = p205_run(&connection, &task_a);
+        let review_a = p206_review(&connection, &task_a, &run_a);
+        let task_b = p204_task(&connection, "Notification DB task B");
+        let run_b = p205_run(&connection, &task_b);
+        let task_level_review_a = create_review_record(
+            &connection,
+            ReviewRecordCreateInput {
+                subject_type: ReviewSubjectType::Task,
+                subject_id: task_a.id.clone(),
+                task_id: task_a.id.clone(),
+                run_id: None,
+                reviewer_profile_id: None,
+                verdict: ReviewVerdict::Approved,
+                evidence_summary: "Task-level review for task A".to_string(),
+                required_fixes_json: "[]".to_string(),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect("create task-level review");
+        let mismatched_run = connection.execute(
+            "
+            insert into notifications (
+                id, notification_type, title, message, severity, state,
+                task_id, run_id, review_record_id, metadata_json
+            ) values (?1, 'completion', 'Bad run', 'Mismatched run should fail', 'info', 'pending', ?2, ?3, null, '{}')
+            ",
+            params!["notification_bad_run", task_b.id, run_a.id],
+        );
+        assert!(
+            mismatched_run.is_err(),
+            "schema must reject run/task mismatches"
+        );
+
+        let mismatched_review = connection.execute(
+            "
+            insert into notifications (
+                id, notification_type, title, message, severity, state,
+                task_id, run_id, review_record_id, metadata_json
+            ) values (?1, 'review_required', 'Bad review', 'Mismatched review should fail', 'warning', 'pending', ?2, null, ?3, '{}')
+            ",
+            params!["notification_bad_review", task_b.id, review_a.id],
+        );
+        assert!(
+            mismatched_review.is_err(),
+            "schema must reject review/task mismatches"
+        );
+
+        let mismatched_review_run = connection.execute(
+            "
+            insert into notifications (
+                id, notification_type, title, message, severity, state,
+                task_id, run_id, review_record_id, metadata_json
+            ) values (?1, 'review_required', 'Bad review run', 'Task-level review cannot point at another task run', 'warning', 'pending', null, ?2, ?3, '{}')
+            ",
+            params!["notification_bad_review_run", run_b.id, task_level_review_a.id],
+        );
+        assert!(
+            mismatched_review_run.is_err(),
+            "schema must reject review/run ownership mismatches even when task_id is omitted"
+        );
+
+        for (id, state, read_at, dismissed_at, resolved_at) in [
+            (
+                "notification_read_missing",
+                "read",
+                Option::<&str>::None,
+                Option::<&str>::None,
+                Option::<&str>::None,
+            ),
+            (
+                "notification_dismissed_missing",
+                "dismissed",
+                Option::<&str>::None,
+                Option::<&str>::None,
+                Option::<&str>::None,
+            ),
+            (
+                "notification_resolved_missing",
+                "resolved",
+                Option::<&str>::None,
+                Option::<&str>::None,
+                Option::<&str>::None,
+            ),
+        ] {
+            let rejected = connection.execute(
+                "
+                insert into notifications (
+                    id, notification_type, title, message, severity, state,
+                    task_id, read_at, dismissed_at, resolved_at, metadata_json
+                ) values (?1, 'attention', 'Timestamp contradiction', 'Terminal state needs its timestamp',
+                    'info', ?2, ?3, ?4, ?5, ?6, '{}')
+                ",
+                params![id, state, task_a.id, read_at, dismissed_at, resolved_at],
+            );
+            assert!(
+                rejected.is_err(),
+                "state {state} must require its timestamp"
+            );
+        }
+    }
+
+    #[test]
+    fn p206_notification_create_read_list_events_and_links() {
+        let connection = migrated_in_memory_connection();
+        let task = p204_task(&connection, "Notification linked task");
+        let run = p205_run(&connection, &task);
+        let review = p206_review(&connection, &task, &run);
+
+        let notification = create_notification(
+            &connection,
+            NotificationCreateInput {
+                notification_type: NotificationType::ReviewRequired,
+                title: "Review required".to_string(),
+                message: "A run needs manual review based on summarized evidence".to_string(),
+                severity: NotificationSeverity::Warning,
+                action_route: Some(format!("zoid://reviews/{}", review.id)),
+                task_id: Some(task.id.clone()),
+                run_id: Some(run.id.clone()),
+                review_record_id: Some(review.id.clone()),
+                metadata_json: "{\"safe\":true}".to_string(),
+            },
+        )
+        .expect("create notification");
+
+        assert!(notification.id.starts_with("notification_"));
+        assert_eq!(
+            notification.notification_type,
+            NotificationType::ReviewRequired
+        );
+        assert_eq!(notification.severity, NotificationSeverity::Warning);
+        assert_eq!(notification.state, NotificationState::Pending);
+        assert_eq!(notification.task_id.as_deref(), Some(task.id.as_str()));
+        assert_eq!(notification.run_id.as_deref(), Some(run.id.as_str()));
+        assert_eq!(
+            notification.review_record_id.as_deref(),
+            Some(review.id.as_str())
+        );
+        assert!(notification.read_at.is_none());
+        assert!(notification.dismissed_at.is_none());
+        assert!(notification.resolved_at.is_none());
+
+        let read = read_notification(&connection, &notification.id)
+            .expect("read notification")
+            .expect("notification exists");
+        assert_eq!(read, notification);
+        let listed = list_inbox_notifications(&connection, true, 10).expect("list active inbox");
+        assert_eq!(
+            listed
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![notification.id.as_str()]
+        );
+
+        let created_events = list_event_records(
+            &connection,
+            EventListFilter {
+                workspace_key: Some("inbox"),
+                action_type: Some("notification.created"),
+                outcome: Some("succeeded"),
+                source: Some("notification_repository"),
+                limit: 10,
+            },
+        )
+        .expect("list notification events");
+        assert_eq!(created_events.len(), 1);
+        let event = &created_events[0];
+        assert!(event
+            .targets
+            .iter()
+            .any(|target| target.entity_type == "notification"
+                && target.entity_id == notification.id));
+        assert!(event
+            .targets
+            .iter()
+            .any(|target| target.entity_type == "task" && target.entity_id == task.id));
+        assert!(event
+            .targets
+            .iter()
+            .any(|target| target.entity_type == "agent_run" && target.entity_id == run.id));
+        assert!(event
+            .targets
+            .iter()
+            .any(|target| target.entity_type == "review_record" && target.entity_id == review.id));
+
+        for (source_type, source_id) in [
+            ("task", task.id.as_str()),
+            ("agent_run", run.id.as_str()),
+            ("review_record", review.id.as_str()),
+        ] {
+            let link_count = count_rows(
+                &connection,
+                &format!(
+                    "select count(*) from entity_links where source_type = '{source_type}' and source_id = '{source_id}' and target_type = 'notification' and relation_type = 'notifies'"
+                ),
+            );
+            assert_eq!(link_count, 1, "{source_type} should link to notification");
+        }
+    }
+
+    #[test]
+    fn p206_completion_blocker_failure_and_review_required_notifications_sort_actionable_inbox() {
+        let connection = migrated_in_memory_connection();
+        let task = p204_task(&connection, "Notification sorting task");
+        let run = p205_run(&connection, &task);
+        let review = p206_review(&connection, &task, &run);
+
+        let completion = create_notification(
+            &connection,
+            NotificationCreateInput {
+                notification_type: NotificationType::Completion,
+                title: "Completion notice".to_string(),
+                message: "Run completed with summarized evidence".to_string(),
+                severity: NotificationSeverity::Success,
+                action_route: Some(format!("zoid://tasks/{}", task.id)),
+                task_id: Some(task.id.clone()),
+                run_id: Some(run.id.clone()),
+                review_record_id: None,
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect("create completion notification");
+        let blocker = create_notification(
+            &connection,
+            NotificationCreateInput {
+                notification_type: NotificationType::Blocker,
+                title: "Blocker notice".to_string(),
+                message: "Run is blocked by missing evidence".to_string(),
+                severity: NotificationSeverity::Critical,
+                action_route: Some(format!("zoid://runs/{}", run.id)),
+                task_id: Some(task.id.clone()),
+                run_id: Some(run.id.clone()),
+                review_record_id: None,
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect("create blocker notification");
+        let failure = create_notification(
+            &connection,
+            NotificationCreateInput {
+                notification_type: NotificationType::Failure,
+                title: "Failure notice".to_string(),
+                message: "Run failed after process exit".to_string(),
+                severity: NotificationSeverity::Error,
+                action_route: Some(format!("zoid://runs/{}", run.id)),
+                task_id: Some(task.id.clone()),
+                run_id: Some(run.id.clone()),
+                review_record_id: None,
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect("create failure notification");
+        let review_required = create_notification(
+            &connection,
+            NotificationCreateInput {
+                notification_type: NotificationType::ReviewRequired,
+                title: "Review required notice".to_string(),
+                message: "Manual reviewer approval is needed".to_string(),
+                severity: NotificationSeverity::Warning,
+                action_route: Some(format!("zoid://reviews/{}", review.id)),
+                task_id: Some(task.id.clone()),
+                run_id: Some(run.id.clone()),
+                review_record_id: Some(review.id.clone()),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect("create review-required notification");
+
+        mark_notification_read(&connection, &failure.id).expect("read failure notification");
+        assert!(!read_notification(&connection, &failure.id)
+            .expect("read failure")
+            .expect("failure exists")
+            .state
+            .is_active_inbox());
+
+        let active = list_inbox_notifications(&connection, true, 10).expect("list active inbox");
+        assert_eq!(
+            active
+                .iter()
+                .map(|notification| notification.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                blocker.id.as_str(),
+                review_required.id.as_str(),
+                completion.id.as_str()
+            ],
+            "active inbox should exclude read items and sort by severity before time"
+        );
+    }
+
+    #[test]
+    fn p206_repository_rejects_review_run_ownership_mismatch_without_task_id() {
+        let connection = migrated_in_memory_connection();
+        let task_a = p204_task(&connection, "Notification repository task A");
+        let task_b = p204_task(&connection, "Notification repository task B");
+        let run_b = p205_run(&connection, &task_b);
+        let task_level_review_a = create_review_record(
+            &connection,
+            ReviewRecordCreateInput {
+                subject_type: ReviewSubjectType::Task,
+                subject_id: task_a.id.clone(),
+                task_id: task_a.id.clone(),
+                run_id: None,
+                reviewer_profile_id: None,
+                verdict: ReviewVerdict::Approved,
+                evidence_summary: "Task-level approval for task A".to_string(),
+                required_fixes_json: "[]".to_string(),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect("create task-level review");
+
+        let rejected = create_notification(
+            &connection,
+            NotificationCreateInput {
+                notification_type: NotificationType::ReviewRequired,
+                title: "Bad review/run pairing".to_string(),
+                message: "A task-level review cannot be paired with another task run".to_string(),
+                severity: NotificationSeverity::Warning,
+                action_route: Some(format!("zoid://runs/{}", run_b.id)),
+                task_id: None,
+                run_id: Some(run_b.id.clone()),
+                review_record_id: Some(task_level_review_a.id.clone()),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect_err("repository must reject mismatched review/run ownership");
+        assert!(matches!(
+            rejected,
+            RepositoryError::Constraint {
+                entity: "notifications",
+                ..
+            }
+        ));
+        assert_eq!(
+            count_rows(&connection, "select count(*) from notifications"),
+            0
+        );
+    }
+
+    #[test]
+    fn p206_notification_rejects_secret_material_before_persistence() {
+        let connection = migrated_in_memory_connection();
+        let task = p204_task(&connection, "Secret notification task");
+        let rejected = create_notification(
+            &connection,
+            NotificationCreateInput {
+                notification_type: NotificationType::Failure,
+                title: "Failure".to_string(),
+                message: "Raw secret sk-1234567890abcdef1234567890abcdef1234567890abcdef leaked"
+                    .to_string(),
+                severity: NotificationSeverity::Error,
+                action_route: Some("zoid://tasks/secret?token=secret-token-value".to_string()),
+                task_id: Some(task.id),
+                run_id: None,
+                review_record_id: None,
+                metadata_json: "{\"api_key\":\"sk-raw-secret-value\"}".to_string(),
+            },
+        )
+        .expect_err("notification secret material must be rejected");
+        assert!(matches!(rejected, RepositoryError::SecretRejected { .. }));
+        assert_eq!(
+            count_rows(&connection, "select count(*) from notifications"),
+            0
+        );
+    }
+
+    #[test]
+    fn p206_notification_state_transitions_do_not_mutate_linked_task_run_or_review() {
+        let connection = migrated_in_memory_connection();
+        let task = p204_task(&connection, "Notification transition task");
+        let run = p205_run(&connection, &task);
+        let review = p206_review(&connection, &task, &run);
+        let before_task = read_task_record(&connection, &task.id).expect("read task before");
+        let before_run = read_agent_run_required(&connection, &run.id).expect("read run before");
+        let before_review = read_review_record(&connection, &review.id)
+            .expect("read review before")
+            .expect("review before");
+
+        let notification = create_notification(
+            &connection,
+            NotificationCreateInput {
+                notification_type: NotificationType::Completion,
+                title: "Completed".to_string(),
+                message: "Run completed and is ready for attention".to_string(),
+                severity: NotificationSeverity::Success,
+                action_route: Some(format!("zoid://tasks/{}", task.id)),
+                task_id: Some(task.id.clone()),
+                run_id: Some(run.id.clone()),
+                review_record_id: Some(review.id.clone()),
+                metadata_json: "{}".to_string(),
+            },
+        )
+        .expect("create transition notification");
+
+        let delivered =
+            mark_notification_delivered(&connection, &notification.id).expect("mark delivered");
+        assert_eq!(delivered.state, NotificationState::Delivered);
+        assert!(delivered.read_at.is_none());
+        let action_required =
+            require_notification_action(&connection, &notification.id).expect("require action");
+        assert_eq!(action_required.state, NotificationState::ActionRequired);
+        let failed = mark_notification_failed(&connection, &notification.id).expect("mark failed");
+        assert_eq!(failed.state, NotificationState::Failed);
+        assert!(failed.dismissed_at.is_none());
+        let read = mark_notification_read(&connection, &notification.id).expect("mark read");
+        assert_eq!(read.state, NotificationState::Read);
+        assert!(read.read_at.is_some());
+        let dismissed = dismiss_notification(&connection, &notification.id).expect("dismiss");
+        assert_eq!(dismissed.state, NotificationState::Dismissed);
+        assert!(dismissed.dismissed_at.is_some());
+        let resolved = resolve_notification(&connection, &notification.id).expect("resolve");
+        assert_eq!(resolved.state, NotificationState::Resolved);
+        assert!(resolved.resolved_at.is_some());
+
+        assert_eq!(
+            read_task_record(&connection, &task.id).expect("read task after"),
+            before_task
+        );
+        assert_eq!(
+            read_agent_run_required(&connection, &run.id).expect("read run after"),
+            before_run
+        );
+        assert_eq!(
+            read_review_record(&connection, &review.id)
+                .expect("read review after")
+                .expect("review after"),
+            before_review
+        );
+
+        for action in [
+            "notification.delivered",
+            "notification.action_required",
+            "notification.failed",
+            "notification.read",
+            "notification.dismissed",
+            "notification.resolved",
+        ] {
+            let events = list_event_records(
+                &connection,
+                EventListFilter {
+                    workspace_key: Some("inbox"),
+                    action_type: Some(action),
+                    outcome: Some("succeeded"),
+                    source: Some("notification_repository"),
+                    limit: 10,
+                },
+            )
+            .expect("list transition events");
+            assert_eq!(events.len(), 1, "{action} should be written once");
+            assert!(events[0].targets.iter().any(|target| {
+                target.entity_type == "notification"
+                    && target.entity_id == notification.id
+                    && target.relation_type == "primary"
+            }));
+        }
     }
 
     #[test]
