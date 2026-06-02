@@ -6402,6 +6402,163 @@ fn p217_task_bridge_commands_preserve_validation_and_secret_guards() {
 }
 
 #[test]
+fn p228_task_service_persists_tasks_and_task_events_after_reopen() {
+    let (connection, database_path) = migrated_file_connection("p228-task-persistence-db");
+
+    let active = create_task_command_with_connection(
+        &connection,
+        TaskCommandCreateRequest {
+            title: "Persisted active task".to_string(),
+            detail: Some("Initial detail".to_string()),
+            priority: Some("normal".to_string()),
+            workspace_key: Some("today".to_string()),
+            metadata_json: Some("{\"source\":\"p228\"}".to_string()),
+        },
+    )
+    .expect("create active task");
+    let archived = create_task_command_with_connection(
+        &connection,
+        TaskCommandCreateRequest {
+            title: "Persisted archived task".to_string(),
+            detail: None,
+            priority: Some("low".to_string()),
+            workspace_key: Some("tasks".to_string()),
+            metadata_json: None,
+        },
+    )
+    .expect("create archived task");
+    let deleted = create_task_command_with_connection(
+        &connection,
+        TaskCommandCreateRequest {
+            title: "Persisted deleted task".to_string(),
+            detail: None,
+            priority: Some("high".to_string()),
+            workspace_key: Some("tomorrow".to_string()),
+            metadata_json: None,
+        },
+    )
+    .expect("create deleted task");
+
+    let active = update_task_command_with_connection(
+        &connection,
+        active.id.clone(),
+        TaskCommandUpdateRequest {
+            title: Some("Persisted updated active task".to_string()),
+            detail: Some("Updated detail".to_string()),
+            priority: Some("urgent".to_string()),
+            workspace_key: Some("today".to_string()),
+            metadata_json: Some("{\"source\":\"p228_update\"}".to_string()),
+        },
+    )
+    .expect("update active task");
+    update_task_status_command_with_connection(
+        &connection,
+        active.id.clone(),
+        TaskCommandStatusRequest {
+            status: "active".to_string(),
+        },
+    )
+    .expect("activate updated task");
+    archive_task_command_with_connection(&connection, archived.id.clone()).expect("archive task");
+    delete_task_command_with_connection(&connection, deleted.id.clone()).expect("delete task");
+
+    let pre_reopen_active_count = list_tasks_command_with_connection(&connection)
+        .expect("list before reopen")
+        .len();
+    assert_eq!(pre_reopen_active_count, 1);
+    drop(connection);
+
+    let reopened = open_foundation_database(&database_path).expect("reopen file-backed sqlite");
+    run_migrations(&reopened).expect("rerun migrations after reopen");
+
+    let reopened_active = read_task_command_with_connection(&reopened, active.id.clone())
+        .expect("read active task after reopen");
+    assert_eq!(reopened_active.title, "Persisted updated active task");
+    assert_eq!(reopened_active.detail.as_deref(), Some("Updated detail"));
+    assert_eq!(reopened_active.priority, TaskPriority::Urgent);
+    assert_eq!(reopened_active.status, TaskStatus::Active);
+    assert_eq!(reopened_active.workspace_key, "today");
+    assert_eq!(
+        reopened_active.metadata_json,
+        "{\"source\":\"p228_update\"}"
+    );
+
+    let reopened_archived = read_task_command_with_connection(&reopened, archived.id.clone())
+        .expect("read archived task after reopen");
+    assert_eq!(reopened_archived.status, TaskStatus::Archived);
+    assert!(reopened_archived.archived_at.is_some());
+
+    let reopened_deleted = read_task_command_with_connection(&reopened, deleted.id.clone())
+        .expect("read deleted task after reopen");
+    assert_eq!(reopened_deleted.status, TaskStatus::Deleted);
+    assert!(reopened_deleted.deleted_at.is_some());
+
+    let active_after_reopen =
+        list_tasks_command_with_connection(&reopened).expect("list after reopen");
+    assert_eq!(active_after_reopen.len(), 1);
+    assert_eq!(active_after_reopen[0].id, active.id);
+    assert!(active_after_reopen
+        .iter()
+        .all(|task| task.id != archived.id && task.id != deleted.id));
+
+    let active_history = list_task_history(&reopened, &active.id, 50, None)
+        .expect("active task history after reopen");
+    for action_type in ["task.created", "task.updated", "task.status_changed"] {
+        let item = active_history
+            .iter()
+            .find(|item| item.event.action_type == action_type)
+            .unwrap_or_else(|| panic!("missing persisted active task event {action_type}"));
+        assert_eq!(item.event.workspace_key.as_deref(), Some("today"));
+        assert_eq!(item.event.outcome, "succeeded");
+        assert!(matches!(
+            item.event.source.as_str(),
+            "task_repository" | "task_service"
+        ));
+        assert!(item.event.targets.iter().any(|target| {
+            target.entity_type == "task"
+                && target.entity_id == active.id
+                && target.relation_type == "primary"
+        }));
+        assert!(item.matched_entities.iter().any(|target| {
+            target.entity_type == "task"
+                && target.entity_id == active.id
+                && target.relation_type == "primary"
+        }));
+    }
+    let archived_history = list_task_history(&reopened, &archived.id, 50, None)
+        .expect("archived task history after reopen");
+    let archived_event = archived_history
+        .iter()
+        .find(|item| item.event.action_type == "task.archived")
+        .expect("archived task history event");
+    assert_eq!(archived_event.event.workspace_key.as_deref(), Some("tasks"));
+    assert_eq!(archived_event.event.outcome, "succeeded");
+    assert_eq!(archived_event.event.source, "task_repository");
+    assert!(archived_event.event.targets.iter().any(|target| {
+        target.entity_type == "task"
+            && target.entity_id == archived.id
+            && target.relation_type == "primary"
+    }));
+    let deleted_history = list_task_history(&reopened, &deleted.id, 50, None)
+        .expect("deleted task history after reopen");
+    let deleted_event = deleted_history
+        .iter()
+        .find(|item| item.event.action_type == "task.deleted")
+        .expect("deleted task history event");
+    assert_eq!(
+        deleted_event.event.workspace_key.as_deref(),
+        Some("tomorrow")
+    );
+    assert_eq!(deleted_event.event.outcome, "succeeded");
+    assert_eq!(deleted_event.event.source, "task_repository");
+    assert!(deleted_event.event.targets.iter().any(|target| {
+        target.entity_type == "task"
+            && target.entity_id == deleted.id
+            && target.relation_type == "primary"
+    }));
+}
+
+#[test]
 fn p218_run_bridge_commands_start_status_stream_and_write_events() {
     let (connection, _database_path) = migrated_file_connection("p218-run-bridge-db");
     let task = p204_task(&connection, "Bridge run task");
@@ -6502,12 +6659,148 @@ fn p218_run_bridge_commands_start_status_stream_and_write_events() {
 }
 
 #[test]
-fn p218_run_bridge_cancel_kills_active_process_and_rejects_terminal_mutation() {
-    let (connection, _database_path) = migrated_file_connection("p218-cancel-bridge-db");
-    let task = p204_task(&connection, "Cancelable bridge run task");
+fn p229_run_bridge_records_failed_exit_code_log_notification_and_redacted_stream() {
+    let (connection, _database_path) = migrated_file_connection("p229-failed-run-bridge-db");
+    let task = p204_task(&connection, "P2.29 failing bridge run task");
     let profile =
-        p209_profile_with_command(&connection, "profile-shell-cancel-p218", "/bin/sh", true);
-    let logs_dir = temp_home("p218-cancel-bridge-logs");
+        p209_profile_with_command(&connection, "profile-shell-fail-p229", "/bin/sh", true);
+    let logs_dir = temp_home("p229-failed-run-bridge-logs");
+    let stdout_secret = "dummy-credential-1";
+    let stderr_message = "plain failure evidence";
+
+    let outcome = start_agent_run_command_with_connection(
+        &connection,
+        AgentRunCommandStartRequest {
+            task_id: task.id.clone(),
+            profile_id: profile.id,
+            cwd: "/tmp".to_string(),
+            argv: vec![
+                "-c".to_string(),
+                [
+                    "printf 'stdout api_key=",
+                    stdout_secret,
+                    "\\n'; printf 'stderr ",
+                    stderr_message,
+                    "\\n' >&2; exit 9",
+                ]
+                .concat(),
+            ],
+            stdin: None,
+            timeout_ms: None,
+            logs_dir: logs_dir.clone(),
+            metadata_json: Some("{\"source\":\"p229_bridge\"}".to_string()),
+        },
+    )
+    .expect("start failing run via bridge helper");
+    assert_eq!(outcome.run.status, AgentRunStatus::Running);
+
+    let mut failed = None;
+    for _ in 0..80 {
+        let status = read_run_status_command_with_connection(&connection, outcome.run.id.clone())
+            .expect("read eventual failed status");
+        if status.status == AgentRunStatus::Failed {
+            failed = Some(status);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let failed = failed.expect("run should fail asynchronously");
+    assert_eq!(failed.exit_code, Some(9));
+    assert!(failed.log_reference_id.is_some());
+    assert!(failed
+        .error_summary
+        .as_deref()
+        .unwrap_or_default()
+        .contains(stderr_message));
+    assert!(!failed
+        .error_summary
+        .as_deref()
+        .unwrap_or_default()
+        .contains(stdout_secret));
+
+    let stream = stream_run_output_command_with_connection(
+        &connection,
+        AgentRunCommandStreamRequest {
+            run_id: outcome.run.id.clone(),
+            logs_dir: logs_dir.clone(),
+            offset: Some(0),
+            max_bytes: Some(4096),
+        },
+    )
+    .expect("stream failed run output");
+    assert_eq!(stream.status, AgentRunStatus::Failed);
+    assert!(stream.eof);
+    assert!(stream.content.contains("stdout api_key"));
+    assert!(stream.content.contains("[REDACTED]"));
+    assert!(stream.content.contains(stderr_message));
+    assert!(!stream.content.contains(stdout_secret));
+    assert!(stream.log_reference_id.starts_with("logref_"));
+
+    let log_path = logs_dir.join(format!("{}.log", outcome.run.id));
+    let persisted_log = fs::read_to_string(&log_path).expect("read persisted failed run log");
+    assert!(persisted_log.contains("stdout api_key"));
+    assert!(persisted_log.contains("[REDACTED]"));
+    assert!(persisted_log.contains(stderr_message));
+    assert!(!persisted_log.contains(stdout_secret));
+
+    let events = list_run_history(&connection, &outcome.run.id, 20, None).expect("run history");
+    assert!(events
+        .iter()
+        .any(|item| item.event.action_type == "run.failed"
+            && item.event.targets.iter().any(|target| {
+                target.entity_type == "agent_run" && target.entity_id == outcome.run.id
+            })));
+    let serialized_events = serde_json::to_string(&events).expect("serialize run history");
+    assert!(!serialized_events.contains(stdout_secret));
+
+    let notifications = list_inbox_notifications(&connection, false, 20).expect("notifications");
+    assert!(notifications.iter().any(|notification| {
+        notification.run_id.as_deref() == Some(outcome.run.id.as_str())
+            && notification.notification_type == NotificationType::Failure
+            && notification.severity == NotificationSeverity::Error
+            && notification.title == "Agent run failed"
+    }));
+    let serialized_notifications =
+        serde_json::to_string(&notifications).expect("serialize failure notifications");
+    assert!(!serialized_notifications.contains(stdout_secret));
+
+    let sqlite_secret_count = count_rows(
+        &connection,
+        &format!(
+            "select \
+                (select count(*) from agent_runs where id = '{}' and (coalesce(output_summary, '') like '%{}%' or coalesce(error_summary, '') like '%{}%' or coalesce(metadata_json, '') like '%{}%')) + \
+                (select count(*) from events where coalesce(summary, '') like '%{}%' or coalesce(metadata_json, '') like '%{}%') + \
+                (select count(*) from event_targets where coalesce(entity_type, '') like '%{}%' or coalesce(entity_id, '') like '%{}%' or coalesce(relation_type, '') like '%{}%') + \
+                (select count(*) from notifications where coalesce(title, '') like '%{}%' or coalesce(message, '') like '%{}%' or coalesce(action_route, '') like '%{}%' or coalesce(metadata_json, '') like '%{}%')",
+            outcome.run.id,
+            stdout_secret,
+            stdout_secret,
+            stdout_secret,
+            stdout_secret,
+            stdout_secret,
+            stdout_secret,
+            stdout_secret,
+            stdout_secret,
+            stdout_secret,
+            stdout_secret,
+            stdout_secret,
+            stdout_secret
+        ),
+    );
+    assert_eq!(
+        sqlite_secret_count, 0,
+        "failed-run raw secret must not persist in agent_runs/events/event_targets/notifications text fields"
+    );
+}
+
+#[test]
+fn p229_run_bridge_cancel_kills_active_process_writes_log_and_rejects_terminal_mutation() {
+    let (connection, _database_path) = migrated_file_connection("p229-cancel-bridge-db");
+    let task = p204_task(&connection, "P2.29 cancelable bridge run task");
+    let profile =
+        p209_profile_with_command(&connection, "profile-shell-cancel-p229", "/bin/sh", true);
+    let logs_dir = temp_home("p229-cancel-bridge-logs");
+    let before_marker = "before-cancel-ready";
 
     let outcome = start_agent_run_command_with_connection(
         &connection,
@@ -6517,23 +6810,45 @@ fn p218_run_bridge_cancel_kills_active_process_and_rejects_terminal_mutation() {
             cwd: "/tmp".to_string(),
             argv: vec![
                 "-c".to_string(),
-                "printf 'before cancel'; sleep 3; printf 'should-not-finish'".to_string(),
+                format!("printf '{before_marker}'; sleep 10; printf 'should-not-finish'"),
             ],
             stdin: None,
             timeout_ms: None,
             logs_dir: logs_dir.clone(),
-            metadata_json: Some("{\"source\":\"p218_cancel\"}".to_string()),
+            metadata_json: Some("{\"source\":\"p229_cancel\"}".to_string()),
         },
     )
     .expect("start cancelable run");
     assert_eq!(outcome.run.status, AgentRunStatus::Running);
+
+    let mut pre_cancel_stream = None;
+    for _ in 0..80 {
+        let stream = stream_run_output_command_with_connection(
+            &connection,
+            AgentRunCommandStreamRequest {
+                run_id: outcome.run.id.clone(),
+                logs_dir: logs_dir.clone(),
+                offset: Some(0),
+                max_bytes: Some(4096),
+            },
+        )
+        .expect("stream pre-cancel output");
+        if stream.content.contains(before_marker) {
+            pre_cancel_stream = Some(stream);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let pre_cancel_stream = pre_cancel_stream.expect("deterministic pre-cancel output");
+    assert_eq!(pre_cancel_stream.status, AgentRunStatus::Running);
+    assert!(!pre_cancel_stream.eof);
 
     let cancelled = cancel_run_command_with_connection(
         &connection,
         outcome.run.id.clone(),
         AgentRunCommandCancelRequest {
             reason: Some("User stopped from bridge".to_string()),
-            metadata_json: Some("{\"source\":\"p218_cancel\"}".to_string()),
+            metadata_json: Some("{\"source\":\"p229_cancel\"}".to_string()),
         },
     )
     .expect("cancel active run via bridge helper");
@@ -6558,27 +6873,80 @@ fn p218_run_bridge_cancel_kills_active_process_and_rejects_terminal_mutation() {
     assert!(status.log_reference_id.is_some());
     assert!(status.duration_ms.unwrap_or_default() > 0);
 
-    let notifications = list_inbox_notifications(&connection, false, 20).expect("notifications");
-    assert!(notifications
-        .iter()
-        .any(|item| item.run_id.as_deref() == Some(outcome.run.id.as_str())));
+    let mut cancellation_notifications = Vec::new();
+    for _ in 0..80 {
+        let notifications =
+            list_inbox_notifications(&connection, false, 20).expect("notifications");
+        cancellation_notifications = notifications
+            .into_iter()
+            .filter(|item| item.run_id.as_deref() == Some(outcome.run.id.as_str()))
+            .collect::<Vec<_>>();
+        if cancellation_notifications.iter().any(|item| {
+            item.notification_type == NotificationType::Attention
+                && item.title == "Agent run cancelled"
+                && item.severity == NotificationSeverity::Warning
+        }) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(cancellation_notifications.iter().any(|item| {
+        item.notification_type == NotificationType::Attention
+            && item.title == "Agent run cancelled"
+            && item.severity == NotificationSeverity::Warning
+    }));
 
     let stream = stream_run_output_command_with_connection(
         &connection,
         AgentRunCommandStreamRequest {
             run_id: outcome.run.id.clone(),
-            logs_dir,
+            logs_dir: logs_dir.clone(),
             offset: Some(0),
             max_bytes: Some(4096),
         },
     )
     .expect("stream cancelled run output");
-    assert!(
-        stream.content.contains("before cancel")
-            || stream.content.contains("Run cancelled")
-            || stream.content.is_empty()
-    );
+    assert!(stream.content.contains(before_marker));
     assert!(!stream.content.contains("should-not-finish"));
+
+    let log_path = logs_dir.join(format!("{}.log", outcome.run.id));
+    assert!(log_path.is_file(), "cancelled run log file must exist");
+    let persisted_log = fs::read_to_string(&log_path).expect("read cancelled run log");
+    assert!(persisted_log.contains(before_marker));
+    assert!(!persisted_log.contains("should-not-finish"));
+    let log_reference_id = status
+        .log_reference_id
+        .as_deref()
+        .expect("cancelled run log reference id");
+    let (log_scope, relative_path, redaction_count, byte_count, metadata_json): (
+        String,
+        String,
+        i64,
+        i64,
+        String,
+    ) = connection
+        .query_row(
+            "select log_scope, relative_path, redaction_count, byte_count, metadata_json from log_references where id = ?1",
+            params![log_reference_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .expect("read cancellation log reference row");
+    assert_eq!(log_scope, outcome.run.id);
+    assert_eq!(relative_path, format!("{}.log", outcome.run.id));
+    assert_eq!(redaction_count, 0);
+    assert!(byte_count > 0);
+    assert!(metadata_json.contains("bytes_written"));
+
+    let history =
+        list_run_history(&connection, &outcome.run.id, 20, None).expect("cancelled run history");
+    assert!(history.iter().any(|item| {
+        item.event.action_type == "run.cancelled"
+            && item.event.targets.iter().any(|target| {
+                target.entity_type == "agent_run"
+                    && target.entity_id == outcome.run.id
+                    && target.relation_type == "primary"
+            })
+    }));
 
     let recancel = cancel_run_command_with_connection(
         &connection,
@@ -6795,7 +7163,209 @@ fn p208_p215_task_and_notification_services_wrap_reviewed_repositories() {
 }
 
 #[test]
-fn p219_review_notification_and_inbox_bridge_commands_preserve_services() {
+fn p230_review_notification_history_bridge_records_state_transitions_and_targets() {
+    let connection = migrated_in_memory_connection();
+    let task = p204_task(&connection, "P2.30 review notification history task");
+    let profile = p204_profile(&connection, true);
+    let session = p204_session(&connection, &task, &profile);
+    let run = create_agent_run(
+        &connection,
+        AgentRunCreateInput {
+            task_id: task.id.clone(),
+            profile_id: profile.id,
+            session_id: session.id,
+            cwd: "/tmp".to_string(),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect("create p230 run");
+    let review = create_manual_review_command_with_connection(
+        &connection,
+        ManualReviewCommandCreateRequest {
+            task_id: task.id.clone(),
+            run_id: Some(run.id.clone()),
+            reviewer_profile_id: None,
+            verdict: "required_fixes".to_string(),
+            evidence_summary: "Reviewer requires a focused fix".to_string(),
+            required_fixes_json: "[{\"fix\":\"tighten notification history assertions\"}]"
+                .to_string(),
+            metadata_json: Some("{\"source\":\"p230_history\"}".to_string()),
+        },
+    )
+    .expect("create p230 review through bridge");
+    let review_route = format!("zoid://reviews/{}", review.id);
+    let notification = create_notification_command_with_connection(
+        &connection,
+        NotificationCommandCreateRequest {
+            notification_type: "review_required".to_string(),
+            title: "P2.30 review required".to_string(),
+            message: "Manual reviewer requested follow-up".to_string(),
+            severity: "warning".to_string(),
+            action_route: Some(review_route.clone()),
+            task_id: Some(task.id.clone()),
+            run_id: Some(run.id.clone()),
+            review_record_id: Some(review.id.clone()),
+            metadata_json: Some("{\"source\":\"p230_history\"}".to_string()),
+        },
+    )
+    .expect("create review-linked p230 notification through bridge");
+    assert_eq!(
+        notification.notification_type,
+        NotificationType::ReviewRequired
+    );
+    assert_eq!(notification.severity, NotificationSeverity::Warning);
+    assert_eq!(notification.state, NotificationState::Pending);
+    assert_eq!(
+        notification.action_route.as_deref(),
+        Some(review_route.as_str())
+    );
+    assert_eq!(notification.task_id.as_deref(), Some(task.id.as_str()));
+    assert_eq!(notification.run_id.as_deref(), Some(run.id.as_str()));
+    assert_eq!(
+        notification.review_record_id.as_deref(),
+        Some(review.id.as_str())
+    );
+
+    let delivered = update_notification_state_command_with_connection(
+        &connection,
+        notification.id.clone(),
+        NotificationCommandStateRequest {
+            state: "delivered".to_string(),
+        },
+    )
+    .expect("deliver p230 notification");
+    assert_eq!(delivered.state, NotificationState::Delivered);
+    let action_required = update_notification_state_command_with_connection(
+        &connection,
+        notification.id.clone(),
+        NotificationCommandStateRequest {
+            state: "action_required".to_string(),
+        },
+    )
+    .expect("require p230 notification action");
+    assert_eq!(action_required.state, NotificationState::ActionRequired);
+    let read = update_notification_state_command_with_connection(
+        &connection,
+        notification.id.clone(),
+        NotificationCommandStateRequest {
+            state: "read".to_string(),
+        },
+    )
+    .expect("read p230 notification");
+    assert_eq!(read.state, NotificationState::Read);
+    assert!(read.read_at.is_some());
+    let resolved = update_notification_state_command_with_connection(
+        &connection,
+        notification.id.clone(),
+        NotificationCommandStateRequest {
+            state: "resolved".to_string(),
+        },
+    )
+    .expect("resolve p230 notification");
+    assert_eq!(resolved.state, NotificationState::Resolved);
+    assert!(resolved.resolved_at.is_some());
+
+    let history = list_notification_history_command_with_connection(
+        &connection,
+        notification.id.clone(),
+        HistoryCommandListRequest {
+            limit: Some(50),
+            before: None,
+        },
+    )
+    .expect("p230 notification history through bridge");
+    for (action_type, state) in [
+        ("notification.created", "pending"),
+        ("notification.delivered", "delivered"),
+        ("notification.action_required", "action_required"),
+        ("notification.read", "read"),
+        ("notification.resolved", "resolved"),
+    ] {
+        let item = history
+            .iter()
+            .find(|item| item.event.action_type == action_type)
+            .unwrap_or_else(|| panic!("missing p230 notification event {action_type}"));
+        assert_eq!(item.event.workspace_key.as_deref(), Some("inbox"));
+        assert_eq!(item.event.outcome, "succeeded");
+        assert_eq!(item.event.source, "notification_repository");
+        assert!(item
+            .event
+            .metadata_json
+            .contains(&format!("\"state\":\"{state}\"")));
+        assert!(item.event.metadata_json.contains(&notification.id));
+        assert!(item.event.metadata_json.contains(&task.id));
+        assert!(item.event.metadata_json.contains(&run.id));
+        assert!(item.event.metadata_json.contains(&review.id));
+        for (entity_type, entity_id, relation_type) in [
+            ("notification", notification.id.as_str(), "primary"),
+            ("task", task.id.as_str(), "owner"),
+            ("agent_run", run.id.as_str(), "run"),
+            ("review_record", review.id.as_str(), "review"),
+        ] {
+            assert!(item.event.targets.iter().any(|target| {
+                target.entity_type == entity_type
+                    && target.entity_id == entity_id
+                    && target.relation_type == relation_type
+            }));
+            assert!(item.matched_entities.iter().any(|target| {
+                target.entity_type == entity_type
+                    && target.entity_id == entity_id
+                    && target.relation_type == relation_type
+            }));
+        }
+    }
+
+    let run_history = list_run_history_command_with_connection(
+        &connection,
+        run.id.clone(),
+        HistoryCommandListRequest {
+            limit: Some(50),
+            before: None,
+        },
+    )
+    .expect("p230 run history through bridge");
+    assert!(run_history
+        .iter()
+        .any(|item| item.event.action_type == "notification.resolved"
+            && item.matched_entities.iter().any(|target| {
+                target.entity_type == "notification" && target.entity_id == notification.id
+            })));
+    let entity_history = list_entity_history_command_with_connection(
+        &connection,
+        HistoryCommandEntityListRequest {
+            entity_type: "review_record".to_string(),
+            entity_id: review.id.clone(),
+            include_related: Some(true),
+            limit: Some(50),
+            before: None,
+        },
+    )
+    .expect("p230 review entity history through bridge");
+    assert!(entity_history.iter().any(|item| {
+        item.event.action_type == "notification.action_required"
+            && item.matched_entities.iter().any(|target| {
+                target.entity_type == "notification" && target.entity_id == notification.id
+            })
+    }));
+
+    for (source_type, source_id) in [
+        ("task", task.id.as_str()),
+        ("agent_run", run.id.as_str()),
+        ("review_record", review.id.as_str()),
+    ] {
+        let link_count = count_rows(
+            &connection,
+            &format!(
+                "select count(*) from entity_links where source_type = '{source_type}' and source_id = '{source_id}' and target_type = 'notification' and target_id = '{}' and relation_type = 'notifies'",
+                notification.id
+            ),
+        );
+        assert_eq!(link_count, 1, "{source_type} notification link");
+    }
+}
+
+#[test]
+fn p219_p230_review_notification_and_inbox_bridge_commands_preserve_services() {
     let connection = migrated_in_memory_connection();
     let task = p204_task(&connection, "P2.19 bridge review task");
     let profile = p204_profile(&connection, true);
@@ -6967,7 +7537,7 @@ fn p219_review_notification_and_inbox_bridge_commands_preserve_services() {
 }
 
 #[test]
-fn p219_history_bridge_commands_query_task_run_notification_and_entity_without_raw_logs() {
+fn p219_p230_history_bridge_commands_query_task_run_notification_and_entity_without_raw_logs() {
     let connection = migrated_in_memory_connection();
     let task = p204_task(&connection, "P2.19 bridge history task");
     let profile = p204_profile(&connection, true);

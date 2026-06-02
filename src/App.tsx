@@ -18,6 +18,14 @@ import {
 } from "./settingsStatus";
 import { buildTodayFoundationView, type TodayFoundationView, type TodayWidgetView } from "./todayFoundation";
 import {
+  buildTodayWidgetsView,
+  type TodayDataState,
+  type TodayNotificationRecord,
+  type TodayTaskRecord,
+  type TodayWidgetPanelView,
+  type TodayWidgetsView,
+} from "./todayWidgets";
+import {
   buildWorkspaceChromeView,
   buildWorkspaceRegistryView,
   type WorkspaceRegistryView,
@@ -317,6 +325,48 @@ function TodayWidgetCard({ widget }: TodayWidgetCardProps) {
   );
 }
 
+type TodayWidgetPanelProps = {
+  panel: TodayWidgetPanelView;
+};
+
+function TodayWidgetPanel({ panel }: TodayWidgetPanelProps) {
+  return (
+    <InfoCard className="today-widget-card today-data-widget-card">
+      <div className="card-header compact">
+        <div>
+          <p className="eyebrow">Today data</p>
+          <h3>{panel.title}</h3>
+        </div>
+        <StatusBadge tone={panel.tone}>{panel.status}</StatusBadge>
+      </div>
+      <p>{panel.copy}</p>
+      {panel.items.length > 0 ? (
+        <ul className="today-widget-list">
+          {panel.items.map((item) => (
+            <li key={item.id}>
+              <span className={`status-dot ${item.tone}`} aria-hidden="true" />
+              <div>
+                <strong>{item.title}</strong>
+                <small>{item.meta}</small>
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : panel.emptyCopy ? (
+        <EmptyState icon="∅">{panel.emptyCopy}</EmptyState>
+      ) : null}
+    </InfoCard>
+  );
+}
+
+const ACTIVE_RUNS_BRIDGE_GAP =
+  "No persisted run-list command is registered in the native bridge yet; Today cannot query active AgentRun rows truthfully.";
+
+function bridgeErrorReason(label: string, error: unknown) {
+  const detail = error instanceof Error ? error.message : typeof error === "string" ? error : "unknown native bridge error";
+  return `${label} bridge is unavailable (${detail}). No browser preview or fallback records are simulated.`;
+}
+
 type TodayWorkspaceOverviewProps = {
   activeWorkspaceDescription: string;
   activeWorkspaceLabel: string;
@@ -324,6 +374,7 @@ type TodayWorkspaceOverviewProps = {
   statusError: string | null;
   statusTone: StatusTone;
   todayView: TodayFoundationView;
+  todayWidgets: TodayWidgetsView;
   workspaceRegistry: WorkspaceRegistryView;
   workspaces: WorkspaceRecord[];
   activeWorkspaceId: string | undefined;
@@ -337,6 +388,7 @@ function TodayWorkspaceOverview({
   statusError,
   statusTone,
   todayView,
+  todayWidgets,
   workspaceRegistry,
   workspaces,
   activeWorkspaceId,
@@ -418,6 +470,11 @@ function TodayWorkspaceOverview({
         <TodayWidgetCard widget={todayView.widgets.inbox} />
         <TodayWidgetCard widget={todayView.widgets.integrations} />
 
+        <TodayWidgetPanel panel={todayWidgets.tasks} />
+        <TodayWidgetPanel panel={todayWidgets.activeRuns} />
+        <TodayWidgetPanel panel={todayWidgets.blockers} />
+        <TodayWidgetPanel panel={todayWidgets.completions} />
+
         <InfoCard className="today-widget-card">
           <p className="eyebrow">Integration states</p>
           <h3>Truthful setup</h3>
@@ -442,6 +499,8 @@ function App() {
   const [activeWorkspace, setActiveWorkspace] = useState("today");
   const [status, setStatus] = useState<FoundationStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const [todayTasks, setTodayTasks] = useState<TodayDataState<TodayTaskRecord>>({ state: "checking" });
+  const [todayInbox, setTodayInbox] = useState<TodayDataState<TodayNotificationRecord>>({ state: "checking" });
 
   useEffect(() => {
     invoke<FoundationStatus>("get_foundation_status")
@@ -449,6 +508,32 @@ function App() {
       .catch(() => {
         setStatusError("Native foundation status is available inside the packaged Tauri app. Browser preview is UI-only.");
       });
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    invoke<TodayTaskRecord[]>("list_tasks_command")
+      .then((records) => {
+        if (!cancelled) setTodayTasks({ state: "ready", records });
+      })
+      .catch((error) => {
+        if (!cancelled) setTodayTasks({ state: "unavailable", reason: bridgeErrorReason("Native task", error) });
+      });
+
+    invoke<TodayNotificationRecord[]>("list_inbox_notifications_command", {
+      request: { active_only: true, limit: 50 },
+    })
+      .then((records) => {
+        if (!cancelled) setTodayInbox({ state: "ready", records });
+      })
+      .catch((error) => {
+        if (!cancelled) setTodayInbox({ state: "unavailable", reason: bridgeErrorReason("Native inbox notification", error) });
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const workspaceRegistry = useMemo(() => buildWorkspaceRegistryView(status, statusError), [status, statusError]);
@@ -473,6 +558,15 @@ function App() {
       status,
     }),
     [status, workspaceRegistry.countLabel, workspaceRegistry.source, workspaceRegistry.sourceLabel],
+  );
+  const todayWidgets = useMemo(
+    () => buildTodayWidgetsView({
+      source: status ? "native" : statusError ? "preview" : "checking",
+      tasks: todayTasks,
+      inbox: todayInbox,
+      activeRuns: { state: "unavailable", reason: ACTIVE_RUNS_BRIDGE_GAP },
+    }),
+    [status, statusError, todayTasks, todayInbox],
   );
   const settingsStatusView = useMemo(
     () => buildSettingsStatusShellView({
@@ -543,6 +637,7 @@ function App() {
                 statusError={statusError}
                 statusTone={statusTone}
                 todayView={todayView}
+                todayWidgets={todayWidgets}
                 workspaceRegistry={workspaceRegistry}
                 workspaces={workspaces}
               />
