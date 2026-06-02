@@ -6241,6 +6241,137 @@ fn p207_run_history_excludes_sibling_run_events_on_same_task() {
 }
 
 #[test]
+fn p214_manual_review_service_creates_task_and_run_reviews_with_optional_placeholder_profile() {
+    let connection = migrated_in_memory_connection();
+    let task = create_task_service(
+        &connection,
+        TaskServiceCreateInput::new("Manual review target"),
+    )
+    .expect("create task through service");
+    let profile = upsert_agent_profile(
+        &connection,
+        AgentProfileInput {
+            id: "manual-reviewer".to_string(),
+            label: "Manual Reviewer".to_string(),
+            configured: false,
+            command: None,
+            config_json: "{}".to_string(),
+            capabilities_json: "{\"manual_review\":true}".to_string(),
+            credential_ref: None,
+            env_refs_json: "[]".to_string(),
+            metadata_json: "{\"placeholder\":true}".to_string(),
+        },
+    )
+    .expect("upsert manual reviewer placeholder");
+
+    let task_review = create_manual_review_service(
+        &connection,
+        ManualReviewServiceCreateInput {
+            task_id: task.id.clone(),
+            run_id: None,
+            reviewer_profile_id: None,
+            verdict: ReviewVerdict::Approved,
+            evidence_summary: " Manual reviewer verified task evidence ".to_string(),
+            required_fixes_json: "[]".to_string(),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect("create task review through service");
+    assert_eq!(task_review.subject_type, ReviewSubjectType::Task);
+    assert_eq!(task_review.subject_id, task.id);
+    assert_eq!(
+        task_review.reviewer_profile_id.as_deref(),
+        Some(profile.id.as_str())
+    );
+    assert_eq!(
+        task_review.evidence_summary,
+        "Manual reviewer verified task evidence"
+    );
+
+    let run = p205_run(&connection, &task);
+    let run_review = create_manual_review_service(
+        &connection,
+        ManualReviewServiceCreateInput {
+            task_id: task.id.clone(),
+            run_id: Some(run.id.clone()),
+            reviewer_profile_id: None,
+            verdict: ReviewVerdict::RequiredFixes,
+            evidence_summary: "Reviewer found missing proof".to_string(),
+            required_fixes_json: "[{\"fix\":\"attach final log reference\"}]".to_string(),
+            metadata_json: "{\"source\":\"manual_review_ui\"}".to_string(),
+        },
+    )
+    .expect("create run review through service");
+    assert_eq!(run_review.subject_type, ReviewSubjectType::AgentRun);
+    assert_eq!(run_review.subject_id, run.id);
+    assert_eq!(run_review.run_id.as_deref(), Some(run.id.as_str()));
+    assert_eq!(
+        run_review.reviewer_profile_id.as_deref(),
+        Some(profile.id.as_str())
+    );
+
+    let events = list_event_records(
+        &connection,
+        EventListFilter {
+            workspace_key: Some("agents"),
+            action_type: Some("review.required_fixes"),
+            outcome: Some("succeeded"),
+            source: Some("review_record_repository"),
+            limit: 10,
+        },
+    )
+    .expect("list review events");
+    assert!(events
+        .iter()
+        .any(|event| event.actor_id.as_deref() == Some(profile.id.as_str())));
+}
+
+#[test]
+fn p214_manual_review_service_allows_manual_reviews_without_placeholder_and_preserves_guards() {
+    let connection = migrated_in_memory_connection();
+    let task = create_task_service(
+        &connection,
+        TaskServiceCreateInput::new("No placeholder review"),
+    )
+    .expect("create task through service");
+    let review = create_manual_review_service(
+        &connection,
+        ManualReviewServiceCreateInput {
+            task_id: task.id.clone(),
+            run_id: None,
+            reviewer_profile_id: None,
+            verdict: ReviewVerdict::Approved,
+            evidence_summary: "No configured reviewer profile is available yet".to_string(),
+            required_fixes_json: "[]".to_string(),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect("create review without placeholder");
+    assert_eq!(review.reviewer_profile_id, None);
+
+    let missing_fixes = create_manual_review_service(
+        &connection,
+        ManualReviewServiceCreateInput {
+            task_id: task.id.clone(),
+            run_id: None,
+            reviewer_profile_id: None,
+            verdict: ReviewVerdict::RequiredFixes,
+            evidence_summary: "Needs fixes".to_string(),
+            required_fixes_json: "[]".to_string(),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect_err("service must preserve repository validation");
+    assert!(matches!(
+        missing_fixes,
+        RepositoryError::Constraint {
+            entity: "review_records",
+            ..
+        }
+    ));
+}
+
+#[test]
 fn p208_p215_task_and_notification_services_wrap_reviewed_repositories() {
     let connection = migrated_in_memory_connection();
     let created = create_task_service(

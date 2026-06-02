@@ -1,6 +1,7 @@
 mod agent_execution_service;
 mod history_service;
 mod notification_service;
+mod review_service;
 mod task_service;
 
 #[allow(unused_imports)]
@@ -9,6 +10,8 @@ pub(crate) use agent_execution_service::*;
 pub(crate) use history_service::*;
 #[allow(unused_imports)]
 pub(crate) use notification_service::*;
+#[allow(unused_imports)]
+pub(crate) use review_service::*;
 #[allow(unused_imports)]
 pub(crate) use task_service::*;
 
