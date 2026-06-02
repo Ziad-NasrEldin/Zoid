@@ -14,108 +14,16 @@ import {
   type IntegrationState,
   type SettingsStatusItem,
   type SettingsStatusShellView,
+  type WorkspaceRecord,
 } from "./settingsStatus";
 import { buildTodayFoundationView, type TodayFoundationView, type TodayWidgetView } from "./todayFoundation";
-
-type WorkspaceRecord = {
-  id: string;
-  label: string;
-  description: string;
-  position: number;
-};
-
-const fallbackWorkspaces: WorkspaceRecord[] = [
-  { id: "today", label: "Today", description: "Command center, attention, and current work.", position: 0 },
-  { id: "tasks", label: "Tasks", description: "First-class tasks, review states, and follow-ups.", position: 1 },
-  { id: "notes", label: "Notes", description: "Markdown notes with local metadata.", position: 2 },
-  { id: "agents", label: "Agents", description: "CLI profiles, sessions, runs, and reviews.", position: 3 },
-  { id: "code", label: "Code", description: "Repositories, Launch Gate, and git work.", position: 4 },
-  { id: "content", label: "Content", description: "Planning, review, and OmniSocials publishing state.", position: 5 },
-  { id: "automations", label: "Automations", description: "Visible recurring jobs and run history.", position: 6 },
-  { id: "business", label: "Business", description: "Contacts, companies, follow-ups, and linked work.", position: 7 },
-  { id: "products", label: "Products", description: "First-class product hubs and timelines.", position: 8 },
-  { id: "files", label: "Files", description: "Local file manager and Zoid-aware attachments.", position: 9 },
-  { id: "browser", label: "Browser", description: "Work webview/capture workspace.", position: 10 },
-  { id: "inbox", label: "Inbox", description: "Notifications, approvals, blockers, and Gmail state.", position: 11 },
-  { id: "calendar", label: "Calendar", description: "Built-in calendar with Apple Calendar integration gates.", position: 12 },
-  { id: "history", label: "History", description: "Universal timeline and linked event history.", position: 13 },
-];
-
-type WorkspaceRegistrySource = "native" | "fallback" | "checking";
-
-type WorkspaceRegistryView = {
-  countLabel: string;
-  source: WorkspaceRegistrySource;
-  sourceLabel: string;
-  truthCopy: string;
-  workspaces: WorkspaceRecord[];
-};
+import {
+  buildWorkspaceChromeView,
+  buildWorkspaceRegistryView,
+  type WorkspaceRegistryView,
+} from "./workspaceRegistry";
 
 const integrationStates: IntegrationState[] = defaultIntegrationStates;
-
-const workspaceGlyphs: Record<string, string> = {
-  agents: "A",
-  automations: "ƒ",
-  browser: "⌘",
-  business: "B",
-  calendar: "C",
-  code: "</>",
-  content: "P",
-  files: "F",
-  history: "H",
-  inbox: "I",
-  notes: "N",
-  products: "R",
-  tasks: "✓",
-  today: "•",
-};
-
-function formatWorkspaceCount(count: number) {
-  return `${count} workspace${count === 1 ? "" : "s"}`;
-}
-
-function sortWorkspaces(workspaces: WorkspaceRecord[]) {
-  return [...workspaces].sort((a, b) => a.position - b.position);
-}
-
-function buildWorkspaceRegistryView(status: FoundationStatus | null, statusError: string | null): WorkspaceRegistryView {
-  if (status) {
-    const workspaces = sortWorkspaces(status.workspaces);
-    const countLabel = formatWorkspaceCount(workspaces.length);
-
-    return {
-      countLabel,
-      source: "native",
-      sourceLabel: "Native registry",
-      truthCopy: `Rendering ${countLabel} returned by get_foundation_status. Browser preview fallback is not mixed into native data.`,
-      workspaces,
-    };
-  }
-
-  if (statusError) {
-    const workspaces = sortWorkspaces(fallbackWorkspaces);
-    const countLabel = formatWorkspaceCount(workspaces.length);
-
-    return {
-      countLabel,
-      source: "fallback",
-      sourceLabel: "Browser preview fallback",
-      truthCopy: `Showing ${countLabel} from static browser preview data because native status is unavailable outside Tauri.`,
-      workspaces,
-    };
-  }
-
-  const workspaces = sortWorkspaces(fallbackWorkspaces);
-  const countLabel = formatWorkspaceCount(workspaces.length);
-
-  return {
-    countLabel,
-    source: "checking",
-    sourceLabel: "Checking native registry",
-    truthCopy: `Temporarily showing ${countLabel} from browser preview data while get_foundation_status is loading.`,
-    workspaces,
-  };
-}
 
 type StatusTone = "ready" | "blocked" | "pending";
 
@@ -545,17 +453,17 @@ function App() {
 
   const workspaceRegistry = useMemo(() => buildWorkspaceRegistryView(status, statusError), [status, statusError]);
   const workspaces = workspaceRegistry.workspaces;
-
-  const active = useMemo(
-    () => workspaces.find((workspace) => workspace.id === activeWorkspace) ?? workspaces[0] ?? null,
-    [activeWorkspace, workspaces],
+  const workspaceChrome = useMemo(
+    () => buildWorkspaceChromeView(workspaceRegistry, activeWorkspace),
+    [activeWorkspace, workspaceRegistry],
   );
+  const active = workspaceChrome.activeWorkspace;
 
   const nativeState = statusError ? "Preview" : status ? "Native ready" : "Checking";
   const statusTone = statusError ? "blocked" : status ? "ready" : "pending";
   const workspaceSourceLabel = workspaceRegistry.sourceLabel;
-  const activeWorkspaceLabel = active?.label ?? "No workspaces registered";
-  const activeWorkspaceDescription = active?.description ?? "The native workspace registry is empty.";
+  const activeWorkspaceLabel = workspaceChrome.activeWorkspaceLabel;
+  const activeWorkspaceDescription = workspaceChrome.activeWorkspaceDescription;
   const starterDirectoryCount = status?.visible_user.starter_directories.length ?? 0;
   const todayView = useMemo(
     () => buildTodayFoundationView({
@@ -603,12 +511,12 @@ function App() {
           {workspaces.length > 0 ? workspaces.map((workspace) => (
             <SidebarItem
               active={workspace.id === active?.id}
-              glyph={workspaceGlyphs[workspace.id] ?? workspace.label.slice(0, 1)}
+              glyph={workspaceChrome.glyphs[workspace.id]}
               key={workspace.id}
               onSelect={() => setActiveWorkspace(workspace.id)}
               workspace={workspace}
             />
-          )) : <p className="muted-copy">No native workspaces registered.</p>}
+          )) : <p className="muted-copy">{workspaceChrome.sidebarEmptyCopy}</p>}
         </nav>
 
         <div className="sidebar-footer">
@@ -699,7 +607,7 @@ function App() {
                     >
                       {workspace.label}
                     </button>
-                  )) : <p className="muted-copy">The native registry returned no workspaces.</p>}
+                  )) : <p className="muted-copy">{workspaceChrome.registryEmptyCopy}</p>}
                 </div>
               </InfoCard>
 
