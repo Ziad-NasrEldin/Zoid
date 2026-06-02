@@ -3071,7 +3071,7 @@ fn integration_status_service_rejects_secret_config_invalid_json_and_raw_credent
 
 #[test]
 fn tauri_bridge_command_surface_lists_registered_p116_commands() {
-    assert_eq!(TAURI_BRIDGE_COMMAND_NAMES.len(), 12);
+    assert_eq!(TAURI_BRIDGE_COMMAND_NAMES.len(), 19);
     for command_name in [
         "get_foundation_status",
         "get_workspace_registry",
@@ -3085,6 +3085,13 @@ fn tauri_bridge_command_surface_lists_registered_p116_commands() {
         "read_event",
         "list_events",
         "preview_action_policy",
+        "create_task_command",
+        "read_task_command",
+        "list_tasks_command",
+        "update_task_command",
+        "update_task_status_command",
+        "archive_task_command",
+        "delete_task_command",
     ] {
         assert!(
             TAURI_BRIDGE_COMMAND_NAMES.contains(&command_name),
@@ -6238,6 +6245,137 @@ fn p207_run_history_excludes_sibling_run_events_on_same_task() {
                 || target.entity_id == notification_b.id
         })
     }));
+}
+
+#[test]
+fn p217_task_bridge_commands_create_read_list_update_archive_delete_and_write_events() {
+    let connection = migrated_in_memory_connection();
+
+    let created = create_task_command_with_connection(
+        &connection,
+        TaskCommandCreateRequest {
+            title: " Bridge task ".to_string(),
+            detail: Some(" Bridge detail ".to_string()),
+            priority: Some("urgent".to_string()),
+            workspace_key: Some("today".to_string()),
+            metadata_json: Some("{\"source\":\"tauri_bridge\"}".to_string()),
+        },
+    )
+    .expect("create task via bridge helper");
+    assert_eq!(created.title, "Bridge task");
+    assert_eq!(created.detail.as_deref(), Some("Bridge detail"));
+    assert_eq!(created.priority, TaskPriority::Urgent);
+
+    let listed =
+        list_tasks_command_with_connection(&connection).expect("list tasks via bridge helper");
+    assert!(listed.iter().any(|task| task.id == created.id));
+
+    let updated = update_task_command_with_connection(
+        &connection,
+        created.id.clone(),
+        TaskCommandUpdateRequest {
+            title: Some("Updated bridge task".to_string()),
+            detail: Some("Updated bridge detail".to_string()),
+            priority: Some("high".to_string()),
+            workspace_key: None,
+            metadata_json: Some("{\"source\":\"bridge_update\"}".to_string()),
+        },
+    )
+    .expect("update task via bridge helper");
+    assert_eq!(updated.title, "Updated bridge task");
+    assert_eq!(updated.priority, TaskPriority::High);
+
+    let active = update_task_status_command_with_connection(
+        &connection,
+        created.id.clone(),
+        TaskCommandStatusRequest {
+            status: "active".to_string(),
+        },
+    )
+    .expect("update status via bridge helper");
+    assert_eq!(active.status, TaskStatus::Active);
+
+    let detail = read_task_command_with_connection(&connection, created.id.clone())
+        .expect("read task via bridge helper");
+    assert_eq!(detail.id, created.id);
+
+    let events = list_task_history(&connection, &created.id, 20, None).expect("task history");
+    assert!(events
+        .iter()
+        .any(|item| item.event.action_type == "task.created"));
+    assert!(events
+        .iter()
+        .any(|item| item.event.action_type == "task.updated"));
+    assert!(events
+        .iter()
+        .any(|item| item.event.action_type == "task.status_changed"));
+
+    let archived = archive_task_command_with_connection(&connection, created.id.clone())
+        .expect("archive task via bridge helper");
+    assert_eq!(archived.status, TaskStatus::Archived);
+    let active_after_archive = list_tasks_command_with_connection(&connection)
+        .expect("list after archive via bridge helper");
+    assert!(active_after_archive
+        .iter()
+        .all(|task| task.id != created.id));
+
+    let deleted = delete_task_command_with_connection(&connection, created.id.clone())
+        .expect("delete task via bridge helper");
+    assert_eq!(deleted.status, TaskStatus::Deleted);
+}
+
+#[test]
+fn p217_task_bridge_commands_preserve_validation_and_secret_guards() {
+    let connection = migrated_in_memory_connection();
+
+    let invalid_priority = create_task_command_with_connection(
+        &connection,
+        TaskCommandCreateRequest {
+            title: "Bad priority".to_string(),
+            detail: None,
+            priority: Some("critical".to_string()),
+            workspace_key: None,
+            metadata_json: None,
+        },
+    )
+    .expect_err("invalid priority must fail before persistence");
+    assert!(invalid_priority.contains("invalid task priority"));
+    assert_eq!(count_rows(&connection, "select count(*) from tasks"), 0);
+
+    let secret_metadata = create_task_command_with_connection(
+        &connection,
+        TaskCommandCreateRequest {
+            title: "Secret task".to_string(),
+            detail: None,
+            priority: None,
+            workspace_key: None,
+            metadata_json: Some("{\"api_key\":\"super-secret\"}".to_string()),
+        },
+    )
+    .expect_err("secret metadata must be rejected");
+    assert!(secret_metadata.contains("secret-like key"));
+    assert_eq!(count_rows(&connection, "select count(*) from tasks"), 0);
+
+    let task = create_task_command_with_connection(
+        &connection,
+        TaskCommandCreateRequest {
+            title: "Valid task".to_string(),
+            detail: None,
+            priority: None,
+            workspace_key: None,
+            metadata_json: None,
+        },
+    )
+    .expect("create valid task");
+    let invalid_status = update_task_status_command_with_connection(
+        &connection,
+        task.id,
+        TaskCommandStatusRequest {
+            status: "doneish".to_string(),
+        },
+    )
+    .expect_err("invalid status must fail");
+    assert!(invalid_status.contains("invalid task status"));
 }
 
 #[test]

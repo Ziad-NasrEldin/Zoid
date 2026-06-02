@@ -1671,7 +1671,37 @@ const TAURI_BRIDGE_COMMAND_NAMES: &[&str] = &[
     "read_event",
     "list_events",
     "preview_action_policy",
+    "create_task_command",
+    "read_task_command",
+    "list_tasks_command",
+    "update_task_command",
+    "update_task_status_command",
+    "archive_task_command",
+    "delete_task_command",
 ];
+
+#[derive(Debug, Clone, Deserialize)]
+struct TaskCommandCreateRequest {
+    title: String,
+    detail: Option<String>,
+    priority: Option<String>,
+    workspace_key: Option<String>,
+    metadata_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TaskCommandUpdateRequest {
+    title: Option<String>,
+    detail: Option<String>,
+    priority: Option<String>,
+    workspace_key: Option<String>,
+    metadata_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TaskCommandStatusRequest {
+    status: String,
+}
 
 #[derive(Debug, Clone, Deserialize)]
 struct LocalPreferenceRequest {
@@ -1730,6 +1760,54 @@ struct PolicyPreviewRequest {
     consequence: Option<String>,
     bulk: Option<bool>,
     destructive: Option<bool>,
+}
+
+#[tauri::command]
+fn create_task_command(request: TaskCommandCreateRequest) -> Result<TaskRecord, String> {
+    let connection = open_ready_connection()?;
+    create_task_command_with_connection(&connection, request)
+}
+
+#[tauri::command]
+fn read_task_command(task_id: String) -> Result<TaskRecord, String> {
+    let connection = open_ready_connection()?;
+    read_task_command_with_connection(&connection, task_id)
+}
+
+#[tauri::command]
+fn list_tasks_command() -> Result<Vec<TaskRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_tasks_command_with_connection(&connection)
+}
+
+#[tauri::command]
+fn update_task_command(
+    task_id: String,
+    request: TaskCommandUpdateRequest,
+) -> Result<TaskRecord, String> {
+    let connection = open_ready_connection()?;
+    update_task_command_with_connection(&connection, task_id, request)
+}
+
+#[tauri::command]
+fn update_task_status_command(
+    task_id: String,
+    request: TaskCommandStatusRequest,
+) -> Result<TaskRecord, String> {
+    let connection = open_ready_connection()?;
+    update_task_status_command_with_connection(&connection, task_id, request)
+}
+
+#[tauri::command]
+fn archive_task_command(task_id: String) -> Result<TaskRecord, String> {
+    let connection = open_ready_connection()?;
+    archive_task_command_with_connection(&connection, task_id)
+}
+
+#[tauri::command]
+fn delete_task_command(task_id: String) -> Result<TaskRecord, String> {
+    let connection = open_ready_connection()?;
+    delete_task_command_with_connection(&connection, task_id)
 }
 
 #[tauri::command]
@@ -1829,6 +1907,90 @@ fn open_ready_connection() -> Result<Connection, String> {
     let database_path =
         AppSupportPaths::for_home(&home_dir().map_err(|error| error.to_string())?).database_path;
     open_foundation_database(&database_path).map_err(|error| error.to_string())
+}
+
+fn task_command_priority(value: Option<String>) -> Result<Option<TaskPriority>, String> {
+    value
+        .as_deref()
+        .map(TaskPriority::from_str)
+        .transpose()
+        .map_err(repository_error_message)
+}
+
+fn task_command_status(value: &str) -> Result<TaskStatus, String> {
+    TaskStatus::from_str(value).map_err(repository_error_message)
+}
+
+fn create_task_command_with_connection(
+    connection: &Connection,
+    request: TaskCommandCreateRequest,
+) -> Result<TaskRecord, String> {
+    let priority = task_command_priority(request.priority)?;
+    create_task_service(
+        connection,
+        TaskServiceCreateInput {
+            title: request.title,
+            detail: request.detail,
+            priority,
+            workspace_key: request.workspace_key,
+            metadata_json: request.metadata_json.unwrap_or_else(|| "{}".to_string()),
+        },
+    )
+    .map_err(repository_error_message)
+}
+
+fn read_task_command_with_connection(
+    connection: &Connection,
+    task_id: String,
+) -> Result<TaskRecord, String> {
+    read_task_service(connection, &task_id).map_err(repository_error_message)
+}
+
+fn list_tasks_command_with_connection(connection: &Connection) -> Result<Vec<TaskRecord>, String> {
+    list_task_service(connection).map_err(repository_error_message)
+}
+
+fn update_task_command_with_connection(
+    connection: &Connection,
+    task_id: String,
+    request: TaskCommandUpdateRequest,
+) -> Result<TaskRecord, String> {
+    let priority = task_command_priority(request.priority)?;
+    update_task_service(
+        connection,
+        &task_id,
+        TaskServiceUpdateInput {
+            title: request.title,
+            detail: request.detail,
+            priority,
+            workspace_key: request.workspace_key,
+            metadata_json: request.metadata_json,
+        },
+    )
+    .map_err(repository_error_message)
+}
+
+fn update_task_status_command_with_connection(
+    connection: &Connection,
+    task_id: String,
+    request: TaskCommandStatusRequest,
+) -> Result<TaskRecord, String> {
+    update_task_service_status(connection, &task_id, task_command_status(&request.status)?)
+        .map_err(repository_error_message)
+}
+
+fn archive_task_command_with_connection(
+    connection: &Connection,
+    task_id: String,
+) -> Result<TaskRecord, String> {
+    archive_task_service(connection, &task_id).map_err(repository_error_message)
+}
+
+fn delete_task_command_with_connection(
+    connection: &Connection,
+    task_id: String,
+) -> Result<TaskRecord, String> {
+    delete_task_service(connection, &task_id).map_err(repository_error_message)
 }
 
 fn get_workspace_registry_with_connection(
@@ -6678,7 +6840,14 @@ pub fn run() {
             create_event,
             read_event,
             list_events,
-            preview_action_policy
+            preview_action_policy,
+            create_task_command,
+            read_task_command,
+            list_tasks_command,
+            update_task_command,
+            update_task_status_command,
+            archive_task_command,
+            delete_task_command
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
