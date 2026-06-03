@@ -2038,6 +2038,19 @@ struct NoteScanResult {
 }
 
 #[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct NoteConflictRecord {
+    id: String,
+    title: String,
+    relative_path: String,
+    conflict_state: String,
+    detected_relative_path: Option<String>,
+    stored_digest: String,
+    disk_digest: String,
+    metadata_json: String,
+}
+
+#[allow(dead_code)]
 fn scan_markdown_notes_service(
     connection: &Connection,
     visible_root: &Path,
@@ -2075,7 +2088,35 @@ fn scan_markdown_notes_service(
 
         if let Some(existing_path) = existing_active_note_path(connection, &note_id)? {
             if existing_path != relative_path {
-                mark_duplicate_note_id(connection, &note_id)?;
+                let existing_note_path = resolve_note_service_path(visible_root, &existing_path)?;
+                if existing_note_path.exists() {
+                    mark_duplicate_note_id(connection, &note_id)?;
+                } else {
+                    mark_note_conflict(
+                        connection,
+                        &note_id,
+                        NoteConflictState::ManualRename,
+                        Some(&relative_path),
+                        None,
+                        Some(&identity.body_digest),
+                    )?;
+                }
+                result.conflicted_notes += 1;
+                seen_note_ids.insert(note_id);
+                continue;
+            }
+            let stored_digest = read_note_row(connection, &note_id)?
+                .body_digest
+                .unwrap_or_default();
+            if !stored_digest.is_empty() && stored_digest != identity.body_digest {
+                mark_note_conflict(
+                    connection,
+                    &note_id,
+                    NoteConflictState::ExternalEdit,
+                    Some(&relative_path),
+                    Some(&stored_digest),
+                    Some(&identity.body_digest),
+                )?;
                 result.conflicted_notes += 1;
                 seen_note_ids.insert(note_id);
                 continue;
@@ -2152,6 +2193,218 @@ fn write_note_frontmatter_atomically(note_path: &Path, rendered: &str) -> RepoRe
         let _ = fs::remove_file(&temp_path);
         io_repository_error("notes", error)
     })?;
+    Ok(())
+}
+
+fn mark_note_conflict(
+    connection: &Connection,
+    note_id: &str,
+    conflict_state: NoteConflictState,
+    detected_relative_path: Option<&str>,
+    stored_digest: Option<&str>,
+    disk_digest: Option<&str>,
+) -> RepoResult<()> {
+    let row = read_note_row(connection, note_id)?;
+    let mut metadata = parse_note_metadata_object(&row.metadata_json)?;
+    let mut conflict = serde_json::json!({
+        "conflict_state": conflict_state.as_str(),
+    });
+    if let Some(path) = detected_relative_path {
+        validate_note_service_relative_path(path)?;
+        conflict["detected_relative_path"] = Value::String(path.to_string());
+    }
+    if let Some(digest) = stored_digest {
+        conflict["stored_digest"] = Value::String(digest.to_string());
+    }
+    if let Some(digest) = disk_digest {
+        conflict["disk_digest"] = Value::String(digest.to_string());
+    }
+    metadata["_zoid_conflict"] = conflict;
+    let metadata_json = metadata.to_string();
+    validate_no_secret_json("metadata_json", &metadata_json)?;
+    connection
+        .execute(
+            "update notes set status = 'conflicted', conflict_state = ?2, metadata_json = ?3, updated_at = current_timestamp where id = ?1",
+            params![note_id, conflict_state.as_str(), metadata_json],
+        )
+        .map_err(|error| map_repository_error("notes", error))?;
+    mark_note_index_lifecycle(connection, note_id, "missing", conflict_state.as_str())?;
+    Ok(())
+}
+
+fn parse_note_metadata_object(metadata_json: &str) -> RepoResult<Value> {
+    let metadata = serde_json::from_str::<Value>(metadata_json).map_err(|error| {
+        RepositoryError::InvalidJson {
+            field: "metadata_json",
+            message: error.to_string(),
+        }
+    })?;
+    if metadata.is_object() {
+        Ok(metadata)
+    } else {
+        Ok(serde_json::json!({}))
+    }
+}
+
+fn clear_note_conflict_metadata(metadata_json: &str) -> RepoResult<String> {
+    let mut metadata = parse_note_metadata_object(metadata_json)?;
+    if let Some(object) = metadata.as_object_mut() {
+        object.remove("_zoid_conflict");
+    }
+    let rendered = metadata.to_string();
+    validate_no_secret_json("metadata_json", &rendered)?;
+    Ok(rendered)
+}
+
+fn note_conflict_metadata_view(metadata_json: &str) -> Value {
+    let metadata =
+        serde_json::from_str::<Value>(metadata_json).unwrap_or_else(|_| serde_json::json!({}));
+    metadata.get("_zoid_conflict").cloned().unwrap_or(metadata)
+}
+
+#[allow(dead_code)]
+fn list_note_conflicts_service(connection: &Connection) -> RepoResult<Vec<NoteConflictRecord>> {
+    let mut statement = connection
+        .prepare(
+            "select id, title, relative_path, conflict_state, body_digest, metadata_json
+             from notes
+             where deleted_at is null and (status = 'conflicted' or conflict_state != 'none')
+             order by updated_at desc, id asc",
+        )
+        .map_err(|error| map_repository_error("notes", error))?;
+    let rows = statement
+        .query_map([], |row| {
+            let metadata_json: String = row.get(5)?;
+            let metadata = note_conflict_metadata_view(&metadata_json);
+            let detected_relative_path = metadata
+                .get("detected_relative_path")
+                .and_then(Value::as_str)
+                .map(|value| value.to_string());
+            let stored_digest = metadata
+                .get("stored_digest")
+                .and_then(Value::as_str)
+                .map(|value| value.to_string())
+                .or_else(|| row.get::<_, Option<String>>(4).ok().flatten())
+                .unwrap_or_default();
+            let disk_digest = metadata
+                .get("disk_digest")
+                .and_then(Value::as_str)
+                .map(|value| value.to_string())
+                .unwrap_or_default();
+            Ok(NoteConflictRecord {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                relative_path: row.get(2)?,
+                conflict_state: row.get(3)?,
+                detected_relative_path,
+                stored_digest,
+                disk_digest,
+                metadata_json,
+            })
+        })
+        .map_err(|error| map_repository_error("notes", error))?;
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row.map_err(|error| map_repository_error("notes", error))?);
+    }
+    Ok(records)
+}
+
+#[allow(dead_code)]
+fn accept_note_conflict_service(
+    connection: &Connection,
+    visible_root: &Path,
+    note_id: &str,
+) -> RepoResult<NoteServiceRecord> {
+    let row = read_note_row(connection, note_id)?;
+    if row.status != "conflicted" {
+        return Err(RepositoryError::Constraint {
+            entity: "notes",
+            message: format!("note {note_id} has no conflict to accept"),
+        });
+    }
+    if row.conflict_state == NoteConflictState::DuplicateId.as_str() {
+        return Err(RepositoryError::Constraint {
+            entity: "notes",
+            message: format!("duplicate_id conflict for {note_id} requires manual file edit"),
+        });
+    }
+    let conflict_metadata = note_conflict_metadata_view(&row.metadata_json);
+    let relative_path = conflict_metadata
+        .get("detected_relative_path")
+        .and_then(Value::as_str)
+        .unwrap_or(&row.relative_path)
+        .to_string();
+    let preserved_metadata_json = clear_note_conflict_metadata(&row.metadata_json)?;
+    validate_note_service_relative_path(&relative_path)?;
+    let note_path = resolve_note_service_path(visible_root, &relative_path)?;
+    let markdown =
+        fs::read_to_string(&note_path).map_err(|error| io_repository_error("notes", error))?;
+    let identity = derive_note_identity_from_markdown(&relative_path, &markdown)?;
+    if identity.id != note_id {
+        return Err(RepositoryError::Constraint {
+            entity: "notes",
+            message: format!(
+                "conflict accept id mismatch: expected {note_id}, found {}",
+                identity.id
+            ),
+        });
+    }
+    persist_note_identity_metadata_allow_path_update(connection, &identity)?;
+    connection
+        .execute(
+            "update notes set status = 'active', conflict_state = 'none', metadata_json = ?2, deleted_at = null, updated_at = current_timestamp where id = ?1",
+            params![note_id, preserved_metadata_json],
+        )
+        .map_err(|error| map_repository_error("notes", error))?;
+    create_note_service_event(
+        connection,
+        "note.conflict.accepted",
+        note_id,
+        &identity.title,
+    )?;
+    read_note_service(connection, visible_root, note_id)
+}
+
+fn persist_note_identity_metadata_allow_path_update(
+    connection: &Connection,
+    identity: &NoteIdentityMetadata,
+) -> RepoResult<()> {
+    validate_note_id(&identity.id)?;
+    validate_note_title(&identity.title)?;
+    validate_note_slug(&identity.slug)?;
+    validate_note_relative_path(&identity.relative_path)?;
+    validate_json_field("frontmatter_json", &identity.frontmatter_json)?;
+    connection
+        .execute(
+            "update notes set title = ?2, slug = ?3, relative_path = ?4, status = 'active', conflict_state = 'none', frontmatter_json = ?5, body_digest = ?6, updated_at = current_timestamp, deleted_at = null where id = ?1",
+            params![identity.id, identity.title, identity.slug, identity.relative_path, identity.frontmatter_json, identity.body_digest],
+        )
+        .map_err(|error| map_repository_error("notes", error))?;
+    let index_id = format!("knowledge_note_frontmatter_{}", identity.id);
+    connection
+        .execute(
+            "insert into knowledge_index_entries (id, entity_type, entity_id, source_type, title, excerpt, search_text, content_digest, scan_state, metadata_json)
+             values (?1, 'note', ?2, 'markdown_frontmatter', ?3, ?4, ?5, ?6, 'current', ?7)
+             on conflict(entity_type, entity_id, source_type) do update set
+                title = excluded.title,
+                excerpt = excluded.excerpt,
+                search_text = excluded.search_text,
+                content_digest = excluded.content_digest,
+                scan_state = 'current',
+                indexed_at = current_timestamp,
+                metadata_json = excluded.metadata_json",
+            params![
+                index_id,
+                identity.id,
+                identity.title,
+                identity.slug,
+                format!("{} {} {}", identity.title, identity.slug, identity.relative_path),
+                identity.body_digest,
+                identity.frontmatter_json
+            ],
+        )
+        .map_err(|error| map_repository_error("knowledge_index_entries", error))?;
     Ok(())
 }
 

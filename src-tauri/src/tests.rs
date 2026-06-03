@@ -4032,6 +4032,161 @@ fn assert_index_exists(connection: &Connection, table: &str, expected_index: &st
 }
 
 #[test]
+fn p306_note_scanner_detects_manual_rename_without_mutating_original_identity() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p306-manual-rename");
+    fs::create_dir_all(visible_root.join("Notes/archive")).expect("create notes");
+    let created = create_markdown_note_service(
+        &connection,
+        &visible_root,
+        NoteCreateInput {
+            title: "Rename Me".to_string(),
+            body_markdown: "Keep identity".to_string(),
+            relative_path: Some("Notes/rename-me.md".to_string()),
+            metadata_json: r#"{"tag":"client","keep":true}"#.to_string(),
+        },
+    )
+    .expect("create note");
+    fs::rename(
+        visible_root.join("Notes/rename-me.md"),
+        visible_root.join("Notes/archive/renamed.md"),
+    )
+    .expect("external rename");
+
+    let scan = scan_markdown_notes_service(&connection, &visible_root).expect("scan rename");
+    assert_eq!(scan.conflicted_notes, 1);
+    let conflict = list_note_conflicts_service(&connection)
+        .expect("list conflicts")
+        .into_iter()
+        .find(|record| record.id == created.id)
+        .expect("manual rename conflict record");
+    assert_eq!(conflict.conflict_state, "manual_rename");
+    assert_eq!(conflict.relative_path, "Notes/rename-me.md");
+    assert_eq!(
+        conflict.detected_relative_path.as_deref(),
+        Some("Notes/archive/renamed.md")
+    );
+
+    let row_path: String = connection
+        .query_row(
+            "select relative_path from notes where id = ?1",
+            params![created.id],
+            |row| row.get(0),
+        )
+        .expect("read original path");
+    assert_eq!(row_path, "Notes/rename-me.md");
+
+    let accepted = accept_note_conflict_service(&connection, &visible_root, &created.id)
+        .expect("accept manual rename");
+    assert_eq!(accepted.status, "active");
+    assert_eq!(accepted.conflict_state, "none");
+    assert_eq!(accepted.relative_path, "Notes/archive/renamed.md");
+    assert!(visible_root.join("Notes/archive/renamed.md").exists());
+    assert!(accepted.metadata_json.contains("\"tag\":\"client\""));
+    assert!(accepted.metadata_json.contains("\"keep\":true"));
+    assert!(!accepted.metadata_json.contains("detected_relative_path"));
+}
+
+#[test]
+fn p306_note_scanner_detects_external_edit_and_accepts_without_losing_file_content() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p306-external-edit");
+    fs::create_dir_all(visible_root.join("Notes")).expect("create notes");
+    let created = create_markdown_note_service(
+        &connection,
+        &visible_root,
+        NoteCreateInput {
+            title: "External Edit".to_string(),
+            body_markdown: "Original body".to_string(),
+            relative_path: Some("Notes/external-edit.md".to_string()),
+            metadata_json: r#"{"origin":"manual","keep":true}"#.to_string(),
+        },
+    )
+    .expect("create note");
+    let edited_markdown = created
+        .markdown
+        .replace("Original body", "Externally edited body");
+    fs::write(
+        visible_root.join("Notes/external-edit.md"),
+        &edited_markdown,
+    )
+    .expect("external edit");
+
+    let scan = scan_markdown_notes_service(&connection, &visible_root).expect("scan external edit");
+    assert_eq!(scan.conflicted_notes, 1);
+    let conflict = list_note_conflicts_service(&connection)
+        .expect("list conflicts")
+        .into_iter()
+        .find(|record| record.id == created.id)
+        .expect("external edit conflict record");
+    assert_eq!(conflict.conflict_state, "external_edit");
+    assert_eq!(conflict.relative_path, "Notes/external-edit.md");
+    assert_ne!(conflict.disk_digest, conflict.stored_digest);
+
+    let stored_digest_before: String = connection
+        .query_row(
+            "select body_digest from notes where id = ?1",
+            params![created.id],
+            |row| row.get(0),
+        )
+        .expect("read stored digest before accept");
+    assert_eq!(stored_digest_before, created.body_digest);
+
+    let accepted = accept_note_conflict_service(&connection, &visible_root, &created.id)
+        .expect("accept external edit");
+    assert_eq!(accepted.status, "active");
+    assert_eq!(accepted.conflict_state, "none");
+    assert!(accepted.markdown.contains("Externally edited body"));
+    assert_ne!(accepted.body_digest, created.body_digest);
+    assert!(accepted.metadata_json.contains("\"origin\":\"manual\""));
+    assert!(accepted.metadata_json.contains("\"keep\":true"));
+    assert!(!accepted.metadata_json.contains("stored_digest"));
+    assert!(!accepted.metadata_json.contains("disk_digest"));
+}
+
+#[test]
+fn p306_duplicate_id_acceptance_is_rejected_without_mutating_files_or_metadata() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p306-duplicate-reject");
+    fs::create_dir_all(visible_root.join("Notes")).expect("create notes");
+    let first_markdown = "---\nzoid_id: \"note_duplicate_p306\"\ntitle: \"Original\"\nslug: \"original\"\n---\n\n# Original\n\nOne";
+    let duplicate_markdown = "---\nzoid_id: \"note_duplicate_p306\"\ntitle: \"Duplicate\"\nslug: \"duplicate\"\n---\n\n# Duplicate\n\nTwo";
+    fs::write(visible_root.join("Notes/a-original.md"), first_markdown).expect("write original");
+    fs::write(
+        visible_root.join("Notes/z-duplicate.md"),
+        duplicate_markdown,
+    )
+    .expect("write duplicate");
+
+    let scan = scan_markdown_notes_service(&connection, &visible_root).expect("scan duplicate");
+    assert_eq!(scan.conflicted_notes, 1);
+    let before_metadata: String = connection
+        .query_row(
+            "select metadata_json from notes where id = 'note_duplicate_p306'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read metadata before reject");
+
+    let error = accept_note_conflict_service(&connection, &visible_root, "note_duplicate_p306")
+        .expect_err("duplicate accept should be rejected");
+    assert!(format!("{error:?}").contains("duplicate_id"));
+    let after: (String, String) = connection
+        .query_row(
+            "select conflict_state, metadata_json from notes where id = 'note_duplicate_p306'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read duplicate after reject");
+    assert_eq!(after.0, "duplicate_id");
+    assert_eq!(after.1, before_metadata);
+    assert_eq!(
+        fs::read_to_string(visible_root.join("Notes/z-duplicate.md")).expect("read duplicate file"),
+        duplicate_markdown
+    );
+}
+
+#[test]
 fn p305_note_scanner_writes_missing_frontmatter_indexes_and_marks_missing_files() {
     let connection = migrated_in_memory_connection();
     let visible_root = temp_home("p305-note-scanner-indexes");
