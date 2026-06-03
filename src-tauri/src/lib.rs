@@ -3707,7 +3707,8 @@ fn read_note_service(
 ) -> RepoResult<NoteServiceRecord> {
     let row = read_note_row(connection, note_id)?;
     let note_path = resolve_note_service_path(visible_root, &row.relative_path)?;
-    let markdown = fs::read_to_string(note_path).unwrap_or_default();
+    let markdown =
+        fs::read_to_string(note_path).map_err(|error| io_repository_error("notes", error))?;
     Ok(NoteServiceRecord {
         id: row.id,
         title: row.title,
@@ -4025,6 +4026,19 @@ const TAURI_BRIDGE_COMMAND_NAMES: &[&str] = &[
     "list_run_history_command",
     "list_notification_history_command",
     "list_entity_history_command",
+    "create_markdown_note_command",
+    "read_note_command",
+    "list_notes_command",
+    "edit_markdown_note_command",
+    "trash_markdown_note_command",
+    "delete_markdown_note_command",
+    "scan_markdown_notes_command",
+    "list_note_conflicts_command",
+    "accept_note_conflict_command",
+    "browse_files_command",
+    "open_file_reference_command",
+    "preview_file_command",
+    "perform_file_action_command",
 ];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -4199,6 +4213,47 @@ struct EventListRequest {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+struct NoteCommandCreateRequest {
+    title: String,
+    body_markdown: String,
+    relative_path: Option<String>,
+    metadata_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct NoteCommandEditRequest {
+    markdown: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct NoteCommandListRequest {
+    status: Option<String>,
+    include_markdown: Option<bool>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct FileBrowseCommandRequest {
+    root_key: String,
+    relative_path: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct FileReferenceCommandRequest {
+    root_key: String,
+    relative_path: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct FileActionCommandRequest {
+    action: String,
+    root_key: String,
+    source_relative_path: String,
+    destination_relative_path: Option<String>,
+    confirmation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct PolicyPreviewRequest {
     category: Option<String>,
     action_type: Option<String>,
@@ -4369,6 +4424,93 @@ fn list_entity_history_command(
 }
 
 #[tauri::command]
+fn create_markdown_note_command(
+    request: NoteCommandCreateRequest,
+) -> Result<NoteServiceRecord, String> {
+    let (connection, visible_root) = open_ready_connection_and_visible_root()?;
+    create_markdown_note_command_with_connection(&connection, &visible_root, request)
+}
+
+#[tauri::command]
+fn read_note_command(note_id: String) -> Result<NoteServiceRecord, String> {
+    let (connection, visible_root) = open_ready_connection_and_visible_root()?;
+    read_note_command_with_connection(&connection, &visible_root, note_id)
+}
+
+#[tauri::command]
+fn list_notes_command(request: NoteCommandListRequest) -> Result<Vec<NoteServiceRecord>, String> {
+    let (connection, visible_root) = open_ready_connection_and_visible_root()?;
+    list_notes_command_with_connection(&connection, &visible_root, request)
+}
+
+#[tauri::command]
+fn edit_markdown_note_command(
+    note_id: String,
+    request: NoteCommandEditRequest,
+) -> Result<NoteServiceRecord, String> {
+    let (connection, visible_root) = open_ready_connection_and_visible_root()?;
+    edit_markdown_note_command_with_connection(&connection, &visible_root, note_id, request)
+}
+
+#[tauri::command]
+fn trash_markdown_note_command(note_id: String) -> Result<NoteServiceRecord, String> {
+    let (connection, visible_root) = open_ready_connection_and_visible_root()?;
+    trash_markdown_note_command_with_connection(&connection, &visible_root, note_id)
+}
+
+#[tauri::command]
+fn delete_markdown_note_command(note_id: String) -> Result<NoteServiceRecord, String> {
+    let (connection, visible_root) = open_ready_connection_and_visible_root()?;
+    delete_markdown_note_command_with_connection(&connection, &visible_root, note_id)
+}
+
+#[tauri::command]
+fn scan_markdown_notes_command() -> Result<NoteScanResult, String> {
+    let (connection, visible_root) = open_ready_connection_and_visible_root()?;
+    scan_markdown_notes_command_with_connection(&connection, &visible_root)
+}
+
+#[tauri::command]
+fn list_note_conflicts_command() -> Result<Vec<NoteConflictRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_note_conflicts_command_with_connection(&connection)
+}
+
+#[tauri::command]
+fn accept_note_conflict_command(note_id: String) -> Result<NoteServiceRecord, String> {
+    let (connection, visible_root) = open_ready_connection_and_visible_root()?;
+    accept_note_conflict_command_with_connection(&connection, &visible_root, note_id)
+}
+
+#[tauri::command]
+fn browse_files_command(request: FileBrowseCommandRequest) -> Result<Vec<FileBrowseEntry>, String> {
+    let (connection, visible_root) = open_ready_connection_and_visible_root()?;
+    browse_files_command_with_connection(&connection, &visible_root, request)
+}
+
+#[tauri::command]
+fn open_file_reference_command(
+    request: FileReferenceCommandRequest,
+) -> Result<FileOpenRecord, String> {
+    let (connection, visible_root) = open_ready_connection_and_visible_root()?;
+    open_file_reference_command_with_connection(&connection, &visible_root, request)
+}
+
+#[tauri::command]
+fn preview_file_command(request: FileReferenceCommandRequest) -> Result<FilePreviewRecord, String> {
+    let (connection, visible_root) = open_ready_connection_and_visible_root()?;
+    preview_file_command_with_connection(&connection, &visible_root, request)
+}
+
+#[tauri::command]
+fn perform_file_action_command(
+    request: FileActionCommandRequest,
+) -> Result<FileActionRecord, String> {
+    let (connection, visible_root) = open_ready_connection_and_visible_root()?;
+    perform_file_action_command_with_connection(&connection, &visible_root, request)
+}
+
+#[tauri::command]
 fn get_foundation_status() -> Result<FoundationStatus, String> {
     ensure_foundation().map_err(|error| error.to_string())
 }
@@ -4465,6 +4607,271 @@ fn open_ready_connection() -> Result<Connection, String> {
     let database_path =
         AppSupportPaths::for_home(&home_dir().map_err(|error| error.to_string())?).database_path;
     open_foundation_database(&database_path).map_err(|error| error.to_string())
+}
+
+fn open_ready_connection_and_visible_root() -> Result<(Connection, PathBuf), String> {
+    ensure_foundation().map_err(|error| error.to_string())?;
+    let home = home_dir().map_err(|error| error.to_string())?;
+    let visible_root = VisibleUserPaths::for_home(&home).root;
+    let database_path = AppSupportPaths::for_home(&home).database_path;
+    let connection = open_foundation_database(&database_path).map_err(|error| error.to_string())?;
+    Ok((connection, visible_root))
+}
+
+fn create_markdown_note_command_with_connection(
+    connection: &Connection,
+    visible_root: &Path,
+    request: NoteCommandCreateRequest,
+) -> Result<NoteServiceRecord, String> {
+    create_markdown_note_service(
+        connection,
+        visible_root,
+        NoteCreateInput {
+            title: request.title,
+            body_markdown: request.body_markdown,
+            relative_path: request.relative_path,
+            metadata_json: request.metadata_json.unwrap_or_else(|| "{}".to_string()),
+        },
+    )
+    .map_err(repository_error_message)
+}
+
+fn read_note_command_with_connection(
+    connection: &Connection,
+    visible_root: &Path,
+    note_id: String,
+) -> Result<NoteServiceRecord, String> {
+    read_note_service(connection, visible_root, &note_id).map_err(repository_error_message)
+}
+
+fn list_notes_command_with_connection(
+    connection: &Connection,
+    visible_root: &Path,
+    request: NoteCommandListRequest,
+) -> Result<Vec<NoteServiceRecord>, String> {
+    let limit = request.limit.unwrap_or(100).clamp(1, 250);
+    let include_markdown = request.include_markdown.unwrap_or(false);
+    let rows = if let Some(status) = request
+        .status
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        let normalized = status.trim().to_ascii_lowercase();
+        if !["active", "trashed", "deleted", "missing", "conflicted"].contains(&normalized.as_str())
+        {
+            return Err(repository_error_message(RepositoryError::Constraint {
+                entity: "notes",
+                message: format!("unsupported note status filter: {status}"),
+            }));
+        }
+        let mut statement = connection
+            .prepare(
+                "select id, title, slug, relative_path, status, conflict_state, body_digest, metadata_json
+                 from notes where status = ?1 order by updated_at desc, id asc limit ?2",
+            )
+            .map_err(|error| repository_error_message(map_repository_error("notes", error)))?;
+        let mapped = statement
+            .query_map(params![normalized, limit as i64], |row| {
+                Ok(NoteRow {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    slug: row.get(2)?,
+                    relative_path: row.get(3)?,
+                    status: row.get(4)?,
+                    conflict_state: row.get(5)?,
+                    body_digest: row.get(6)?,
+                    metadata_json: row.get(7)?,
+                })
+            })
+            .map_err(|error| repository_error_message(map_repository_error("notes", error)))?;
+        mapped
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| repository_error_message(map_repository_error("notes", error)))?
+    } else {
+        let mut statement = connection
+            .prepare(
+                "select id, title, slug, relative_path, status, conflict_state, body_digest, metadata_json
+                 from notes where deleted_at is null order by updated_at desc, id asc limit ?1",
+            )
+            .map_err(|error| repository_error_message(map_repository_error("notes", error)))?;
+        let mapped = statement
+            .query_map(params![limit as i64], |row| {
+                Ok(NoteRow {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    slug: row.get(2)?,
+                    relative_path: row.get(3)?,
+                    status: row.get(4)?,
+                    conflict_state: row.get(5)?,
+                    body_digest: row.get(6)?,
+                    metadata_json: row.get(7)?,
+                })
+            })
+            .map_err(|error| repository_error_message(map_repository_error("notes", error)))?;
+        mapped
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| repository_error_message(map_repository_error("notes", error)))?
+    };
+
+    rows.into_iter()
+        .map(|row| {
+            let markdown = if include_markdown {
+                let note_path = resolve_note_service_path(visible_root, &row.relative_path)
+                    .map_err(repository_error_message)?;
+                fs::read_to_string(note_path).map_err(|error| {
+                    repository_error_message(io_repository_error("notes", error))
+                })?
+            } else {
+                String::new()
+            };
+            Ok(NoteServiceRecord {
+                id: row.id,
+                title: row.title,
+                slug: row.slug.unwrap_or_default(),
+                relative_path: row.relative_path,
+                status: row.status,
+                conflict_state: row.conflict_state,
+                body_digest: row.body_digest.unwrap_or_default(),
+                metadata_json: row.metadata_json,
+                markdown,
+            })
+        })
+        .collect()
+}
+
+fn edit_markdown_note_command_with_connection(
+    connection: &Connection,
+    visible_root: &Path,
+    note_id: String,
+    request: NoteCommandEditRequest,
+) -> Result<NoteServiceRecord, String> {
+    edit_markdown_note_service(connection, visible_root, &note_id, &request.markdown)
+        .map_err(repository_error_message)
+}
+
+fn trash_markdown_note_command_with_connection(
+    connection: &Connection,
+    visible_root: &Path,
+    note_id: String,
+) -> Result<NoteServiceRecord, String> {
+    trash_markdown_note_service(connection, visible_root, &note_id)
+        .map_err(repository_error_message)
+}
+
+fn delete_markdown_note_command_with_connection(
+    connection: &Connection,
+    visible_root: &Path,
+    note_id: String,
+) -> Result<NoteServiceRecord, String> {
+    delete_markdown_note_service(connection, visible_root, &note_id)
+        .map_err(repository_error_message)
+}
+
+fn scan_markdown_notes_command_with_connection(
+    connection: &Connection,
+    visible_root: &Path,
+) -> Result<NoteScanResult, String> {
+    scan_markdown_notes_service(connection, visible_root).map_err(repository_error_message)
+}
+
+fn list_note_conflicts_command_with_connection(
+    connection: &Connection,
+) -> Result<Vec<NoteConflictRecord>, String> {
+    list_note_conflicts_service(connection).map_err(repository_error_message)
+}
+
+fn accept_note_conflict_command_with_connection(
+    connection: &Connection,
+    visible_root: &Path,
+    note_id: String,
+) -> Result<NoteServiceRecord, String> {
+    accept_note_conflict_service(connection, visible_root, &note_id)
+        .map_err(repository_error_message)
+}
+
+fn browse_files_command_with_connection(
+    connection: &Connection,
+    visible_root: &Path,
+    request: FileBrowseCommandRequest,
+) -> Result<Vec<FileBrowseEntry>, String> {
+    browse_files_service(
+        connection,
+        visible_root,
+        &request.root_key,
+        &request.relative_path,
+    )
+    .map_err(repository_error_message)
+}
+
+fn open_file_reference_command_with_connection(
+    connection: &Connection,
+    visible_root: &Path,
+    request: FileReferenceCommandRequest,
+) -> Result<FileOpenRecord, String> {
+    open_file_reference_service(
+        connection,
+        visible_root,
+        &request.root_key,
+        &request.relative_path,
+    )
+    .map_err(repository_error_message)
+}
+
+fn preview_file_command_with_connection(
+    connection: &Connection,
+    visible_root: &Path,
+    request: FileReferenceCommandRequest,
+) -> Result<FilePreviewRecord, String> {
+    preview_file_service(
+        connection,
+        visible_root,
+        &request.root_key,
+        &request.relative_path,
+    )
+    .map_err(repository_error_message)
+}
+
+fn file_action_kind_from_command(action: &str) -> Result<FileActionKind, String> {
+    match action.trim().to_ascii_lowercase().as_str() {
+        "copy" => Ok(FileActionKind::Copy),
+        "rename" => Ok(FileActionKind::Rename),
+        "move" | "move_to" => Ok(FileActionKind::Move),
+        "trash" => Ok(FileActionKind::Trash),
+        other => Err(repository_error_message(RepositoryError::Constraint {
+            entity: "file_references",
+            message: format!("unsupported file action: {other}"),
+        })),
+    }
+}
+
+fn perform_file_action_command_with_connection(
+    connection: &Connection,
+    visible_root: &Path,
+    request: FileActionCommandRequest,
+) -> Result<FileActionRecord, String> {
+    let action = file_action_kind_from_command(&request.action)?;
+    let input = FileActionInput {
+        action,
+        root_key: request.root_key,
+        source_relative_path: request.source_relative_path,
+        destination_relative_path: request.destination_relative_path,
+    };
+    let confirmation = if let Some(confirmation_id) = request.confirmation_id.as_deref() {
+        Some(
+            read_confirmation_decision(connection, confirmation_id)
+                .map_err(repository_error_message)?
+                .ok_or_else(|| {
+                    repository_error_message(RepositoryError::NotFound {
+                        entity: "confirmation_decisions",
+                        key: confirmation_id.to_string(),
+                    })
+                })?,
+        )
+    } else {
+        None
+    };
+    perform_file_action_service(connection, visible_root, input, None, confirmation.as_ref())
+        .map_err(repository_error_message)
 }
 
 fn task_command_priority(value: Option<String>) -> Result<Option<TaskPriority>, String> {
@@ -10320,7 +10727,20 @@ pub fn run() {
             list_task_history_command,
             list_run_history_command,
             list_notification_history_command,
-            list_entity_history_command
+            list_entity_history_command,
+            create_markdown_note_command,
+            read_note_command,
+            list_notes_command,
+            edit_markdown_note_command,
+            trash_markdown_note_command,
+            delete_markdown_note_command,
+            scan_markdown_notes_command,
+            list_note_conflicts_command,
+            accept_note_conflict_command,
+            browse_files_command,
+            open_file_reference_command,
+            preview_file_command,
+            perform_file_action_command
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

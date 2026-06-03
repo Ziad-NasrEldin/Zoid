@@ -3080,7 +3080,7 @@ fn integration_status_service_rejects_secret_config_invalid_json_and_raw_credent
 
 #[test]
 fn tauri_bridge_command_surface_lists_registered_p116_commands() {
-    assert_eq!(TAURI_BRIDGE_COMMAND_NAMES.len(), 33);
+    assert!(TAURI_BRIDGE_COMMAND_NAMES.len() >= 33);
     for command_name in [
         "get_foundation_status",
         "get_workspace_registry",
@@ -3130,6 +3130,250 @@ fn tauri_bridge_command_surface_lists_registered_p116_commands() {
             "missing command in generate_handler block for {command_name}"
         );
     }
+}
+
+#[test]
+fn p310_tauri_bridge_command_surface_registers_notes_and_files_commands() {
+    assert_eq!(TAURI_BRIDGE_COMMAND_NAMES.len(), 46);
+    for command_name in [
+        "create_markdown_note_command",
+        "read_note_command",
+        "list_notes_command",
+        "edit_markdown_note_command",
+        "trash_markdown_note_command",
+        "delete_markdown_note_command",
+        "scan_markdown_notes_command",
+        "list_note_conflicts_command",
+        "accept_note_conflict_command",
+        "browse_files_command",
+        "open_file_reference_command",
+        "preview_file_command",
+        "perform_file_action_command",
+    ] {
+        assert!(
+            TAURI_BRIDGE_COMMAND_NAMES.contains(&command_name),
+            "missing P3.10 command registration marker for {command_name}"
+        );
+    }
+    let source_commands = parse_generate_handler_command_names(include_str!("lib.rs"));
+    for command_name in TAURI_BRIDGE_COMMAND_NAMES {
+        assert!(
+            source_commands.contains(command_name),
+            "missing command in generate_handler block for {command_name}"
+        );
+    }
+}
+
+#[test]
+fn p310_note_bridge_commands_cover_crud_scan_and_conflicts() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p310-note-bridge");
+    let created = create_markdown_note_command_with_connection(
+        &connection,
+        &visible_root,
+        NoteCommandCreateRequest {
+            title: "Bridge Note".to_string(),
+            body_markdown: "Initial body".to_string(),
+            relative_path: None,
+            metadata_json: Some("{\"safe\":\"yes\"}".to_string()),
+        },
+    )
+    .expect("create note through bridge helper");
+    assert_eq!(created.title, "Bridge Note");
+
+    let listed = list_notes_command_with_connection(
+        &connection,
+        &visible_root,
+        NoteCommandListRequest {
+            status: Some("active".to_string()),
+            include_markdown: Some(true),
+            limit: Some(20),
+        },
+    )
+    .expect("list notes through bridge helper");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, created.id);
+    assert!(listed[0].markdown.contains("Initial body"));
+
+    let read = read_note_command_with_connection(&connection, &visible_root, created.id.clone())
+        .expect("read note through bridge helper");
+    assert_eq!(read.id, created.id);
+
+    let edited = edit_markdown_note_command_with_connection(
+        &connection,
+        &visible_root,
+        created.id.clone(),
+        NoteCommandEditRequest {
+            markdown: "Updated body".to_string(),
+        },
+    )
+    .expect("edit note through bridge helper");
+    assert!(edited.markdown.contains("Updated body"));
+
+    fs::write(visible_root.join("Notes/external.md"), "# External\n\nBody")
+        .expect("write external note");
+    let scan = scan_markdown_notes_command_with_connection(&connection, &visible_root)
+        .expect("scan notes through bridge helper");
+    assert!(scan.scanned_files >= 2);
+    assert!(scan.indexed_notes >= 1);
+
+    let trashed =
+        trash_markdown_note_command_with_connection(&connection, &visible_root, created.id.clone())
+            .expect("trash note through bridge helper");
+    assert_eq!(trashed.status, "trashed");
+    let deleted = delete_markdown_note_command_with_connection(
+        &connection,
+        &visible_root,
+        created.id.clone(),
+    )
+    .expect("delete note through bridge helper");
+    assert_eq!(deleted.status, "deleted");
+
+    let conflicts = list_note_conflicts_command_with_connection(&connection)
+        .expect("list conflicts through bridge helper");
+    assert!(conflicts.is_empty());
+    let missing_accept = accept_note_conflict_command_with_connection(
+        &connection,
+        &visible_root,
+        "missing-note".to_string(),
+    )
+    .expect_err("accept missing conflict should fail truthfully");
+    assert!(missing_accept.contains("NotFound"));
+}
+
+#[test]
+fn p310_note_bridge_reports_missing_markdown_files_truthfully() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p310-note-bridge-missing-file");
+    let created = create_markdown_note_command_with_connection(
+        &connection,
+        &visible_root,
+        NoteCommandCreateRequest {
+            title: "Missing File Note".to_string(),
+            body_markdown: "Body".to_string(),
+            relative_path: None,
+            metadata_json: None,
+        },
+    )
+    .expect("create note through bridge helper");
+    fs::remove_file(visible_root.join(&created.relative_path)).expect("remove markdown file");
+
+    let read_error =
+        read_note_command_with_connection(&connection, &visible_root, created.id.clone())
+            .expect_err("read bridge should report missing markdown file");
+    assert!(read_error.contains("notes"));
+    assert!(read_error.contains("No such file") || read_error.contains("os error"));
+
+    let list_error = list_notes_command_with_connection(
+        &connection,
+        &visible_root,
+        NoteCommandListRequest {
+            status: Some("active".to_string()),
+            include_markdown: Some(true),
+            limit: Some(20),
+        },
+    )
+    .expect_err("list bridge with markdown should report missing markdown file");
+    assert!(list_error.contains("notes"));
+}
+
+#[test]
+fn p310_file_bridge_commands_browse_preview_and_require_persisted_confirmation_for_actions() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p310-file-bridge");
+    fs::create_dir_all(visible_root.join("Files")).expect("create files dir");
+    fs::write(visible_root.join("Files/source.md"), "# Source").expect("write source");
+
+    let entries = browse_files_command_with_connection(
+        &connection,
+        &visible_root,
+        FileBrowseCommandRequest {
+            root_key: "zoid_visible".to_string(),
+            relative_path: "Files".to_string(),
+        },
+    )
+    .expect("browse files through bridge helper");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].relative_path, "Files/source.md");
+
+    let opened = open_file_reference_command_with_connection(
+        &connection,
+        &visible_root,
+        FileReferenceCommandRequest {
+            root_key: "zoid_visible".to_string(),
+            relative_path: "Files/source.md".to_string(),
+        },
+    )
+    .expect("open file through bridge helper");
+    assert_eq!(opened.display_name, "source.md");
+
+    let preview = preview_file_command_with_connection(
+        &connection,
+        &visible_root,
+        FileReferenceCommandRequest {
+            root_key: "zoid_visible".to_string(),
+            relative_path: "Files/source.md".to_string(),
+        },
+    )
+    .expect("preview file through bridge helper");
+    assert_eq!(preview.preview_text, "# Source");
+
+    let blocked = perform_file_action_command_with_connection(
+        &connection,
+        &visible_root,
+        FileActionCommandRequest {
+            action: "copy".to_string(),
+            root_key: "zoid_visible".to_string(),
+            source_relative_path: "Files/source.md".to_string(),
+            destination_relative_path: Some("Files/copy.md".to_string()),
+            confirmation_id: None,
+        },
+    )
+    .expect_err("file action bridge must not accept frontend-only confirmation");
+    assert!(blocked.contains("confirmation_required"));
+    assert!(!visible_root.join("Files/copy.md").exists());
+
+    let confirmation = create_confirmation_decision(
+        &connection,
+        ConfirmationDecisionRequest {
+            action_category: "move_rename_copy_file",
+            decision: ConfirmationDecisionState::Approved,
+            actor: ConfirmationActor::human(Some("p310-test")),
+            summary: "Approve copy for bridge test",
+            event_id: None,
+            metadata_json: "{}",
+        },
+    )
+    .expect("persist confirmation decision");
+
+    let copied = perform_file_action_command_with_connection(
+        &connection,
+        &visible_root,
+        FileActionCommandRequest {
+            action: "copy".to_string(),
+            root_key: "zoid_visible".to_string(),
+            source_relative_path: "Files/source.md".to_string(),
+            destination_relative_path: Some("Files/copy.md".to_string()),
+            confirmation_id: Some(confirmation.id),
+        },
+    )
+    .expect("confirmed copy succeeds through bridge helper");
+    assert_eq!(copied.action, "copy");
+    assert!(visible_root.join("Files/copy.md").exists());
+
+    let unsupported = perform_file_action_command_with_connection(
+        &connection,
+        &visible_root,
+        FileActionCommandRequest {
+            action: "shred".to_string(),
+            root_key: "zoid_visible".to_string(),
+            source_relative_path: "Files/source.md".to_string(),
+            destination_relative_path: None,
+            confirmation_id: None,
+        },
+    )
+    .expect_err("unsupported file action should fail closed");
+    assert!(unsupported.contains("unsupported file action"));
 }
 
 #[test]
