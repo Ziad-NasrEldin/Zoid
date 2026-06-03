@@ -4217,6 +4217,340 @@ fn p307_file_service_rejects_symlinked_files_and_directories() {
 }
 
 #[test]
+fn p308_file_actions_block_without_confirmation_and_preserve_state() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p308-confirmation-block");
+    fs::create_dir_all(visible_root.join("Files")).expect("create files dir");
+    fs::write(visible_root.join("Files/source.md"), "# Source").expect("write source");
+    preview_file_service(
+        &connection,
+        &visible_root,
+        "zoid_visible",
+        "Files/source.md",
+    )
+    .expect("seed source reference and index");
+    let before_refs = count_rows(&connection, "select count(*) from file_references");
+    let before_index = count_rows(
+        &connection,
+        "select count(*) from knowledge_index_entries where entity_type = 'file'",
+    );
+
+    let error = perform_file_action_service(
+        &connection,
+        &visible_root,
+        FileActionInput::copy("zoid_visible", "Files/source.md", "Files/copy.md"),
+        None,
+        None,
+    )
+    .expect_err("copy must be blocked without confirmation");
+
+    assert!(format!("{error:?}").contains("confirmation_required"));
+    assert!(visible_root.join("Files/source.md").exists());
+    assert!(!visible_root.join("Files/copy.md").exists());
+    assert_eq!(
+        before_refs,
+        count_rows(&connection, "select count(*) from file_references")
+    );
+    assert_eq!(
+        before_index,
+        count_rows(
+            &connection,
+            "select count(*) from knowledge_index_entries where entity_type = 'file'"
+        )
+    );
+}
+
+#[test]
+fn p308_file_actions_allow_confirmed_copy_rename_move_and_reject_collisions() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p308-confirmed-actions");
+    fs::create_dir_all(visible_root.join("Files/archive")).expect("create files dir");
+    fs::write(visible_root.join("Files/source.md"), "# Source").expect("write source");
+    fs::write(visible_root.join("Files/existing.md"), "# Existing").expect("write existing");
+    let policy = evaluate_action_request(
+        &ActionRequest::new(ActionType::File)
+            .target("copy file")
+            .scope(ActionScope::LocalVisible)
+            .consequence(ActionConsequence::LocalWrite),
+    );
+    let confirmation = ConfirmationDecisionRecord::new_for_test(
+        "confirm-copy",
+        "move_rename_copy_file",
+        ConfirmationDecisionState::Approved,
+        ConfirmationActorType::Human,
+    );
+
+    let collision = perform_file_action_service(
+        &connection,
+        &visible_root,
+        FileActionInput::copy("zoid_visible", "Files/source.md", "Files/existing.md"),
+        Some(&policy),
+        Some(&confirmation),
+    )
+    .expect_err("destination collision should be rejected");
+    assert!(format!("{collision:?}").contains("destination already exists"));
+
+    let copied = perform_file_action_service(
+        &connection,
+        &visible_root,
+        FileActionInput::copy("zoid_visible", "Files/source.md", "Files/copy.md"),
+        Some(&policy),
+        Some(&confirmation),
+    )
+    .expect("confirmed copy should succeed");
+    assert_eq!(copied.action, "copy");
+    assert_eq!(copied.source_relative_path, "Files/source.md");
+    assert_eq!(
+        copied.destination_relative_path.as_deref(),
+        Some("Files/copy.md")
+    );
+    assert!(visible_root.join("Files/source.md").exists());
+    assert_eq!(
+        fs::read_to_string(visible_root.join("Files/copy.md")).expect("read copied file"),
+        "# Source"
+    );
+
+    let renamed = perform_file_action_service(
+        &connection,
+        &visible_root,
+        FileActionInput::rename("zoid_visible", "Files/copy.md", "renamed.md"),
+        Some(&policy),
+        Some(&confirmation),
+    )
+    .expect("confirmed rename should succeed");
+    assert_eq!(
+        renamed.destination_relative_path.as_deref(),
+        Some("Files/renamed.md")
+    );
+    assert!(!visible_root.join("Files/copy.md").exists());
+    assert!(visible_root.join("Files/renamed.md").exists());
+
+    let moved = perform_file_action_service(
+        &connection,
+        &visible_root,
+        FileActionInput::move_to("zoid_visible", "Files/renamed.md", "Files/archive/moved.md"),
+        Some(&policy),
+        Some(&confirmation),
+    )
+    .expect("confirmed move should succeed");
+    assert_eq!(
+        moved.destination_relative_path.as_deref(),
+        Some("Files/archive/moved.md")
+    );
+    assert!(!visible_root.join("Files/renamed.md").exists());
+    assert!(visible_root.join("Files/archive/moved.md").exists());
+
+    let copied_status: String = connection
+        .query_row(
+            "select status from file_references where root_key = 'zoid_visible' and relative_path = 'Files/archive/moved.md'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("moved destination reference indexed");
+    assert_eq!(copied_status, "indexed");
+}
+
+#[cfg(unix)]
+#[test]
+fn p308_file_actions_reject_path_escape_and_symlink_components() {
+    use std::os::unix::fs::symlink;
+
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p308-path-safety");
+    let outside_root = temp_home("p308-path-outside");
+    fs::create_dir_all(visible_root.join("Files")).expect("create files dir");
+    fs::create_dir_all(outside_root.join("secret-dir")).expect("create outside dir");
+    fs::write(visible_root.join("Files/source.md"), "# Source").expect("write source");
+    symlink(
+        outside_root.join("secret-dir"),
+        visible_root.join("Files/outside-link"),
+    )
+    .expect("create symlinked parent");
+    let policy = evaluate_action_request(
+        &ActionRequest::new(ActionType::File)
+            .target("move file")
+            .scope(ActionScope::LocalVisible)
+            .consequence(ActionConsequence::LocalWrite),
+    );
+    let confirmation = ConfirmationDecisionRecord::new_for_test(
+        "confirm-move",
+        "move_rename_copy_file",
+        ConfirmationDecisionState::Approved,
+        ConfirmationActorType::Human,
+    );
+
+    let escape = perform_file_action_service(
+        &connection,
+        &visible_root,
+        FileActionInput::move_to("zoid_visible", "Files/source.md", "../outside.md"),
+        Some(&policy),
+        Some(&confirmation),
+    )
+    .expect_err("destination escape should be rejected");
+    assert!(format!("{escape:?}").contains("relative path"));
+    assert!(visible_root.join("Files/source.md").exists());
+
+    let symlinked_destination = perform_file_action_service(
+        &connection,
+        &visible_root,
+        FileActionInput::copy(
+            "zoid_visible",
+            "Files/source.md",
+            "Files/outside-link/copy.md",
+        ),
+        Some(&policy),
+        Some(&confirmation),
+    )
+    .expect_err("symlinked destination parent should be rejected");
+    assert!(format!("{symlinked_destination:?}").contains("symlink"));
+    assert!(!outside_root.join("secret-dir/copy.md").exists());
+
+    symlink(
+        outside_root.join("secret-dir/broken-copy.md"),
+        visible_root.join("Files/final-link.md"),
+    )
+    .expect("create broken final symlink");
+    let final_symlink_destination = perform_file_action_service(
+        &connection,
+        &visible_root,
+        FileActionInput::copy("zoid_visible", "Files/source.md", "Files/final-link.md"),
+        Some(&policy),
+        Some(&confirmation),
+    )
+    .expect_err("final destination symlink should be rejected even when broken");
+    assert!(
+        format!("{final_symlink_destination:?}").contains("symlink")
+            || format!("{final_symlink_destination:?}").contains("destination already exists")
+    );
+    assert!(!outside_root.join("secret-dir/broken-copy.md").exists());
+}
+
+#[test]
+fn p308_file_actions_invalid_preview_bytes_do_not_turn_safe_copy_into_partial_error() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p308-invalid-preview-copy");
+    fs::create_dir_all(visible_root.join("Files")).expect("create files dir");
+    fs::write(visible_root.join("Files/source.md"), [0xff_u8, 0xfe, b'A'])
+        .expect("write invalid utf8 markdown");
+    let policy = evaluate_action_request(
+        &ActionRequest::new(ActionType::File)
+            .target("copy file")
+            .scope(ActionScope::LocalVisible)
+            .consequence(ActionConsequence::LocalWrite),
+    );
+    let confirmation = ConfirmationDecisionRecord::new_for_test(
+        "confirm-invalid-copy",
+        "move_rename_copy_file",
+        ConfirmationDecisionState::Approved,
+        ConfirmationActorType::Human,
+    );
+
+    let copied = perform_file_action_service(
+        &connection,
+        &visible_root,
+        FileActionInput::copy("zoid_visible", "Files/source.md", "Files/copy.md"),
+        Some(&policy),
+        Some(&confirmation),
+    )
+    .expect("invalid preview bytes should not make a successful copy report failure");
+
+    assert_eq!(
+        copied.destination_relative_path.as_deref(),
+        Some("Files/copy.md")
+    );
+    assert_eq!(
+        fs::read(visible_root.join("Files/copy.md")).expect("read copied bytes"),
+        vec![0xff_u8, 0xfe, b'A']
+    );
+    let copied_status: String = connection
+        .query_row(
+            "select status from file_references where root_key = 'zoid_visible' and relative_path = 'Files/copy.md'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("copied file reference indexed despite skipped preview text");
+    assert_eq!(copied_status, "indexed");
+    let copied_index_count = count_rows(
+        &connection,
+        "select count(*) from knowledge_index_entries where entity_type = 'file' and title = 'copy.md'",
+    );
+    assert_eq!(copied_index_count, 0);
+}
+
+#[test]
+fn p308_file_trash_is_non_destructive_and_marks_old_index_stale() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p308-trash");
+    fs::create_dir_all(visible_root.join("Files")).expect("create files dir");
+    fs::write(visible_root.join("Files/source.md"), "# Trash Me").expect("write source");
+    preview_file_service(
+        &connection,
+        &visible_root,
+        "zoid_visible",
+        "Files/source.md",
+    )
+    .expect("seed source reference and index");
+    let policy = evaluate_action_request(
+        &ActionRequest::new(ActionType::Delete)
+            .target("trash file")
+            .scope(ActionScope::LocalVisible)
+            .consequence(ActionConsequence::Destructive)
+            .destructive(true),
+    );
+    let confirmation = ConfirmationDecisionRecord::new_for_test(
+        "confirm-trash",
+        "delete_trash_files",
+        ConfirmationDecisionState::Approved,
+        ConfirmationActorType::Human,
+    );
+
+    let trashed = perform_file_action_service(
+        &connection,
+        &visible_root,
+        FileActionInput::trash("zoid_visible", "Files/source.md"),
+        Some(&policy),
+        Some(&confirmation),
+    )
+    .expect("confirmed trash should succeed");
+
+    let trash_path = trashed
+        .destination_relative_path
+        .as_deref()
+        .expect("trash destination path");
+    assert!(trash_path.starts_with("Trash/Files/source"));
+    assert!(!visible_root.join("Files/source.md").exists());
+    assert_eq!(
+        fs::read_to_string(visible_root.join(trash_path)).expect("read trashed file"),
+        "# Trash Me"
+    );
+
+    let old_status: String = connection
+        .query_row(
+            "select status from file_references where root_key = 'zoid_visible' and relative_path = 'Files/source.md'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read old file status");
+    assert_eq!(old_status, "trashed");
+    let trash_status: String = connection
+        .query_row(
+            "select status from file_references where root_key = 'zoid_visible' and relative_path = ?1",
+            params![trash_path],
+            |row| row.get(0),
+        )
+        .expect("read trash file status");
+    assert_eq!(trash_status, "indexed");
+    let old_index_state: String = connection
+        .query_row(
+            "select scan_state from knowledge_index_entries where entity_type = 'file' and entity_id = ?1",
+            params![file_reference_entity_id("zoid_visible", "Files/source.md")],
+            |row| row.get(0),
+        )
+        .expect("old preview index marked stale");
+    assert_eq!(old_index_state, "stale");
+}
+
+#[test]
 fn p306_note_scanner_detects_manual_rename_without_mutating_original_identity() {
     let connection = migrated_in_memory_connection();
     let visible_root = temp_home("p306-manual-rename");

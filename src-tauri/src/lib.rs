@@ -2066,6 +2066,94 @@ struct FilePreviewRecord {
 }
 
 #[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileActionKind {
+    Copy,
+    Rename,
+    Move,
+    Trash,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileActionInput {
+    action: FileActionKind,
+    root_key: String,
+    source_relative_path: String,
+    destination_relative_path: Option<String>,
+}
+
+#[allow(dead_code)]
+impl FileActionInput {
+    fn copy(root_key: &str, source_relative_path: &str, destination_relative_path: &str) -> Self {
+        Self::new(
+            FileActionKind::Copy,
+            root_key,
+            source_relative_path,
+            Some(destination_relative_path),
+        )
+    }
+
+    fn rename(root_key: &str, source_relative_path: &str, new_name: &str) -> Self {
+        let parent = Path::new(source_relative_path)
+            .parent()
+            .map(render_relative_path)
+            .unwrap_or_default();
+        let destination = if parent.is_empty() {
+            new_name.to_string()
+        } else {
+            format!("{parent}/{new_name}")
+        };
+        Self::new(
+            FileActionKind::Rename,
+            root_key,
+            source_relative_path,
+            Some(&destination),
+        )
+    }
+
+    fn move_to(
+        root_key: &str,
+        source_relative_path: &str,
+        destination_relative_path: &str,
+    ) -> Self {
+        Self::new(
+            FileActionKind::Move,
+            root_key,
+            source_relative_path,
+            Some(destination_relative_path),
+        )
+    }
+
+    fn trash(root_key: &str, source_relative_path: &str) -> Self {
+        Self::new(FileActionKind::Trash, root_key, source_relative_path, None)
+    }
+
+    fn new(
+        action: FileActionKind,
+        root_key: &str,
+        source_relative_path: &str,
+        destination_relative_path: Option<&str>,
+    ) -> Self {
+        Self {
+            action,
+            root_key: root_key.to_string(),
+            source_relative_path: source_relative_path.to_string(),
+            destination_relative_path: destination_relative_path.map(str::to_string),
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct FileActionRecord {
+    action: String,
+    root_key: String,
+    source_relative_path: String,
+    destination_relative_path: Option<String>,
+}
+
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct NoteScanResult {
     scanned_files: usize,
@@ -2206,6 +2294,351 @@ fn preview_file_service(
         preview_text,
         truncated,
     })
+}
+
+#[allow(dead_code)]
+fn perform_file_action_service(
+    connection: &Connection,
+    visible_root: &Path,
+    input: FileActionInput,
+    policy: Option<&ActionPolicyDecision>,
+    confirmation: Option<&ConfirmationDecisionRecord>,
+) -> RepoResult<FileActionRecord> {
+    validate_file_root_key(&input.root_key)?;
+    let action_request = file_action_request(&input);
+    let evaluated_policy;
+    let effective_policy = match policy {
+        Some(policy) => policy,
+        None => {
+            evaluated_policy = evaluate_action_request(&action_request);
+            &evaluated_policy
+        }
+    };
+    let gate = require_policy_clearance_before_execution(
+        &action_request,
+        Some(effective_policy),
+        confirmation,
+    );
+    if !gate.allowed_now {
+        return Err(RepositoryError::Constraint {
+            entity: "file_references",
+            message: gate.reason,
+        });
+    }
+
+    let source_path =
+        resolve_file_service_existing_path(visible_root, &input.source_relative_path)?;
+    let source_metadata = fs::metadata(&source_path)
+        .map_err(|error| io_repository_error("file_references", error))?;
+    if !source_metadata.is_file() {
+        return Err(RepositoryError::Constraint {
+            entity: "file_references",
+            message: format!(
+                "file action source is not a file: {}",
+                input.source_relative_path
+            ),
+        });
+    }
+
+    let destination_relative_path = match input.action {
+        FileActionKind::Copy | FileActionKind::Move | FileActionKind::Rename => input
+            .destination_relative_path
+            .clone()
+            .ok_or_else(|| RepositoryError::Constraint {
+                entity: "file_references",
+                message: "file action destination is required".to_string(),
+            })?,
+        FileActionKind::Trash => {
+            next_trash_relative_path(visible_root, &input.source_relative_path)?
+        }
+    };
+    let destination_path =
+        resolve_file_service_new_path(visible_root, &destination_relative_path, true)?;
+
+    match input.action {
+        FileActionKind::Copy => {
+            fs::copy(&source_path, &destination_path)
+                .map_err(|error| io_repository_error("file_references", error))?;
+        }
+        FileActionKind::Move | FileActionKind::Rename | FileActionKind::Trash => {
+            fs::rename(&source_path, &destination_path)
+                .map_err(|error| io_repository_error("file_references", error))?;
+        }
+    }
+
+    match input.action {
+        FileActionKind::Copy => {
+            index_file_action_destination(
+                connection,
+                &input.root_key,
+                visible_root,
+                &destination_relative_path,
+            )?;
+        }
+        FileActionKind::Move | FileActionKind::Rename => {
+            mark_file_reference_status(
+                connection,
+                &input.root_key,
+                &input.source_relative_path,
+                "missing",
+            )?;
+            mark_file_preview_index_state(
+                connection,
+                &input.root_key,
+                &input.source_relative_path,
+                "stale",
+            )?;
+            index_file_action_destination(
+                connection,
+                &input.root_key,
+                visible_root,
+                &destination_relative_path,
+            )?;
+        }
+        FileActionKind::Trash => {
+            mark_file_reference_status(
+                connection,
+                &input.root_key,
+                &input.source_relative_path,
+                "trashed",
+            )?;
+            mark_file_preview_index_state(
+                connection,
+                &input.root_key,
+                &input.source_relative_path,
+                "stale",
+            )?;
+            index_file_action_destination(
+                connection,
+                &input.root_key,
+                visible_root,
+                &destination_relative_path,
+            )?;
+        }
+    }
+
+    Ok(FileActionRecord {
+        action: file_action_name(input.action).to_string(),
+        root_key: input.root_key,
+        source_relative_path: input.source_relative_path,
+        destination_relative_path: Some(destination_relative_path),
+    })
+}
+
+fn file_action_request(input: &FileActionInput) -> ActionRequest {
+    match input.action {
+        FileActionKind::Trash => ActionRequest::new(ActionType::Delete)
+            .target("trash file")
+            .scope(ActionScope::LocalVisible)
+            .consequence(ActionConsequence::Destructive)
+            .destructive(true),
+        FileActionKind::Copy | FileActionKind::Move | FileActionKind::Rename => {
+            ActionRequest::new(ActionType::File)
+                .target(file_action_name(input.action))
+                .scope(ActionScope::LocalVisible)
+                .consequence(ActionConsequence::LocalWrite)
+        }
+    }
+}
+
+fn file_action_name(action: FileActionKind) -> &'static str {
+    match action {
+        FileActionKind::Copy => "copy",
+        FileActionKind::Rename => "rename",
+        FileActionKind::Move => "move",
+        FileActionKind::Trash => "trash",
+    }
+}
+
+fn index_file_action_destination(
+    connection: &Connection,
+    root_key: &str,
+    visible_root: &Path,
+    relative_path: &str,
+) -> RepoResult<()> {
+    let destination_path = resolve_file_service_existing_path(visible_root, relative_path)?;
+    let metadata = fs::metadata(&destination_path)
+        .map_err(|error| io_repository_error("file_references", error))?;
+    let entry = file_browse_entry_from_metadata(root_key, relative_path, &metadata)?;
+    upsert_file_reference_metadata(connection, &entry, "indexed")?;
+    if entry.preview_available {
+        if let Ok((preview_bytes, _)) = read_bounded_preview_bytes(&destination_path) {
+            if !preview_bytes.iter().any(|byte| *byte == 0) {
+                if let Ok(preview_text) = preview_text_from_bytes(&preview_bytes) {
+                    upsert_file_preview_index(connection, &entry, &preview_text, &preview_bytes)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn mark_file_reference_status(
+    connection: &Connection,
+    root_key: &str,
+    relative_path: &str,
+    status: &str,
+) -> RepoResult<()> {
+    validate_file_root_key(root_key)?;
+    validate_file_service_relative_path(relative_path)?;
+    connection
+        .execute(
+            "update file_references set status = ?3, updated_at = current_timestamp where root_key = ?1 and relative_path = ?2 and deleted_at is null",
+            params![root_key, relative_path, status],
+        )
+        .map_err(|error| map_repository_error("file_references", error))?;
+    Ok(())
+}
+
+fn mark_file_preview_index_state(
+    connection: &Connection,
+    root_key: &str,
+    relative_path: &str,
+    scan_state: &str,
+) -> RepoResult<()> {
+    let entity_id = file_reference_entity_id(root_key, relative_path);
+    connection
+        .execute(
+            "update knowledge_index_entries set scan_state = ?2, indexed_at = current_timestamp where entity_type = 'file' and entity_id = ?1 and source_type = 'file_preview'",
+            params![entity_id, scan_state],
+        )
+        .map_err(|error| map_repository_error("knowledge_index_entries", error))?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn file_reference_entity_id(root_key: &str, relative_path: &str) -> String {
+    format!(
+        "file_ref_{:016x}",
+        fnv1a64(format!("{}:{}", root_key, relative_path).as_bytes())
+    )
+}
+
+fn resolve_file_service_new_path(
+    visible_root: &Path,
+    relative_path: &str,
+    reject_collision: bool,
+) -> RepoResult<PathBuf> {
+    validate_file_service_relative_path(relative_path)?;
+    ensure_directory(visible_root)
+        .map_err(|error| io_repository_error("file_references", error))?;
+    let canonical_root = visible_root
+        .canonicalize()
+        .map_err(|error| io_repository_error("file_references", error))?;
+    let destination = visible_root.join(relative_path);
+    let parent = destination
+        .parent()
+        .ok_or_else(|| RepositoryError::Constraint {
+            entity: "file_references",
+            message: format!("file destination has no parent: {relative_path}"),
+        })?;
+    ensure_no_symlink_components(visible_root, parent, relative_path)?;
+    fs::create_dir_all(parent).map_err(|error| io_repository_error("file_references", error))?;
+    let canonical_parent = parent
+        .canonicalize()
+        .map_err(|error| io_repository_error("file_references", error))?;
+    if !canonical_parent.starts_with(&canonical_root) {
+        return Err(RepositoryError::Constraint {
+            entity: "file_references",
+            message: format!("file path escapes visible root: {relative_path}"),
+        });
+    }
+    if reject_collision {
+        match fs::symlink_metadata(&destination) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(RepositoryError::Constraint {
+                    entity: "file_references",
+                    message: format!(
+                        "file destination contains a symlink component: {relative_path}"
+                    ),
+                });
+            }
+            Ok(_) => {
+                return Err(RepositoryError::Constraint {
+                    entity: "file_references",
+                    message: format!("file destination already exists: {relative_path}"),
+                });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(io_repository_error("file_references", error)),
+        }
+    }
+    Ok(destination)
+}
+
+fn ensure_no_symlink_components(
+    visible_root: &Path,
+    parent: &Path,
+    relative_path: &str,
+) -> RepoResult<()> {
+    let relative_parent =
+        parent
+            .strip_prefix(visible_root)
+            .map_err(|_| RepositoryError::Constraint {
+                entity: "file_references",
+                message: format!("file path escapes visible root: {relative_path}"),
+            })?;
+    let mut accumulated = visible_root.to_path_buf();
+    for component in relative_parent.components() {
+        accumulated.push(component.as_os_str());
+        match fs::symlink_metadata(&accumulated) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(RepositoryError::Constraint {
+                    entity: "file_references",
+                    message: format!("file path contains a symlink component: {relative_path}"),
+                });
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(io_repository_error("file_references", error)),
+        }
+    }
+    Ok(())
+}
+
+fn next_trash_relative_path(visible_root: &Path, source_relative_path: &str) -> RepoResult<String> {
+    validate_file_service_relative_path(source_relative_path)?;
+    let source_path = Path::new(source_relative_path);
+    let stem = source_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("file");
+    let extension = source_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| format!(".{value}"))
+        .unwrap_or_default();
+    let parent = source_path
+        .parent()
+        .map(render_relative_path)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "Files".to_string());
+    for suffix in 0..1000 {
+        let candidate_name = if suffix == 0 {
+            format!("{stem}{extension}")
+        } else {
+            format!("{stem}-{suffix}{extension}")
+        };
+        let candidate = format!("Trash/{parent}/{candidate_name}");
+        validate_file_service_relative_path(&candidate)?;
+        if !visible_root.join(&candidate).exists() {
+            return Ok(candidate);
+        }
+    }
+    Err(RepositoryError::Constraint {
+        entity: "file_references",
+        message: format!("trash destination collision limit reached: {source_relative_path}"),
+    })
+}
+
+fn render_relative_path(path: &Path) -> String {
+    path.components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => Some(value.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn validate_file_root_key(root_key: &str) -> RepoResult<()> {
