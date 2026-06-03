@@ -4032,6 +4032,191 @@ fn assert_index_exists(connection: &Connection, table: &str, expected_index: &st
 }
 
 #[test]
+fn p307_file_service_browses_opens_and_previews_safe_visible_files() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p307-file-service-basic");
+    fs::create_dir_all(visible_root.join("Files/docs")).expect("create files dir");
+    fs::write(
+        visible_root.join("Files/docs/brief.md"),
+        "# Brief\n\nThis is a local preview file.",
+    )
+    .expect("write preview file");
+    fs::write(visible_root.join("Files/image.png"), [0_u8, 159, 146, 150])
+        .expect("write binary-ish file");
+
+    let root_entries = browse_files_service(&connection, &visible_root, "zoid_visible", "Files")
+        .expect("browse Files");
+    assert!(root_entries.iter().any(|entry| {
+        entry.relative_path == "Files/docs" && entry.file_kind == "folder" && entry.is_directory
+    }));
+    assert!(root_entries.iter().any(|entry| {
+        entry.relative_path == "Files/image.png"
+            && entry.file_kind == "image"
+            && !entry.preview_available
+    }));
+
+    let open = open_file_reference_service(
+        &connection,
+        &visible_root,
+        "zoid_visible",
+        "Files/docs/brief.md",
+    )
+    .expect("open file reference");
+    assert_eq!(open.relative_path, "Files/docs/brief.md");
+    assert_eq!(open.file_kind, "markdown_note");
+    assert!(open.absolute_path.ends_with("Files/docs/brief.md"));
+
+    let preview = preview_file_service(
+        &connection,
+        &visible_root,
+        "zoid_visible",
+        "Files/docs/brief.md",
+    )
+    .expect("preview text file");
+    assert_eq!(preview.relative_path, "Files/docs/brief.md");
+    assert_eq!(preview.file_kind, "markdown_note");
+    assert!(preview.preview_text.contains("local preview file"));
+    assert!(!preview.truncated);
+
+    let file_status: String = connection
+        .query_row(
+            "select status from file_references where root_key = 'zoid_visible' and relative_path = 'Files/docs/brief.md'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read file reference status");
+    assert_eq!(file_status, "indexed");
+    let preview_index_state: String = connection
+        .query_row(
+            "select scan_state from knowledge_index_entries where entity_type = 'file' and source_type = 'file_preview' and title = 'brief.md'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read file preview index");
+    assert_eq!(preview_index_state, "current");
+}
+
+#[test]
+fn p307_file_service_rejects_unsafe_binary_and_missing_paths_without_indexing() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p307-file-service-safety");
+    fs::create_dir_all(visible_root.join("Files")).expect("create files dir");
+    fs::write(visible_root.join("Files/blob.bin"), [0_u8, 1, 2, 3, 4, 5])
+        .expect("write binary file");
+
+    let escape = browse_files_service(&connection, &visible_root, "zoid_visible", "../Secrets")
+        .expect_err("escape should fail");
+    assert!(format!("{escape:?}").contains("relative path"));
+    let missing = preview_file_service(
+        &connection,
+        &visible_root,
+        "zoid_visible",
+        "Files/missing.md",
+    )
+    .expect_err("missing preview should fail");
+    assert!(matches!(missing, RepositoryError::NotFound { .. }));
+    let binary = preview_file_service(&connection, &visible_root, "zoid_visible", "Files/blob.bin")
+        .expect_err("binary preview should fail closed");
+    assert!(format!("{binary:?}").contains("not previewable"));
+
+    let indexed_count: i64 = connection
+        .query_row(
+            "select count(*) from knowledge_index_entries where entity_type = 'file'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count file index rows");
+    assert_eq!(indexed_count, 0);
+}
+
+#[test]
+fn p307_file_preview_reads_and_indexes_only_bounded_preview_bytes() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p307-file-service-bounded-preview");
+    fs::create_dir_all(visible_root.join("Files")).expect("create files dir");
+    let large_text = format!("{}TAIL-SHOULD-NOT-BE-INDEXED", "a".repeat(8192));
+    fs::write(visible_root.join("Files/large.txt"), large_text).expect("write large text file");
+
+    let preview = preview_file_service(
+        &connection,
+        &visible_root,
+        "zoid_visible",
+        "Files/large.txt",
+    )
+    .expect("preview large text file");
+    assert_eq!(preview.preview_text.len(), 4096);
+    assert!(preview.truncated);
+    assert!(!preview.preview_text.contains("TAIL-SHOULD-NOT-BE-INDEXED"));
+
+    let search_text: String = connection
+        .query_row(
+            "select search_text from knowledge_index_entries where entity_type = 'file' and source_type = 'file_preview' and title = 'large.txt'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read bounded file preview index");
+    assert_eq!(search_text.len(), 4096);
+    assert!(!search_text.contains("TAIL-SHOULD-NOT-BE-INDEXED"));
+}
+
+#[cfg(unix)]
+#[test]
+fn p307_file_service_rejects_symlinked_files_and_directories() {
+    use std::os::unix::fs::symlink;
+
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p307-file-service-symlink");
+    let outside_root = temp_home("p307-file-service-outside");
+    fs::create_dir_all(visible_root.join("Files")).expect("create files dir");
+    fs::create_dir_all(outside_root.join("secret-dir")).expect("create outside dir");
+    fs::write(outside_root.join("secret.md"), "# Secret").expect("write outside file");
+    symlink(
+        outside_root.join("secret.md"),
+        visible_root.join("Files/secret-link.md"),
+    )
+    .expect("create file symlink");
+    symlink(
+        outside_root.join("secret-dir"),
+        visible_root.join("Files/secret-dir-link"),
+    )
+    .expect("create dir symlink");
+    fs::create_dir_all(visible_root.join("RealDir")).expect("create real dir");
+    fs::write(visible_root.join("RealDir/inside.md"), "# Inside").expect("write inside file");
+    symlink(
+        visible_root.join("RealDir"),
+        visible_root.join("Files/inside-link"),
+    )
+    .expect("create internal intermediate symlink");
+
+    let file_error = open_file_reference_service(
+        &connection,
+        &visible_root,
+        "zoid_visible",
+        "Files/secret-link.md",
+    )
+    .expect_err("file symlink should be rejected");
+    assert!(format!("{file_error:?}").contains("symlink"));
+
+    let browse_error = browse_files_service(
+        &connection,
+        &visible_root,
+        "zoid_visible",
+        "Files/secret-dir-link",
+    )
+    .expect_err("dir symlink should be rejected");
+    assert!(format!("{browse_error:?}").contains("symlink"));
+
+    let intermediate_error = preview_file_service(
+        &connection,
+        &visible_root,
+        "zoid_visible",
+        "Files/inside-link/inside.md",
+    )
+    .expect_err("intermediate symlink component should be rejected");
+    assert!(format!("{intermediate_error:?}").contains("symlink"));
+}
+
+#[test]
 fn p306_note_scanner_detects_manual_rename_without_mutating_original_identity() {
     let connection = migrated_in_memory_connection();
     let visible_root = temp_home("p306-manual-rename");

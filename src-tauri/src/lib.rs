@@ -2029,6 +2029,44 @@ impl NoteCreateInput {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct FileBrowseEntry {
+    root_key: String,
+    relative_path: String,
+    display_name: String,
+    file_kind: String,
+    mime_type: Option<String>,
+    byte_size: Option<i64>,
+    is_directory: bool,
+    preview_available: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct FileOpenRecord {
+    root_key: String,
+    relative_path: String,
+    absolute_path: String,
+    display_name: String,
+    file_kind: String,
+    mime_type: Option<String>,
+    byte_size: i64,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct FilePreviewRecord {
+    root_key: String,
+    relative_path: String,
+    display_name: String,
+    file_kind: String,
+    mime_type: Option<String>,
+    byte_size: i64,
+    preview_text: String,
+    truncated: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct NoteScanResult {
     scanned_files: usize,
     indexed_notes: usize,
@@ -2048,6 +2086,437 @@ struct NoteConflictRecord {
     stored_digest: String,
     disk_digest: String,
     metadata_json: String,
+}
+
+#[allow(dead_code)]
+fn browse_files_service(
+    connection: &Connection,
+    visible_root: &Path,
+    root_key: &str,
+    relative_path: &str,
+) -> RepoResult<Vec<FileBrowseEntry>> {
+    validate_file_root_key(root_key)?;
+    validate_file_service_relative_path(relative_path)?;
+    let directory = resolve_file_service_existing_path(visible_root, relative_path)?;
+    let metadata =
+        fs::metadata(&directory).map_err(|error| io_repository_error("file_references", error))?;
+    if !metadata.is_dir() {
+        return Err(RepositoryError::Constraint {
+            entity: "file_references",
+            message: format!("file browse path is not a directory: {relative_path}"),
+        });
+    }
+    let mut entries = Vec::new();
+    for entry in
+        fs::read_dir(&directory).map_err(|error| io_repository_error("file_references", error))?
+    {
+        let entry = entry.map_err(|error| io_repository_error("file_references", error))?;
+        let path = entry.path();
+        let symlink_metadata = fs::symlink_metadata(&path)
+            .map_err(|error| io_repository_error("file_references", error))?;
+        if symlink_metadata.file_type().is_symlink() {
+            continue;
+        }
+        let child_relative = file_relative_path_from_absolute(visible_root, &path)?;
+        let child_metadata =
+            fs::metadata(&path).map_err(|error| io_repository_error("file_references", error))?;
+        let entry_record =
+            file_browse_entry_from_metadata(root_key, &child_relative, &child_metadata)?;
+        upsert_file_reference_metadata(connection, &entry_record, "indexed")?;
+        entries.push(entry_record);
+    }
+    entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    Ok(entries)
+}
+
+#[allow(dead_code)]
+fn open_file_reference_service(
+    connection: &Connection,
+    visible_root: &Path,
+    root_key: &str,
+    relative_path: &str,
+) -> RepoResult<FileOpenRecord> {
+    validate_file_root_key(root_key)?;
+    let path = resolve_file_service_existing_path(visible_root, relative_path)?;
+    let metadata =
+        fs::metadata(&path).map_err(|error| io_repository_error("file_references", error))?;
+    if !metadata.is_file() {
+        return Err(RepositoryError::Constraint {
+            entity: "file_references",
+            message: format!("open target is not a file: {relative_path}"),
+        });
+    }
+    let entry = file_browse_entry_from_metadata(root_key, relative_path, &metadata)?;
+    upsert_file_reference_metadata(connection, &entry, "indexed")?;
+    Ok(FileOpenRecord {
+        root_key: root_key.to_string(),
+        relative_path: relative_path.to_string(),
+        absolute_path: display_path(&path),
+        display_name: entry.display_name,
+        file_kind: entry.file_kind,
+        mime_type: entry.mime_type,
+        byte_size: metadata.len() as i64,
+    })
+}
+
+const FILE_PREVIEW_BYTE_LIMIT: usize = 4096;
+const FILE_PREVIEW_READ_LIMIT: u64 = (FILE_PREVIEW_BYTE_LIMIT as u64) + 1;
+
+#[allow(dead_code)]
+fn preview_file_service(
+    connection: &Connection,
+    visible_root: &Path,
+    root_key: &str,
+    relative_path: &str,
+) -> RepoResult<FilePreviewRecord> {
+    validate_file_root_key(root_key)?;
+    let path = resolve_file_service_existing_path(visible_root, relative_path)?;
+    let metadata =
+        fs::metadata(&path).map_err(|error| io_repository_error("file_references", error))?;
+    if !metadata.is_file() {
+        return Err(RepositoryError::Constraint {
+            entity: "file_references",
+            message: format!("preview target is not a file: {relative_path}"),
+        });
+    }
+    let entry = file_browse_entry_from_metadata(root_key, relative_path, &metadata)?;
+    if !entry.preview_available {
+        return Err(RepositoryError::Constraint {
+            entity: "file_references",
+            message: format!("file is not previewable: {relative_path}"),
+        });
+    }
+    let (preview_bytes, truncated) = read_bounded_preview_bytes(&path)?;
+    if preview_bytes.iter().any(|byte| *byte == 0) {
+        return Err(RepositoryError::Constraint {
+            entity: "file_references",
+            message: format!("file is not previewable: {relative_path}"),
+        });
+    }
+    let preview_text = preview_text_from_bytes(&preview_bytes)?;
+    upsert_file_reference_metadata(connection, &entry, "indexed")?;
+    upsert_file_preview_index(connection, &entry, &preview_text, &preview_bytes)?;
+    Ok(FilePreviewRecord {
+        root_key: root_key.to_string(),
+        relative_path: relative_path.to_string(),
+        display_name: entry.display_name,
+        file_kind: entry.file_kind,
+        mime_type: entry.mime_type,
+        byte_size: metadata.len() as i64,
+        preview_text,
+        truncated,
+    })
+}
+
+fn validate_file_root_key(root_key: &str) -> RepoResult<()> {
+    match root_key {
+        "zoid_visible" | "notes" | "content" | "assets" | "imports" | "exports" | "backups" => {
+            Ok(())
+        }
+        _ => Err(RepositoryError::Constraint {
+            entity: "file_references",
+            message: format!("unsupported file root: {root_key}"),
+        }),
+    }
+}
+
+fn validate_file_service_relative_path(relative_path: &str) -> RepoResult<()> {
+    let valid = !relative_path.trim().is_empty()
+        && relative_path.len() <= 1024
+        && !relative_path.starts_with('/')
+        && !relative_path.contains("..")
+        && !relative_path.split('/').any(|segment| segment.is_empty());
+    if !valid {
+        return Err(RepositoryError::Constraint {
+            entity: "file_references",
+            message: format!("unsafe file relative path: {relative_path}"),
+        });
+    }
+    if relative_path.starts_with('.') || relative_path.contains("/.") {
+        return Err(RepositoryError::Constraint {
+            entity: "file_references",
+            message: format!("hidden file paths are not browsed by this service: {relative_path}"),
+        });
+    }
+    Ok(())
+}
+
+fn resolve_file_service_existing_path(
+    visible_root: &Path,
+    relative_path: &str,
+) -> RepoResult<PathBuf> {
+    validate_file_service_relative_path(relative_path)?;
+    ensure_directory(visible_root)
+        .map_err(|error| io_repository_error("file_references", error))?;
+    let canonical_root = visible_root
+        .canonicalize()
+        .map_err(|error| io_repository_error("file_references", error))?;
+    let mut accumulated = visible_root.to_path_buf();
+    for segment in relative_path.split('/') {
+        accumulated.push(segment);
+        let metadata = fs::symlink_metadata(&accumulated).map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => RepositoryError::NotFound {
+                entity: "file_references",
+                key: relative_path.to_string(),
+            },
+            _ => io_repository_error("file_references", error),
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(RepositoryError::Constraint {
+                entity: "file_references",
+                message: format!("file path contains a symlink component: {relative_path}"),
+            });
+        }
+    }
+    let canonical = accumulated
+        .canonicalize()
+        .map_err(|error| io_repository_error("file_references", error))?;
+    if !canonical.starts_with(&canonical_root) {
+        return Err(RepositoryError::Constraint {
+            entity: "file_references",
+            message: format!("file path escapes visible root: {relative_path}"),
+        });
+    }
+    Ok(accumulated)
+}
+
+fn file_relative_path_from_absolute(visible_root: &Path, path: &Path) -> RepoResult<String> {
+    let relative = path
+        .strip_prefix(visible_root)
+        .map_err(|_| RepositoryError::Constraint {
+            entity: "file_references",
+            message: format!("file path escapes visible root: {}", display_path(path)),
+        })?;
+    let rendered = relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    validate_file_service_relative_path(&rendered)?;
+    Ok(rendered)
+}
+
+fn file_browse_entry_from_metadata(
+    root_key: &str,
+    relative_path: &str,
+    metadata: &fs::Metadata,
+) -> RepoResult<FileBrowseEntry> {
+    validate_file_root_key(root_key)?;
+    validate_file_service_relative_path(relative_path)?;
+    let display_name = relative_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(relative_path)
+        .to_string();
+    let is_directory = metadata.is_dir();
+    let extension = Path::new(relative_path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase());
+    let file_kind = if is_directory {
+        "folder".to_string()
+    } else {
+        file_kind_for_extension(extension.as_deref()).to_string()
+    };
+    let mime_type = if is_directory {
+        None
+    } else {
+        mime_type_for_extension(extension.as_deref()).map(str::to_string)
+    };
+    Ok(FileBrowseEntry {
+        root_key: root_key.to_string(),
+        relative_path: relative_path.to_string(),
+        display_name,
+        file_kind,
+        mime_type,
+        byte_size: if is_directory {
+            None
+        } else {
+            Some(metadata.len() as i64)
+        },
+        is_directory,
+        preview_available: !is_directory && previewable_extension(extension.as_deref()),
+    })
+}
+
+fn file_kind_for_extension(extension: Option<&str>) -> &'static str {
+    match extension.unwrap_or("") {
+        "md" | "markdown" => "markdown_note",
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" => "image",
+        "mp3" | "wav" | "m4a" | "aac" => "audio",
+        "mp4" | "mov" | "webm" => "video",
+        "zip" | "gz" | "tar" | "rar" | "7z" => "archive",
+        "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "json" | "toml" | "yaml" | "yml" | "html"
+        | "css" => "code",
+        "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt" => "document",
+        _ => "other",
+    }
+}
+
+fn mime_type_for_extension(extension: Option<&str>) -> Option<&'static str> {
+    match extension.unwrap_or("") {
+        "md" | "markdown" => Some("text/markdown"),
+        "txt" => Some("text/plain"),
+        "json" => Some("application/json"),
+        "toml" => Some("application/toml"),
+        "yaml" | "yml" => Some("application/yaml"),
+        "html" => Some("text/html"),
+        "css" => Some("text/css"),
+        "js" | "jsx" => Some("text/javascript"),
+        "ts" | "tsx" => Some("text/typescript"),
+        "rs" => Some("text/rust"),
+        "py" => Some("text/x-python"),
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "svg" => Some("image/svg+xml"),
+        _ => None,
+    }
+}
+
+fn previewable_extension(extension: Option<&str>) -> bool {
+    matches!(
+        extension.unwrap_or(""),
+        "md" | "markdown"
+            | "txt"
+            | "json"
+            | "toml"
+            | "yaml"
+            | "yml"
+            | "html"
+            | "css"
+            | "js"
+            | "jsx"
+            | "ts"
+            | "tsx"
+            | "rs"
+            | "py"
+    )
+}
+
+fn read_bounded_preview_bytes(path: &Path) -> RepoResult<(Vec<u8>, bool)> {
+    let file =
+        fs::File::open(path).map_err(|error| io_repository_error("file_references", error))?;
+    let mut limited = file.take(FILE_PREVIEW_READ_LIMIT);
+    let mut bytes = Vec::with_capacity(FILE_PREVIEW_BYTE_LIMIT + 1);
+    limited
+        .read_to_end(&mut bytes)
+        .map_err(|error| io_repository_error("file_references", error))?;
+    let truncated = bytes.len() > FILE_PREVIEW_BYTE_LIMIT;
+    if truncated {
+        bytes.truncate(FILE_PREVIEW_BYTE_LIMIT);
+    }
+    Ok((bytes, truncated))
+}
+
+fn preview_text_from_bytes(bytes: &[u8]) -> RepoResult<String> {
+    let text = std::str::from_utf8(bytes).map_err(|_| RepositoryError::Constraint {
+        entity: "file_references",
+        message: "file is not previewable: invalid utf-8".to_string(),
+    })?;
+    Ok(text.to_string())
+}
+
+fn upsert_file_reference_metadata(
+    connection: &Connection,
+    entry: &FileBrowseEntry,
+    status: &str,
+) -> RepoResult<()> {
+    let content_fingerprint = entry.byte_size.map(|size| format!("size:{size}"));
+    let extension = Path::new(&entry.relative_path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase());
+    let id = format!(
+        "file_ref_{:016x}",
+        fnv1a64(format!("{}:{}", entry.root_key, entry.relative_path).as_bytes())
+    );
+    let metadata_json = serde_json::json!({
+        "root_key": entry.root_key,
+        "relative_path": entry.relative_path,
+        "preview_available": entry.preview_available,
+    })
+    .to_string();
+    connection
+        .execute(
+            "insert into file_references (id, root_key, relative_path, display_name, file_kind, mime_type, extension, byte_size, content_fingerprint, status, conflict_state, last_seen_at, metadata_json)
+             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'none', current_timestamp, ?11)
+             on conflict(root_key, relative_path) where deleted_at is null and status != 'deleted' do update set
+                display_name = excluded.display_name,
+                file_kind = excluded.file_kind,
+                mime_type = excluded.mime_type,
+                extension = excluded.extension,
+                byte_size = excluded.byte_size,
+                content_fingerprint = excluded.content_fingerprint,
+                status = excluded.status,
+                conflict_state = 'none',
+                last_seen_at = current_timestamp,
+                updated_at = current_timestamp,
+                metadata_json = excluded.metadata_json",
+            params![
+                id,
+                entry.root_key,
+                entry.relative_path,
+                entry.display_name,
+                entry.file_kind,
+                entry.mime_type,
+                extension,
+                entry.byte_size,
+                content_fingerprint,
+                status,
+                metadata_json
+            ],
+        )
+        .map_err(|error| map_repository_error("file_references", error))?;
+    Ok(())
+}
+
+fn upsert_file_preview_index(
+    connection: &Connection,
+    entry: &FileBrowseEntry,
+    preview_text: &str,
+    bytes: &[u8],
+) -> RepoResult<()> {
+    let entity_id = format!(
+        "file_ref_{:016x}",
+        fnv1a64(format!("{}:{}", entry.root_key, entry.relative_path).as_bytes())
+    );
+    let index_id = format!(
+        "knowledge_file_preview_{:016x}",
+        fnv1a64(format!("{}:{}", entry.root_key, entry.relative_path).as_bytes())
+    );
+    let digest = format!("fnv1a64:{:016x}", fnv1a64(bytes));
+    let metadata_json = serde_json::json!({
+        "root_key": entry.root_key,
+        "relative_path": entry.relative_path,
+        "byte_size": entry.byte_size,
+    })
+    .to_string();
+    connection
+        .execute(
+            "insert into knowledge_index_entries (id, entity_type, entity_id, source_type, title, excerpt, search_text, content_digest, scan_state, metadata_json)
+             values (?1, 'file', ?2, 'file_preview', ?3, ?4, ?5, ?6, 'current', ?7)
+             on conflict(entity_type, entity_id, source_type) do update set
+                title = excluded.title,
+                excerpt = excluded.excerpt,
+                search_text = excluded.search_text,
+                content_digest = excluded.content_digest,
+                scan_state = 'current',
+                indexed_at = current_timestamp,
+                metadata_json = excluded.metadata_json",
+            params![
+                index_id,
+                entity_id,
+                entry.display_name,
+                preview_text.chars().take(512).collect::<String>(),
+                preview_text,
+                digest,
+                metadata_json
+            ],
+        )
+        .map_err(|error| map_repository_error("knowledge_index_entries", error))?;
+    Ok(())
 }
 
 #[allow(dead_code)]
