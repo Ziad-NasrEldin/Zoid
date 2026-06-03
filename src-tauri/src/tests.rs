@@ -4032,6 +4032,195 @@ fn assert_index_exists(connection: &Connection, table: &str, expected_index: &st
 }
 
 #[test]
+fn p305_note_scanner_writes_missing_frontmatter_indexes_and_marks_missing_files() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p305-note-scanner-indexes");
+    fs::create_dir_all(visible_root.join("Notes/nested")).expect("create nested notes");
+    fs::write(
+        visible_root.join("Notes/nested/scanned.md"),
+        "# Scanned Note\n\nScanner body",
+    )
+    .expect("write markdown without frontmatter");
+    fs::write(visible_root.join("Notes/ignore.txt"), "not markdown").expect("write txt");
+    fs::create_dir_all(visible_root.join("Notes/.Trash")).expect("create trash dir");
+    fs::write(visible_root.join("Notes/.Trash/old.md"), "# Old Trash").expect("write trash file");
+
+    let first = scan_markdown_notes_service(&connection, &visible_root).expect("scan notes");
+    assert_eq!(first.scanned_files, 1);
+    assert_eq!(first.indexed_notes, 1);
+    assert_eq!(first.frontmatter_written, 1);
+    assert_eq!(first.conflicted_notes, 0);
+    assert_eq!(first.missing_notes_marked, 0);
+
+    let rewritten = fs::read_to_string(visible_root.join("Notes/nested/scanned.md"))
+        .expect("read rewritten markdown");
+    assert!(rewritten.starts_with("---\n"));
+    assert!(rewritten.contains("zoid_id: \"note_"));
+    assert!(rewritten.contains("title: \"Scanned Note\""));
+    assert!(rewritten.contains("# Scanned Note"));
+
+    let note_id: String = connection
+        .query_row(
+            "select id from notes where relative_path = 'Notes/nested/scanned.md' and status = 'active'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read scanned note id");
+    let index_state: String = connection
+        .query_row(
+            "select scan_state from knowledge_index_entries where entity_type = 'note' and entity_id = ?1 and source_type = 'markdown_frontmatter'",
+            params![note_id],
+            |row| row.get(0),
+        )
+        .expect("read scanned index state");
+    assert_eq!(index_state, "current");
+
+    fs::remove_file(visible_root.join("Notes/nested/scanned.md")).expect("remove scanned file");
+    let second =
+        scan_markdown_notes_service(&connection, &visible_root).expect("rescan missing note");
+    assert_eq!(second.scanned_files, 0);
+    assert_eq!(second.indexed_notes, 0);
+    assert_eq!(second.missing_notes_marked, 1);
+    let missing_state: String = connection
+        .query_row(
+            "select status from notes where relative_path = 'Notes/nested/scanned.md'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read missing note state");
+    assert_eq!(missing_state, "conflicted");
+    let missing_index_state: String = connection
+        .query_row(
+            "select scan_state from knowledge_index_entries where entity_type = 'note' and entity_id = ?1 and source_type = 'markdown_frontmatter'",
+            params![note_id],
+            |row| row.get(0),
+        )
+        .expect("read missing index state");
+    assert_eq!(missing_index_state, "missing");
+}
+
+#[test]
+fn p305_note_scanner_preserves_existing_ids_and_flags_duplicates_non_destructively() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p305-note-scanner-duplicates");
+    fs::create_dir_all(visible_root.join("Notes")).expect("create notes");
+    let first_markdown = "---\nzoid_id: \"note_duplicate_p305\"\ntitle: \"Original\"\nslug: \"original\"\n---\n\n# Original\n\nOne";
+    let duplicate_markdown = "---\nzoid_id: \"note_duplicate_p305\"\ntitle: \"Duplicate\"\nslug: \"duplicate\"\n---\n\n# Duplicate\n\nTwo";
+    fs::write(visible_root.join("Notes/a-original.md"), first_markdown).expect("write original");
+    fs::write(
+        visible_root.join("Notes/z-duplicate.md"),
+        duplicate_markdown,
+    )
+    .expect("write duplicate");
+
+    let result =
+        scan_markdown_notes_service(&connection, &visible_root).expect("scan duplicate notes");
+    assert_eq!(result.scanned_files, 2);
+    assert_eq!(result.indexed_notes, 1);
+    assert_eq!(result.conflicted_notes, 1);
+    assert_eq!(result.frontmatter_written, 0);
+
+    let stored: (String, String) = connection
+        .query_row(
+            "select relative_path, conflict_state from notes where id = 'note_duplicate_p305'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read duplicate note row");
+    assert_eq!(stored.0, "Notes/a-original.md");
+    assert_eq!(stored.1, "duplicate_id");
+    assert_eq!(
+        fs::read_to_string(visible_root.join("Notes/z-duplicate.md")).expect("read duplicate file"),
+        duplicate_markdown,
+        "duplicate file must not be rewritten or destroyed"
+    );
+}
+
+#[test]
+fn p305_note_scanner_rewrites_existing_yaml_missing_zoid_id_preserving_custom_keys() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p305-note-scanner-existing-yaml");
+    fs::create_dir_all(visible_root.join("Notes")).expect("create notes");
+    fs::write(
+        visible_root.join("Notes/existing-yaml.md"),
+        "---\ntitle: Existing YAML Title\ncustom: keep-me\n---\n\n# Body Heading\n\nBody text",
+    )
+    .expect("write existing yaml note");
+
+    let result =
+        scan_markdown_notes_service(&connection, &visible_root).expect("scan existing yaml");
+    assert_eq!(result.scanned_files, 1);
+    assert_eq!(result.indexed_notes, 1);
+    assert_eq!(result.frontmatter_written, 1);
+
+    let rewritten = fs::read_to_string(visible_root.join("Notes/existing-yaml.md"))
+        .expect("read rewritten yaml note");
+    assert!(rewritten.contains("zoid_id: \"note_"));
+    assert!(rewritten.contains("title: \"Existing YAML Title\""));
+    assert!(rewritten.contains("slug: \"existing-yaml-title\""));
+    assert!(rewritten.contains("custom: keep-me"));
+    assert!(rewritten.contains("# Body Heading"));
+
+    let stored_id: String = connection
+        .query_row(
+            "select id from notes where relative_path = 'Notes/existing-yaml.md' and status = 'active'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read indexed id");
+    assert!(rewritten.contains(&stored_id));
+}
+
+#[cfg(unix)]
+#[test]
+fn p305_note_scanner_write_failure_does_not_leave_active_index_row() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p305-note-scanner-write-failure");
+    let notes_dir = visible_root.join("Notes");
+    let note_path = notes_dir.join("locked.md");
+    fs::create_dir_all(&notes_dir).expect("create notes");
+    fs::write(&note_path, "# Locked\n\nBody").expect("write locked note");
+    let original_dir_mode = fs::metadata(&notes_dir)
+        .expect("notes metadata")
+        .permissions()
+        .mode();
+    let original_file_mode = fs::metadata(&note_path)
+        .expect("note metadata")
+        .permissions()
+        .mode();
+    fs::set_permissions(&notes_dir, fs::Permissions::from_mode(0o555)).expect("lock notes dir");
+    fs::set_permissions(&note_path, fs::Permissions::from_mode(0o444)).expect("lock note file");
+
+    let scan_error = scan_markdown_notes_service(&connection, &visible_root)
+        .expect_err("scanner write failure should fail closed");
+
+    fs::set_permissions(&notes_dir, fs::Permissions::from_mode(original_dir_mode))
+        .expect("restore notes dir");
+    fs::set_permissions(&note_path, fs::Permissions::from_mode(original_file_mode))
+        .expect("restore note file");
+
+    assert!(format!("{scan_error:?}").len() > 0);
+    let active_count: i64 = connection
+        .query_row(
+            "select count(*) from notes where relative_path = 'Notes/locked.md' and status = 'active'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count active locked note rows");
+    assert_eq!(active_count, 0);
+    let index_count: i64 = connection
+        .query_row(
+            "select count(*) from knowledge_index_entries where entity_type = 'note' and source_type = 'markdown_frontmatter' and scan_state = 'current'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count current note indexes");
+    assert_eq!(index_count, 0);
+}
+
+#[test]
 fn p304_note_service_create_edit_persists_file_db_index_and_events() {
     let connection = migrated_in_memory_connection();
     let visible_root = temp_home("p304-note-service-create-edit");

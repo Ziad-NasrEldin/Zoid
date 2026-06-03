@@ -2028,6 +2028,267 @@ impl NoteCreateInput {
 }
 
 #[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct NoteScanResult {
+    scanned_files: usize,
+    indexed_notes: usize,
+    frontmatter_written: usize,
+    conflicted_notes: usize,
+    missing_notes_marked: usize,
+}
+
+#[allow(dead_code)]
+fn scan_markdown_notes_service(
+    connection: &Connection,
+    visible_root: &Path,
+) -> RepoResult<NoteScanResult> {
+    let notes_root = resolve_note_service_directory(visible_root, "Notes")?;
+    ensure_directory(&notes_root).map_err(|error| io_repository_error("notes", error))?;
+
+    let mut markdown_files = Vec::new();
+    collect_markdown_note_files(visible_root, &notes_root, &mut markdown_files)?;
+    markdown_files.sort();
+
+    let mut result = NoteScanResult {
+        scanned_files: 0,
+        indexed_notes: 0,
+        frontmatter_written: 0,
+        conflicted_notes: 0,
+        missing_notes_marked: 0,
+    };
+    let mut seen_note_ids = HashSet::new();
+
+    for relative_path in markdown_files {
+        let note_path = resolve_note_service_path(visible_root, &relative_path)?;
+        let markdown =
+            fs::read_to_string(&note_path).map_err(|error| io_repository_error("notes", error))?;
+        result.scanned_files += 1;
+        let needs_frontmatter_update = note_needs_identity_frontmatter_update(&markdown);
+        let identity = derive_note_identity_from_markdown(&relative_path, &markdown)?;
+        let note_id = identity.id.clone();
+
+        if seen_note_ids.contains(&note_id) {
+            mark_duplicate_note_id(connection, &note_id)?;
+            result.conflicted_notes += 1;
+            continue;
+        }
+
+        if let Some(existing_path) = existing_active_note_path(connection, &note_id)? {
+            if existing_path != relative_path {
+                mark_duplicate_note_id(connection, &note_id)?;
+                result.conflicted_notes += 1;
+                seen_note_ids.insert(note_id);
+                continue;
+            }
+        }
+
+        if needs_frontmatter_update {
+            let rendered = write_note_identity_frontmatter(&markdown, &identity)?;
+            write_note_frontmatter_atomically(&note_path, &rendered)?;
+            result.frontmatter_written += 1;
+        }
+
+        match upsert_note_identity_metadata(connection, &identity) {
+            Ok(()) => {
+                seen_note_ids.insert(note_id);
+                result.indexed_notes += 1;
+            }
+            Err(RepositoryError::Constraint { message, .. })
+                if message.contains("duplicate_id") =>
+            {
+                result.conflicted_notes += 1;
+                seen_note_ids.insert(note_id);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    result.missing_notes_marked = mark_missing_scanned_notes(connection, &seen_note_ids)?;
+    Ok(result)
+}
+
+fn note_needs_identity_frontmatter_update(markdown: &str) -> bool {
+    let Some(lines) = split_markdown_frontmatter(markdown).0 else {
+        return true;
+    };
+    yaml_scalar_value(&lines, "zoid_id").is_none()
+        || yaml_scalar_value(&lines, "title").is_none()
+        || yaml_scalar_value(&lines, "slug").is_none()
+}
+
+fn existing_active_note_path(connection: &Connection, note_id: &str) -> RepoResult<Option<String>> {
+    connection
+        .query_row(
+            "select relative_path from notes where id = ?1 and deleted_at is null",
+            params![note_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| map_repository_error("notes", error))
+}
+
+fn mark_duplicate_note_id(connection: &Connection, note_id: &str) -> RepoResult<()> {
+    connection
+        .execute(
+            "update notes set status = 'conflicted', conflict_state = 'duplicate_id', updated_at = current_timestamp where id = ?1",
+            params![note_id],
+        )
+        .map_err(|error| map_repository_error("notes", error))?;
+    Ok(())
+}
+
+fn write_note_frontmatter_atomically(note_path: &Path, rendered: &str) -> RepoResult<()> {
+    let temp_path = note_path.with_extension("md.zoid-scan-tmp");
+    if temp_path.exists() {
+        fs::remove_file(&temp_path).map_err(|error| io_repository_error("notes", error))?;
+    }
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp_path)
+        .and_then(|mut file| file.write_all(rendered.as_bytes()))
+        .map_err(|error| io_repository_error("notes", error))?;
+    fs::rename(&temp_path, note_path).map_err(|error| {
+        let _ = fs::remove_file(&temp_path);
+        io_repository_error("notes", error)
+    })?;
+    Ok(())
+}
+
+fn collect_markdown_note_files(
+    visible_root: &Path,
+    dir: &Path,
+    output: &mut Vec<String>,
+) -> RepoResult<()> {
+    let entries = fs::read_dir(dir).map_err(|error| io_repository_error("notes", error))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| io_repository_error("notes", error))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|error| io_repository_error("notes", error))?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            if name == ".Trash" {
+                continue;
+            }
+            collect_markdown_note_files(visible_root, &path, output)?;
+            continue;
+        }
+        if file_type.is_file()
+            && path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("md"))
+                .unwrap_or(false)
+        {
+            output.push(note_relative_path_from_absolute(visible_root, &path)?);
+        }
+    }
+    Ok(())
+}
+
+fn note_relative_path_from_absolute(visible_root: &Path, path: &Path) -> RepoResult<String> {
+    let relative = path
+        .strip_prefix(visible_root)
+        .map_err(|_| RepositoryError::Constraint {
+            entity: "notes",
+            message: format!("note path escapes visible root: {}", display_path(path)),
+        })?;
+    let rendered = relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    validate_note_service_relative_path(&rendered)?;
+    Ok(rendered)
+}
+
+fn mark_missing_scanned_notes(
+    connection: &Connection,
+    seen_note_ids: &HashSet<String>,
+) -> RepoResult<usize> {
+    let mut statement = connection
+        .prepare(
+            "select id from notes
+             where status not in ('deleted', 'trashed')
+               and relative_path like 'Notes/%'
+               and relative_path not like 'Notes/.Trash/%'",
+        )
+        .map_err(|error| map_repository_error("notes", error))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| map_repository_error("notes", error))?;
+    let mut missing = Vec::new();
+    for row in rows {
+        let id = row.map_err(|error| map_repository_error("notes", error))?;
+        if !seen_note_ids.contains(&id) {
+            missing.push(id);
+        }
+    }
+
+    for note_id in &missing {
+        connection
+            .execute(
+                "update notes set status = 'conflicted', conflict_state = 'path_missing', updated_at = current_timestamp where id = ?1",
+                params![note_id],
+            )
+            .map_err(|error| map_repository_error("notes", error))?;
+        mark_note_index_lifecycle(connection, note_id, "missing", "path_missing")?;
+    }
+    Ok(missing.len())
+}
+
+fn resolve_note_service_directory(visible_root: &Path, relative_path: &str) -> RepoResult<PathBuf> {
+    validate_note_service_relative_directory(relative_path)?;
+    ensure_directory(visible_root).map_err(|error| io_repository_error("notes", error))?;
+    let canonical_root = visible_root
+        .canonicalize()
+        .map_err(|error| io_repository_error("notes", error))?;
+    let candidate = visible_root.join(relative_path);
+    if candidate.exists() {
+        let metadata = fs::symlink_metadata(&candidate)
+            .map_err(|error| io_repository_error("notes", error))?;
+        if metadata.file_type().is_symlink() {
+            return Err(RepositoryError::Constraint {
+                entity: "notes",
+                message: format!("note directory is a symlink: {}", display_path(&candidate)),
+            });
+        }
+        let canonical_candidate = candidate
+            .canonicalize()
+            .map_err(|error| io_repository_error("notes", error))?;
+        if !canonical_candidate.starts_with(&canonical_root) {
+            return Err(RepositoryError::Constraint {
+                entity: "notes",
+                message: format!("note directory escapes visible root: {relative_path}"),
+            });
+        }
+    }
+    Ok(candidate)
+}
+
+fn validate_note_service_relative_directory(relative_path: &str) -> RepoResult<()> {
+    let normalized = relative_path.trim();
+    if normalized != "Notes" && !normalized.starts_with("Notes/") {
+        return Err(RepositoryError::Constraint {
+            entity: "notes",
+            message: "note directory must live under Notes/".to_string(),
+        });
+    }
+    if normalized.contains("..") || normalized.starts_with('/') || normalized.contains('\\') {
+        return Err(RepositoryError::Constraint {
+            entity: "notes",
+            message: "unsafe note directory".to_string(),
+        });
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
 fn create_markdown_note_service(
     connection: &Connection,
     visible_root: &Path,
