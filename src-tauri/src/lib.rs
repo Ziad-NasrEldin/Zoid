@@ -3957,6 +3957,27 @@ struct EntityLinkListFilter<'a> {
     counterpart_type: Option<&'a str>,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+struct ContentEntityLinkCreateRequest<'a> {
+    source_type: &'a str,
+    source_id: &'a str,
+    target_type: &'a str,
+    target_id: &'a str,
+    relation_type: &'a str,
+    created_by_actor_type: &'a str,
+    metadata_json: &'a str,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+struct ContentEntityLinkListFilter<'a> {
+    entity_type: &'a str,
+    entity_id: &'a str,
+    relation_type: Option<&'a str>,
+    counterpart_type: Option<&'a str>,
+}
+
 const ALLOWED_ENTITY_LINK_TYPES: &[&str] = &[
     "task",
     "note",
@@ -8715,6 +8736,243 @@ fn list_entity_links_by_target(
             rows.collect::<rusqlite::Result<Vec<_>>>()
         })
         .map_err(|error| map_repository_error("entity_links", error))
+}
+
+#[allow(dead_code)]
+fn create_content_entity_link_service(
+    connection: &Connection,
+    input: ContentEntityLinkCreateRequest<'_>,
+) -> RepoResult<EntityLinkRecord> {
+    validate_content_entity_link_request(connection, input)?;
+    let link_id = format!(
+        "entity_link_{:016x}",
+        fnv1a64(
+            format!(
+                "{}:{}:{}:{}:{}",
+                input.source_type,
+                input.source_id,
+                input.target_type,
+                input.target_id,
+                input.relation_type
+            )
+            .as_bytes()
+        )
+    );
+    create_entity_link(
+        connection,
+        EntityLinkCreateRequest {
+            id: &link_id,
+            source_type: input.source_type,
+            source_id: input.source_id,
+            target_type: input.target_type,
+            target_id: input.target_id,
+            relation_type: input.relation_type,
+            created_by_actor_type: input.created_by_actor_type,
+            metadata_json: input.metadata_json,
+        },
+    )
+}
+
+#[allow(dead_code)]
+fn list_content_entity_links_by_source(
+    connection: &Connection,
+    filter: ContentEntityLinkListFilter<'_>,
+) -> RepoResult<Vec<EntityLinkRecord>> {
+    validate_content_source_type(filter.entity_type)?;
+    ensure_content_source_row_exists(connection, filter.entity_type, filter.entity_id)?;
+    list_entity_links_by_source(
+        connection,
+        EntityLinkListFilter {
+            entity_type: filter.entity_type,
+            entity_id: filter.entity_id,
+            relation_type: filter.relation_type,
+            counterpart_type: filter.counterpart_type,
+        },
+    )
+}
+
+#[allow(dead_code)]
+fn list_content_entity_links_by_target(
+    connection: &Connection,
+    filter: ContentEntityLinkListFilter<'_>,
+) -> RepoResult<Vec<EntityLinkRecord>> {
+    validate_content_target_type(filter.entity_type)?;
+    ensure_content_target_exists(connection, filter.entity_type, filter.entity_id)?;
+    list_entity_links_by_target(
+        connection,
+        EntityLinkListFilter {
+            entity_type: filter.entity_type,
+            entity_id: filter.entity_id,
+            relation_type: filter.relation_type,
+            counterpart_type: filter.counterpart_type,
+        },
+    )
+}
+
+fn validate_content_entity_link_request(
+    connection: &Connection,
+    input: ContentEntityLinkCreateRequest<'_>,
+) -> RepoResult<()> {
+    validate_content_source_type(input.source_type)?;
+    validate_content_target_type(input.target_type)?;
+    validate_non_empty_entity_link_field("source_id", input.source_id)?;
+    validate_non_empty_entity_link_field("target_id", input.target_id)?;
+    validate_non_empty_entity_link_field("relation_type", input.relation_type)?;
+    validate_non_empty_entity_link_field("created_by_actor_type", input.created_by_actor_type)?;
+    validate_json_field("metadata_json", input.metadata_json)?;
+    ensure_content_source_exists(connection, input.source_type, input.source_id)?;
+    ensure_content_target_exists(connection, input.target_type, input.target_id)?;
+    Ok(())
+}
+
+fn validate_content_source_type(source_type: &str) -> RepoResult<()> {
+    match source_type {
+        "note" | "file" => Ok(()),
+        other => Err(entity_link_constraint(format!(
+            "unsupported content source_type: {other}"
+        ))),
+    }
+}
+
+fn validate_content_target_type(target_type: &str) -> RepoResult<()> {
+    match target_type {
+        "task" | "product" | "run" => Ok(()),
+        other => Err(entity_link_constraint(format!(
+            "unsupported content target_type: {other}"
+        ))),
+    }
+}
+
+fn ensure_content_source_exists(
+    connection: &Connection,
+    source_type: &str,
+    source_id: &str,
+) -> RepoResult<()> {
+    match source_type {
+        "note" => ensure_note_link_source_exists(connection, source_id),
+        "file" => ensure_file_link_source_exists(connection, source_id),
+        _ => validate_content_source_type(source_type),
+    }
+}
+
+fn ensure_content_source_row_exists(
+    connection: &Connection,
+    source_type: &str,
+    source_id: &str,
+) -> RepoResult<()> {
+    validate_non_empty_entity_link_field("entity_id", source_id)?;
+    match source_type {
+        "note" => read_note_row(connection, source_id).map(|_| ()),
+        "file" => {
+            let exists: bool = connection
+                .query_row(
+                    "select exists(select 1 from file_references where id = ?1)",
+                    params![source_id],
+                    |row| row.get::<_, i64>(0).map(|value| value == 1),
+                )
+                .map_err(|error| map_repository_error("file_references", error))?;
+            if exists {
+                Ok(())
+            } else {
+                Err(RepositoryError::NotFound {
+                    entity: "file_references",
+                    key: source_id.to_string(),
+                })
+            }
+        }
+        _ => validate_content_source_type(source_type),
+    }
+}
+
+fn ensure_content_target_exists(
+    connection: &Connection,
+    target_type: &str,
+    target_id: &str,
+) -> RepoResult<()> {
+    match target_type {
+        "task" => ensure_task_link_target_exists(connection, target_id),
+        "run" => ensure_run_link_target_exists(connection, target_id),
+        "product" => ensure_product_link_target_exists(connection, target_id),
+        _ => validate_content_target_type(target_type),
+    }
+}
+
+fn ensure_note_link_source_exists(connection: &Connection, note_id: &str) -> RepoResult<()> {
+    let note = read_note_row(connection, note_id)?;
+    if matches!(note.status.as_str(), "active" | "draft") {
+        Ok(())
+    } else {
+        Err(entity_link_constraint(format!(
+            "note source is not linkable in status {}",
+            note.status
+        )))
+    }
+}
+
+fn ensure_file_link_source_exists(connection: &Connection, file_id: &str) -> RepoResult<()> {
+    let status: Option<String> = connection
+        .query_row(
+            "select status from file_references where id = ?1",
+            params![file_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| map_repository_error("file_references", error))?;
+    match status.as_deref() {
+        Some("indexed") => Ok(()),
+        Some(status) => Err(entity_link_constraint(format!(
+            "file source is not linkable in status {status}"
+        ))),
+        None => Err(RepositoryError::NotFound {
+            entity: "file_references",
+            key: file_id.to_string(),
+        }),
+    }
+}
+
+fn ensure_task_link_target_exists(connection: &Connection, task_id: &str) -> RepoResult<()> {
+    let task = read_task_record(connection, task_id)?;
+    if task.deleted_at.is_none() {
+        Ok(())
+    } else {
+        Err(entity_link_constraint("task target is deleted".to_string()))
+    }
+}
+
+fn ensure_run_link_target_exists(connection: &Connection, run_id: &str) -> RepoResult<()> {
+    read_agent_run_required(connection, run_id).map(|_| ())
+}
+
+fn ensure_product_link_target_exists(connection: &Connection, product_id: &str) -> RepoResult<()> {
+    validate_non_empty_entity_link_field("target_id", product_id)?;
+    if !table_exists(connection, "products")? {
+        return Ok(());
+    }
+    let exists: bool = connection
+        .query_row(
+            "select exists(select 1 from products where id = ?1)",
+            params![product_id],
+            |row| row.get::<_, i64>(0).map(|value| value == 1),
+        )
+        .map_err(|error| map_repository_error("products", error))?;
+    if exists {
+        Ok(())
+    } else {
+        Err(RepositoryError::NotFound {
+            entity: "products",
+            key: product_id.to_string(),
+        })
+    }
+}
+
+fn table_exists(connection: &Connection, table_name: &str) -> RepoResult<bool> {
+    connection
+        .query_row(
+            "select exists(select 1 from sqlite_master where type = 'table' and name = ?1)",
+            params![table_name],
+            |row| row.get::<_, i64>(0).map(|value| value == 1),
+        )
+        .map_err(|error| map_repository_error("sqlite_master", error))
 }
 
 fn validate_entity_link_request(input: EntityLinkCreateRequest<'_>) -> RepoResult<()> {

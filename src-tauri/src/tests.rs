@@ -4551,6 +4551,384 @@ fn p308_file_trash_is_non_destructive_and_marks_old_index_stale() {
 }
 
 #[test]
+fn p309_note_links_to_tasks_products_and_runs_with_directional_queries() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p309-note-links");
+    let note = create_markdown_note_service(
+        &connection,
+        &visible_root,
+        NoteCreateInput {
+            title: "Linked Note".to_string(),
+            body_markdown: "Capture context".to_string(),
+            relative_path: Some("Notes/linked-note.md".to_string()),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect("create note");
+    let task = p204_task(&connection, "Linked task");
+    let profile = p204_profile(&connection, true);
+    let session = p204_session(&connection, &task, &profile);
+    let run = create_agent_run(
+        &connection,
+        AgentRunCreateInput {
+            task_id: task.id.clone(),
+            profile_id: profile.id.clone(),
+            session_id: session.id.clone(),
+            cwd: "/tmp".to_string(),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect("create run");
+
+    let task_link = create_content_entity_link_service(
+        &connection,
+        ContentEntityLinkCreateRequest {
+            source_type: "note",
+            source_id: &note.id,
+            target_type: "task",
+            target_id: &task.id,
+            relation_type: "supports",
+            created_by_actor_type: "system",
+            metadata_json: r#"{"safe":"visible"}"#,
+        },
+    )
+    .expect("link note to task");
+    let duplicate = create_content_entity_link_service(
+        &connection,
+        ContentEntityLinkCreateRequest {
+            source_type: "note",
+            source_id: &note.id,
+            target_type: "task",
+            target_id: &task.id,
+            relation_type: "supports",
+            created_by_actor_type: "system",
+            metadata_json: r#"{"ignored":"duplicate"}"#,
+        },
+    )
+    .expect("idempotent duplicate note task link");
+    assert_eq!(duplicate.id, task_link.id);
+
+    create_content_entity_link_service(
+        &connection,
+        ContentEntityLinkCreateRequest {
+            source_type: "note",
+            source_id: &note.id,
+            target_type: "product",
+            target_id: "product-alpha",
+            relation_type: "documents",
+            created_by_actor_type: "system",
+            metadata_json: "{}",
+        },
+    )
+    .expect("link note to future product id");
+    create_content_entity_link_service(
+        &connection,
+        ContentEntityLinkCreateRequest {
+            source_type: "note",
+            source_id: &note.id,
+            target_type: "run",
+            target_id: &run.id,
+            relation_type: "evidence_for",
+            created_by_actor_type: "system",
+            metadata_json: "{}",
+        },
+    )
+    .expect("link note to run");
+
+    let note_links = list_content_entity_links_by_source(
+        &connection,
+        ContentEntityLinkListFilter {
+            entity_type: "note",
+            entity_id: &note.id,
+            relation_type: None,
+            counterpart_type: None,
+        },
+    )
+    .expect("list note links");
+    assert_eq!(note_links.len(), 3);
+    assert_eq!(
+        note_links
+            .iter()
+            .map(|link| link.target_type.as_str())
+            .collect::<Vec<_>>(),
+        vec!["product", "run", "task"]
+    );
+    let task_sources = list_content_entity_links_by_target(
+        &connection,
+        ContentEntityLinkListFilter {
+            entity_type: "task",
+            entity_id: &task.id,
+            relation_type: Some("supports"),
+            counterpart_type: Some("note"),
+        },
+    )
+    .expect("list task note links");
+    assert_eq!(task_sources, vec![task_link]);
+}
+
+#[test]
+fn p309_file_links_to_tasks_products_and_runs_after_file_reference_exists() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p309-file-links");
+    fs::create_dir_all(visible_root.join("Files")).expect("create files dir");
+    fs::write(
+        visible_root.join("Files/evidence.md"),
+        "# Evidence\n\nUseful",
+    )
+    .expect("write evidence file");
+    open_file_reference_service(
+        &connection,
+        &visible_root,
+        "zoid_visible",
+        "Files/evidence.md",
+    )
+    .expect("open file to create reference");
+    let file_id = file_reference_entity_id("zoid_visible", "Files/evidence.md");
+    let task = p204_task(&connection, "File linked task");
+    let profile = p204_profile(&connection, true);
+    let session = p204_session(&connection, &task, &profile);
+    let run = create_agent_run(
+        &connection,
+        AgentRunCreateInput {
+            task_id: task.id.clone(),
+            profile_id: profile.id.clone(),
+            session_id: session.id.clone(),
+            cwd: "/tmp".to_string(),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect("create run");
+
+    for (target_type, target_id, relation_type) in [
+        ("task", task.id.as_str(), "attachment_for"),
+        ("product", "product-beta", "asset_for"),
+        ("run", run.id.as_str(), "artifact_for"),
+    ] {
+        create_content_entity_link_service(
+            &connection,
+            ContentEntityLinkCreateRequest {
+                source_type: "file",
+                source_id: &file_id,
+                target_type,
+                target_id,
+                relation_type,
+                created_by_actor_type: "system",
+                metadata_json: "{}",
+            },
+        )
+        .expect("link file source");
+    }
+
+    let file_links = list_content_entity_links_by_source(
+        &connection,
+        ContentEntityLinkListFilter {
+            entity_type: "file",
+            entity_id: &file_id,
+            relation_type: None,
+            counterpart_type: None,
+        },
+    )
+    .expect("list file links");
+    assert_eq!(file_links.len(), 3);
+    assert!(file_links.iter().all(|link| link.source_type == "file"));
+    assert_eq!(
+        count_rows(
+            &connection,
+            "select count(*) from entity_links where source_type = 'file' and target_type in ('task', 'product', 'run')"
+        ),
+        3
+    );
+}
+
+#[test]
+fn p309_content_links_reject_invalid_direction_missing_entities_and_secret_metadata() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p309-rejects");
+    let note = create_markdown_note_service(
+        &connection,
+        &visible_root,
+        NoteCreateInput::new("Reject Note", "Body"),
+    )
+    .expect("create note");
+    let task = p204_task(&connection, "Reject task");
+
+    let invalid_direction = create_content_entity_link_service(
+        &connection,
+        ContentEntityLinkCreateRequest {
+            source_type: "task",
+            source_id: &task.id,
+            target_type: "note",
+            target_id: &note.id,
+            relation_type: "backlink",
+            created_by_actor_type: "system",
+            metadata_json: "{}",
+        },
+    )
+    .expect_err("task to note is not a P3.09 content link");
+    assert!(format!("{invalid_direction:?}").contains("unsupported content source_type"));
+
+    let missing_note = create_content_entity_link_service(
+        &connection,
+        ContentEntityLinkCreateRequest {
+            source_type: "note",
+            source_id: "note_missing_p309",
+            target_type: "task",
+            target_id: &task.id,
+            relation_type: "supports",
+            created_by_actor_type: "system",
+            metadata_json: "{}",
+        },
+    )
+    .expect_err("missing note rejected");
+    assert!(matches!(
+        missing_note,
+        RepositoryError::NotFound {
+            entity: "notes",
+            ..
+        }
+    ));
+
+    let missing_file = create_content_entity_link_service(
+        &connection,
+        ContentEntityLinkCreateRequest {
+            source_type: "file",
+            source_id: "file_ref_missing_p309",
+            target_type: "task",
+            target_id: &task.id,
+            relation_type: "attachment_for",
+            created_by_actor_type: "system",
+            metadata_json: "{}",
+        },
+    )
+    .expect_err("missing file rejected");
+    assert!(matches!(
+        missing_file,
+        RepositoryError::NotFound {
+            entity: "file_references",
+            ..
+        }
+    ));
+
+    let missing_task = create_content_entity_link_service(
+        &connection,
+        ContentEntityLinkCreateRequest {
+            source_type: "note",
+            source_id: &note.id,
+            target_type: "task",
+            target_id: "task_missing_p309",
+            relation_type: "supports",
+            created_by_actor_type: "system",
+            metadata_json: "{}",
+        },
+    )
+    .expect_err("missing task rejected");
+    assert!(matches!(
+        missing_task,
+        RepositoryError::NotFound {
+            entity: "tasks",
+            ..
+        }
+    ));
+
+    let secret_metadata = create_content_entity_link_service(
+        &connection,
+        ContentEntityLinkCreateRequest {
+            source_type: "note",
+            source_id: &note.id,
+            target_type: "task",
+            target_id: &task.id,
+            relation_type: "supports",
+            created_by_actor_type: "system",
+            metadata_json: r#"{"api_key":"dummy-secret","safe":"visible"}"#,
+        },
+    )
+    .expect("metadata is redacted through generic entity-link service");
+    assert!(secret_metadata.metadata_json.contains("[REDACTED]"));
+    assert!(!secret_metadata.metadata_json.contains("dummy-secret"));
+}
+
+#[test]
+fn p309_content_link_source_queries_survive_later_note_and_file_state_changes() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p309-state-listing");
+    let note = create_markdown_note_service(
+        &connection,
+        &visible_root,
+        NoteCreateInput::new("Stateful Note", "Body"),
+    )
+    .expect("create note");
+    fs::create_dir_all(visible_root.join("Files")).expect("create files dir");
+    fs::write(visible_root.join("Files/state.md"), "# State").expect("write file");
+    open_file_reference_service(&connection, &visible_root, "zoid_visible", "Files/state.md")
+        .expect("open file reference");
+    let file_id = file_reference_entity_id("zoid_visible", "Files/state.md");
+    let task = p204_task(&connection, "State task");
+
+    create_content_entity_link_service(
+        &connection,
+        ContentEntityLinkCreateRequest {
+            source_type: "note",
+            source_id: &note.id,
+            target_type: "task",
+            target_id: &task.id,
+            relation_type: "supports",
+            created_by_actor_type: "system",
+            metadata_json: "{}",
+        },
+    )
+    .expect("link note before state change");
+    create_content_entity_link_service(
+        &connection,
+        ContentEntityLinkCreateRequest {
+            source_type: "file",
+            source_id: &file_id,
+            target_type: "task",
+            target_id: &task.id,
+            relation_type: "attachment_for",
+            created_by_actor_type: "system",
+            metadata_json: "{}",
+        },
+    )
+    .expect("link file before state change");
+
+    connection
+        .execute(
+            "update notes set status = 'trashed', updated_at = current_timestamp where id = ?1",
+            params![note.id],
+        )
+        .expect("mark note trashed");
+    connection
+        .execute(
+            "update file_references set status = 'trashed', updated_at = current_timestamp where id = ?1",
+            params![file_id],
+        )
+        .expect("mark file trashed");
+
+    let note_links = list_content_entity_links_by_source(
+        &connection,
+        ContentEntityLinkListFilter {
+            entity_type: "note",
+            entity_id: &note.id,
+            relation_type: None,
+            counterpart_type: None,
+        },
+    )
+    .expect("trashed note links remain queryable");
+    let file_links = list_content_entity_links_by_source(
+        &connection,
+        ContentEntityLinkListFilter {
+            entity_type: "file",
+            entity_id: &file_id,
+            relation_type: None,
+            counterpart_type: None,
+        },
+    )
+    .expect("trashed file links remain queryable");
+    assert_eq!(note_links.len(), 1);
+    assert_eq!(file_links.len(), 1);
+}
+
+#[test]
 fn p306_note_scanner_detects_manual_rename_without_mutating_original_identity() {
     let connection = migrated_in_memory_connection();
     let visible_root = temp_home("p306-manual-rename");
