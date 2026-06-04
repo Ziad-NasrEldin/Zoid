@@ -1,109 +1,56 @@
-# Critique Report: Phase 3 Notes/Files/Knowledge Closeout Re-review
+# Critique Report: Phase 3 Notes/Files Knowledge Closeout
 
-Verdict: APPROVED
+## Verdict
 
-## Scope reviewed
+APPROVED
 
-Independent re-review of the live working tree at `/Users/ziadnasreldin/Zoid` after the latest required fixes, with focus on prior findings:
+## Summary
 
-- R1: no untracked required Phase 3 files.
-- R2: no active unrelated Phase 4/5 code, migration registrations, commands, or tests in the Phase 3 closeout tree.
-- R3: handoff/tracker truthfully reflect final verification and cleanup.
+Final quick re-review only. The prior requested closeout checks remain satisfied, and the handoff Git-info fix is now correct: the reviewed Phase 3 implementation commit is `bca06350d4f876f04c4112be3cfa557b11863d29` / `bca0635`, and `.hermes/reviews/phase-3-notes-files-knowledge/handoff.md` reports that same full and short SHA.
 
-## Evidence checked
+I did not edit code. The only file written in this re-review is this critique report.
 
-### Working-tree hygiene / R1
+## What was changed
 
-`git status --porcelain=v1` showed only tracked/staged Phase 3 closeout files and no untracked (`??`) files:
+- Handoff Git info now reports:
+  - Branch: `main`
+  - Reviewed Phase 3 implementation commit: `bca0635 Complete Phase 3 notes files knowledge closeout`
+  - Reviewed Phase 3 implementation full SHA: `bca06350d4f876f04c4112be3cfa557b11863d29`
+- Working tree changes at re-review time are limited to review artifacts:
+  - `.hermes/reviews/phase-3-notes-files-knowledge/handoff.md`
+  - `.hermes/reviews/phase-3-notes-files-knowledge/critique-report.md`
 
-```text
- M .hermes/reviews/phase-3-notes-files-knowledge/critique-report.md
- M .hermes/reviews/phase-3-notes-files-knowledge/handoff.md
- M Docs/2026-06-01-zoid-implementation-tracker.md
- M package.json
- M src-tauri/src/lib.rs
- M src-tauri/src/tests.rs
- M src/App.tsx
-A  src/contentLinkedPanels.test.ts
-A  src/contentLinkedPanels.ts
-A  src/contentLinkedPanelsView.tsx
- M src/fileWorkspace.tsx
- M src/noteWorkspace.tsx
-```
+## Required fixes
 
-The required new frontend files are staged/tracked (`A`), not untracked scratch files. No `??` entries were present.
+| ID | Severity | Area | Issue | Evidence | Required fix |
+|----|----------|------|-------|----------|--------------|
+| None | - | - | No required fixes remain. | Current HEAD and handoff Git info match; prior Phase 4/5 and verify checks remain satisfied. | None. |
 
-Result: R1 resolved.
+## Improvements
 
-### Future-scope Phase 4/5 cleanup / R2
+| ID | Priority | Area | Suggestion | Why it matters |
+|----|----------|------|------------|----------------|
+| None | - | - | No additional improvements required for this closeout. | - |
 
-Targeted grep over the explicitly sensitive Phase 3 build areas returned no matches:
+## Tests performed
 
-- `src-tauri/src/lib.rs`
-- `src-tauri/src/tests.rs`
-- `src-tauri/migrations`
+- `git rev-parse HEAD`: `bca06350d4f876f04c4112be3cfa557b11863d29`.
+- `git rev-parse --short HEAD`: `bca0635`.
+- `git branch --show-current`: `main`.
+- Read `.hermes/reviews/phase-3-notes-files-knowledge/handoff.md`: Git info lines now report current HEAD `bca0635` and full SHA `bca06350d4f876f04c4112be3cfa557b11863d29`.
+- `git status --short`: only review docs were modified before this report rewrite.
+- `git diff --name-only`: only `.hermes/reviews/phase-3-notes-files-knowledge/critique-report.md` and `.hermes/reviews/phase-3-notes-files-knowledge/handoff.md` were changed.
+- Targeted active-source future-scope search:
+  - `src-tauri/src`: no active Phase 4/5 implementation found; remaining `OmniSocials` hits are planned registry references in `lib.rs` and a registry-key assertion in `tests.rs`.
+  - `src`: no active Phase 4/5 implementation found; remaining `Launch Gate` / `OmniSocials` hits are workspace/settings seed text.
+  - `src-tauri/migrations`: no `*phase4*` or `*phase5*` migration files found.
+- Confirmed prior review evidence remains documented: `npm run verify:local` already passed in the immediately prior review with Rust tests `168 passed; 0 failed; 1 ignored`, frontend tests passed, and frontend build passed. No code changed after that evidence, so no test rerun was required for this handoff-only Git-info fix.
 
-Pattern used:
+## Tests still needed
 
-```text
-0010_phase4|phase4_code_repos|RepoProfile|repo_profiles|LaunchGate|launch_gate|VerificationEvidence|verification_evidence|p400_repo|p501|p503|p504|ContentPlanInput|phase5_content
-```
+- None for this closeout.
 
-Result: 0 matches.
+## Dev-agent instructions
 
-A broader repository search found only documentation references in PRD/plan/tracker future-phase text, not active source, tests, migration registration, or build/runtime code. This is acceptable because Phase 4 remains documented as future scope.
-
-I also inspected the current command surface around the Phase 3 linked-panel addition. `src-tauri/src/lib.rs` contains the new Phase 3 command `list_content_entity_links_by_source_command`, its request type, helper, and registration in `tauri::generate_handler!`. No Phase 4 repo/launch-gate or Phase 5 content/social command registrations were present in the sensitive grep set.
-
-Result: R2 resolved.
-
-### Handoff/tracker truthfulness / R3
-
-The handoff now states:
-
-- unrelated partial Phase 4/5 registration/test fragments were removed from the tracked Phase 3 working tree;
-- scratch future migrations were moved out of the repository;
-- final `npm run verify:local` passed;
-- `git diff --check` passed;
-- `git status --porcelain=v1` has no untracked files.
-
-The implementation tracker now records P3.13-P3.21 with concrete test/evidence names and final verification. It keeps Phase 4 as pending future work. P3.19/P3.20 are truthfully described as native-command disk workflow tests, not overclaimed as GUI installed-app manual verification.
-
-Independent verification in this re-review matched the handoff/tracker claims:
-
-```text
-$ git diff --check
-# PASS (no output)
-```
-
-```text
-$ npm run verify:local
-PASS: Rust tests passed
-PASS: frontend build passed
-PASS: local push verification passed (--skip-package)
-```
-
-Detailed `verify:local` output included:
-
-- Rust: 168 passed / 0 failed / 1 ignored.
-- Frontend tests: passed, including `contentLinkedPanels tests passed`.
-- Build: Vite production build passed with 58 modules transformed.
-
-Result: R3 resolved.
-
-### Command surface and linked panels
-
-The content linked-panel implementation queries persisted/native bridge data:
-
-- `loadContentLinkedPanelsFromBridge` invokes `list_entity_history_command` for history.
-- It invokes `list_content_entity_links_by_source_command` for content entity links.
-- Idle/empty states render truthful copy and no fabricated links.
-- The frontend test asserts bridge command calls and verifies no fallback link fabrication in idle state.
-
-This satisfies the closeout focus area that linked panels must not invent fake note/file relationship data.
-
-## Final approval statement
-
-APPROVED. R1, R2, and R3 are resolved.
-
-No further required fixes for this closeout review.
+1. No further fixes required.
+2. Proceed with Phase 3 closeout as approved.

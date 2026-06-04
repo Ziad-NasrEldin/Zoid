@@ -74,9 +74,9 @@ cargo test --manifest-path src-tauri/Cargo.toml p320_ -- --nocapture
 ## Git info
 
 - Branch: `main`
-- Current HEAD before commit: `587f2ee`
-- Commit SHA for this work: not committed yet.
-- Current working tree is self-contained for Phase 3 review: required new frontend files are tracked/staged (`src/contentLinkedPanels.ts`, `src/contentLinkedPanelsView.tsx`, `src/contentLinkedPanels.test.ts`), and no untracked scratch files remain in `git status --porcelain=v1`.
+- Reviewed Phase 3 implementation commit: `bca0635 Complete Phase 3 notes files knowledge closeout`.
+- Reviewed Phase 3 implementation full SHA: `bca06350d4f876f04c4112be3cfa557b11863d29`.
+- Current Phase 3 code tree is self-contained: required frontend files are committed, no untracked scratch files remain, and only review-doc updates may appear in `git status --porcelain=v1` during the critique loop.
 
 ## Frontend/backend/database notes
 
