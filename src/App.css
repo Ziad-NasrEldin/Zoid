@@ -474,6 +474,18 @@ input:focus-visible {
   overflow: hidden;
 }
 
+.split-view.native-editor-active {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.split-view.native-editor-active .primary-pane {
+  grid-column: 1 / -1;
+}
+
+.split-view.native-editor-active .inspector-pane {
+  display: none;
+}
+
 .primary-pane,
 .inspector-pane {
   min-width: 0;
@@ -490,6 +502,106 @@ input:focus-visible {
   display: flex;
   flex-direction: column;
   gap: var(--space-12);
+}
+
+.native-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  min-width: 0;
+}
+
+.native-workspace-header,
+.native-workspace-panel {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-2xl);
+  background: var(--material-card);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-15);
+  backdrop-filter: blur(20px) saturate(1.1);
+  -webkit-backdrop-filter: blur(20px) saturate(1.1);
+}
+
+.native-workspace-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.native-workspace-header h2,
+.native-workspace-header p {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.native-workspace-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.8fr) minmax(0, 1.2fr);
+  gap: var(--space-12);
+}
+
+.native-workspace-panel ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-7);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.native-workspace-panel li button,
+.native-workspace-panel input,
+.native-workspace-panel select,
+.native-workspace-panel textarea {
+  width: 100%;
+}
+
+.native-workspace-panel li button {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg);
+  background: var(--material-control);
+  padding: var(--space-8);
+  text-align: left;
+}
+
+.native-workspace-panel form {
+  display: grid;
+  gap: var(--space-10);
+}
+
+.native-workspace-panel label {
+  display: grid;
+  gap: var(--space-5);
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.native-workspace-panel input,
+.native-workspace-panel select,
+.native-workspace-panel textarea {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg);
+  background: var(--material-control);
+  color: var(--color-text);
+  padding: var(--space-8) var(--space-10);
+  font: inherit;
+}
+
+.native-workspace-panel textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+
+.native-workspace-panel pre {
+  max-height: 220px;
+  overflow: auto;
+  border-radius: var(--radius-lg);
+  background: var(--material-control-muted);
+  padding: var(--space-10);
+  white-space: pre-wrap;
 }
 
 .hero-card,

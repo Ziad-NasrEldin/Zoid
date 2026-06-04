@@ -41,6 +41,30 @@ import {
   type TaskBridgeInvoke,
   type TaskBridgeUiState,
 } from "./taskBridgeIntegration";
+import {
+  createInitialNoteBridgeState,
+  createNoteThroughBridge,
+  editNoteThroughBridge,
+  formDraftForNote,
+  refreshNotesFromBridge,
+  scanNotesThroughBridge,
+  selectNoteThroughBridge,
+  trashNoteThroughBridge,
+  type NoteBridgeInvoke,
+  type NoteBridgeUiState,
+} from "./noteBridgeIntegration";
+import type { NoteFormDraft } from "./noteViewModel";
+import { NoteWorkspace } from "./noteWorkspace";
+import {
+  browseFilesFromBridge,
+  createInitialFileBridgeState,
+  performFileActionThroughBridge,
+  previewFileThroughBridge,
+  type FileBridgeInvoke,
+  type FileBridgeUiState,
+} from "./fileBridgeIntegration";
+import type { FileActionDraft } from "./fileViewModel";
+import { FileWorkspace } from "./fileWorkspace";
 import type { TaskFormDraft } from "./taskViewModel";
 import { TaskWorkspace } from "./taskWorkspace";
 import { loadTaskLinkedPanelsFromBridge, type TaskLinkedPanelsState } from "./taskLinkedPanels";
@@ -403,6 +427,8 @@ const ACTIVE_RUNS_BRIDGE_GAP =
   "No persisted run-list command is registered in the native bridge yet; Today cannot query active AgentRun rows truthfully.";
 
 const taskInvoke: TaskBridgeInvoke = (command, args) => invoke(command, args);
+const noteInvoke: NoteBridgeInvoke = (command, args) => invoke(command, args);
+const fileInvoke: FileBridgeInvoke = (command, args) => invoke(command, args);
 
 function bridgeErrorReason(label: string, error: unknown) {
   const detail = error instanceof Error ? error.message : typeof error === "string" ? error : "unknown native bridge error";
@@ -544,6 +570,8 @@ function App() {
   const [todayTasks, setTodayTasks] = useState<TodayDataState<TodayTaskRecord>>({ state: "checking" });
   const [todayInbox, setTodayInbox] = useState<TodayDataState<TodayNotificationRecord>>({ state: "checking" });
   const [taskBridgeUi, setTaskBridgeUi] = useState<TaskBridgeUiState>(() => createInitialTaskBridgeState("tasks"));
+  const [noteBridgeUi, setNoteBridgeUi] = useState<NoteBridgeUiState>(() => createInitialNoteBridgeState());
+  const [fileBridgeUi, setFileBridgeUi] = useState<FileBridgeUiState>(() => createInitialFileBridgeState());
   const [taskLinkedPanels, setTaskLinkedPanels] = useState<TaskLinkedPanelsState>({ mode: "idle", taskId: null });
   const [cleanSessions, setCleanSessions] = useState<Record<string, CleanSessionState>>({});
   const [runControls, setRunControls] = useState<RunControlsState>(() => createInitialRunControlsState({ taskId: null, profileId: "default", cwd: "" }));
@@ -712,6 +740,55 @@ function App() {
     if (next.mode === "ready" && next.draft.taskId) await loadLinkedPanels(next.draft.taskId);
   }, [loadLinkedPanels, manualReview]);
 
+  useEffect(() => {
+    let cancelled = false;
+    if (activeWorkspace === "notes") {
+      setNoteBridgeUi((current) => ({ ...current, state: { mode: "loading", selectedNoteId: current.state.selectedNoteId } }));
+      refreshNotesFromBridge(noteInvoke, { selectedNoteId: noteBridgeUi.state.selectedNoteId }).then((state) => {
+        if (!cancelled) setNoteBridgeUi((current) => ({ ...current, state }));
+      });
+    }
+    if (activeWorkspace === "files") {
+      setFileBridgeUi((current) => ({ ...current, state: { mode: "loading", rootKey: current.rootKey, relativePath: current.relativePath, selectedPath: current.state.selectedPath } }));
+      browseFilesFromBridge(fileInvoke, { rootKey: fileBridgeUi.rootKey, relativePath: fileBridgeUi.relativePath, selectedPath: fileBridgeUi.state.selectedPath }).then((state) => {
+        if (!cancelled) setFileBridgeUi((current) => ({ ...current, state }));
+      });
+    }
+    return () => { cancelled = true; };
+  }, [activeWorkspace]);
+
+  const handleNoteFormChange = useCallback((form: NoteFormDraft) => setNoteBridgeUi((current) => ({ ...current, form, formErrors: {} })), []);
+  const handleCreateNote = useCallback(async (form: NoteFormDraft) => setNoteBridgeUi(await createNoteThroughBridge(noteInvoke, form)), []);
+  const handleEditNote = useCallback(async (noteId: string, form: NoteFormDraft) => setNoteBridgeUi(await editNoteThroughBridge(noteInvoke, noteId, form)), []);
+  const handleSelectNote = useCallback(async (noteId: string) => {
+    const state = await selectNoteThroughBridge(noteInvoke, noteId);
+    setNoteBridgeUi((current) => ({ ...current, form: state.mode === "ready" ? formDraftForNote(state.notes.find((note) => note.id === state.selectedNoteId) ?? state.notes[0] ?? { id: "", title: "", slug: "", relative_path: "Notes/untitled.md", status: "active", conflict_state: "clean", body_digest: "", metadata_json: "{}", markdown: "" }) : current.form, formErrors: {}, state }));
+  }, []);
+  const handleRefreshNotes = useCallback(async () => {
+    const state = await refreshNotesFromBridge(noteInvoke, { selectedNoteId: noteBridgeUi.state.selectedNoteId });
+    setNoteBridgeUi((current) => ({ ...current, state }));
+  }, [noteBridgeUi.state.selectedNoteId]);
+  const handleScanNotes = useCallback(async () => {
+    const state = await scanNotesThroughBridge(noteInvoke, noteBridgeUi.state.selectedNoteId);
+    setNoteBridgeUi((current) => ({ ...current, state }));
+  }, [noteBridgeUi.state.selectedNoteId]);
+  const handleTrashNote = useCallback(async (noteId: string) => {
+    const state = await trashNoteThroughBridge(noteInvoke, noteId);
+    setNoteBridgeUi((current) => ({ ...current, state }));
+  }, []);
+
+  const handleFileBrowsePathChange = useCallback((rootKey: string, relativePath: string) => setFileBridgeUi((current) => ({ ...current, rootKey, relativePath })), []);
+  const handleRefreshFiles = useCallback(async () => {
+    const state = await browseFilesFromBridge(fileInvoke, { rootKey: fileBridgeUi.rootKey, relativePath: fileBridgeUi.relativePath, selectedPath: fileBridgeUi.state.selectedPath });
+    setFileBridgeUi((current) => ({ ...current, state }));
+  }, [fileBridgeUi.rootKey, fileBridgeUi.relativePath, fileBridgeUi.state.selectedPath]);
+  const handleSelectFile = useCallback(async (relativePath: string) => {
+    const state = await previewFileThroughBridge(fileInvoke, fileBridgeUi.state, relativePath);
+    setFileBridgeUi((current) => ({ ...current, actionDraft: { ...current.actionDraft, source_relative_path: relativePath }, state }));
+  }, [fileBridgeUi.state]);
+  const handleFileActionDraftChange = useCallback((actionDraft: FileActionDraft) => setFileBridgeUi((current) => ({ ...current, actionDraft, actionErrors: [] })), []);
+  const handlePerformFileActionClick = useCallback(async () => setFileBridgeUi(await performFileActionThroughBridge(fileInvoke, fileBridgeUi)), [fileBridgeUi]);
+
   const workspaceRegistry = useMemo(() => buildWorkspaceRegistryView(status, statusError), [status, statusError]);
   const workspaces = workspaceRegistry.workspaces;
   const workspaceChrome = useMemo(
@@ -810,7 +887,7 @@ function App() {
       <section className="app-stage">
         <WorkspaceHeader nativeState={nativeState} statusTone={statusTone} title={activeWorkspaceLabel} />
 
-        <div className="split-view">
+        <div className={`split-view ${active?.id === "notes" || active?.id === "files" ? "native-editor-active" : ""}`}>
           <section className="primary-pane" aria-label="Workspace overview">
             {active?.id === "today" ? (
               <TodayWorkspaceOverview
@@ -859,6 +936,32 @@ function App() {
                   />
                 }
                 state={taskBridgeUi.state}
+              />
+            ) : active?.id === "notes" ? (
+              <NoteWorkspace
+                form={noteBridgeUi.form}
+                formErrors={noteBridgeUi.formErrors}
+                onCreateNote={handleCreateNote}
+                onEditNote={handleEditNote}
+                onFormChange={handleNoteFormChange}
+                onRefresh={handleRefreshNotes}
+                onScan={handleScanNotes}
+                onSelectNote={handleSelectNote}
+                onTrashNote={handleTrashNote}
+                state={noteBridgeUi.state}
+              />
+            ) : active?.id === "files" ? (
+              <FileWorkspace
+                actionDraft={fileBridgeUi.actionDraft}
+                actionErrors={fileBridgeUi.actionErrors}
+                onActionDraftChange={handleFileActionDraftChange}
+                onBrowsePathChange={handleFileBrowsePathChange}
+                onPerformAction={handlePerformFileActionClick}
+                onRefresh={handleRefreshFiles}
+                onSelectFile={handleSelectFile}
+                relativePath={fileBridgeUi.relativePath}
+                rootKey={fileBridgeUi.rootKey}
+                state={fileBridgeUi.state}
               />
             ) : (
             <>
