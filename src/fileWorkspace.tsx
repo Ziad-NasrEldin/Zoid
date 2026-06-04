@@ -1,4 +1,4 @@
-import type { FormEvent } from "react";
+import type { FormEvent, ReactNode } from "react";
 import { buildFileWorkspaceView, fileBridgeCommands, validateFileAction, type FileActionDraft, type FileWorkspaceState } from "./fileViewModel";
 
 export type FileWorkspaceProps = {
@@ -6,6 +6,7 @@ export type FileWorkspaceProps = {
   rootKey: string;
   relativePath: string;
   actionDraft: FileActionDraft;
+  linkedPanels?: ReactNode;
   actionErrors?: string[];
   onBrowsePathChange?: (rootKey: string, relativePath: string) => void;
   onRefresh?: () => void;
@@ -14,7 +15,7 @@ export type FileWorkspaceProps = {
   onPerformAction?: () => void;
 };
 
-export function FileWorkspace({ state, rootKey, relativePath, actionDraft, actionErrors = [], onBrowsePathChange, onRefresh, onSelectFile, onActionDraftChange, onPerformAction }: FileWorkspaceProps) {
+export function FileWorkspace({ state, rootKey, relativePath, actionDraft, linkedPanels, actionErrors = [], onBrowsePathChange, onRefresh, onSelectFile, onActionDraftChange, onPerformAction }: FileWorkspaceProps) {
   const view = buildFileWorkspaceView(state);
   const validation = validateFileAction(actionDraft);
   const visibleErrors = actionErrors.length > 0 ? actionErrors : validation.errors;
@@ -49,6 +50,8 @@ export function FileWorkspace({ state, rootKey, relativePath, actionDraft, actio
       </div>
 
       <section className="native-workspace-panel" aria-label="File action policy"><p>{view.policyCopy}</p><p>{"actionCopy" in view ? view.actionCopy : "No action state."}</p></section>
+
+      {linkedPanels}
 
       <section className="native-workspace-panel" aria-label="File actions">
         <h3>Perform file action</h3>

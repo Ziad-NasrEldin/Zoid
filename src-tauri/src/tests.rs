@@ -3115,6 +3115,7 @@ fn tauri_bridge_command_surface_lists_registered_p116_commands() {
         "list_run_history_command",
         "list_notification_history_command",
         "list_entity_history_command",
+        "list_content_entity_links_by_source_command",
     ] {
         assert!(
             TAURI_BRIDGE_COMMAND_NAMES.contains(&command_name),
@@ -3134,8 +3135,9 @@ fn tauri_bridge_command_surface_lists_registered_p116_commands() {
 
 #[test]
 fn p310_tauri_bridge_command_surface_registers_notes_and_files_commands() {
-    assert_eq!(TAURI_BRIDGE_COMMAND_NAMES.len(), 46);
+    assert_eq!(TAURI_BRIDGE_COMMAND_NAMES.len(), 47);
     for command_name in [
+        "list_content_entity_links_by_source_command",
         "create_markdown_note_command",
         "read_note_command",
         "list_notes_command",
@@ -3374,6 +3376,151 @@ fn p310_file_bridge_commands_browse_preview_and_require_persisted_confirmation_f
     )
     .expect_err("unsupported file action should fail closed");
     assert!(unsupported.contains("unsupported file action"));
+}
+
+#[test]
+fn p319_manual_note_workflow_persists_after_restart_and_matches_disk_state() {
+    let (connection, database_path) = migrated_file_connection("p319-note-manual");
+    let visible_root = temp_home("p319-note-visible");
+
+    let created = create_markdown_note_command_with_connection(
+        &connection,
+        &visible_root,
+        NoteCommandCreateRequest {
+            title: "Manual Disk Note".to_string(),
+            body_markdown: "Initial manual body".to_string(),
+            relative_path: Some("Notes/manual-disk.md".to_string()),
+            metadata_json: None,
+        },
+    )
+    .expect("create manual note");
+    assert!(visible_root.join(&created.relative_path).exists());
+
+    let edited = edit_markdown_note_command_with_connection(
+        &connection,
+        &visible_root,
+        created.id.clone(),
+        NoteCommandEditRequest {
+            markdown: "# Manual Disk Note\n\nEdited manual body".to_string(),
+        },
+    )
+    .expect("edit manual note");
+    assert!(edited.markdown.contains("Edited manual body"));
+
+    let trashed =
+        trash_markdown_note_command_with_connection(&connection, &visible_root, created.id.clone())
+            .expect("trash manual note");
+    assert_eq!(trashed.status, "trashed");
+    assert!(visible_root.join(&trashed.relative_path).exists());
+
+    let deleted = delete_markdown_note_command_with_connection(
+        &connection,
+        &visible_root,
+        created.id.clone(),
+    )
+    .expect("soft delete manual note");
+    assert_eq!(deleted.status, "deleted");
+    assert!(visible_root.join(&deleted.relative_path).exists());
+
+    drop(connection);
+    let reopened = open_foundation_database(&database_path).expect("reopen p319 database");
+    let persisted = read_note_command_with_connection(&reopened, &visible_root, created.id.clone())
+        .expect("read note after restart");
+    assert_eq!(persisted.status, "deleted");
+    assert!(persisted.markdown.contains("Edited manual body"));
+    assert!(visible_root.join(&persisted.relative_path).exists());
+}
+
+#[test]
+fn p320_manual_file_workflow_browses_previews_and_performs_confirmed_safe_operation() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p320-file-manual");
+    fs::create_dir_all(visible_root.join("Files")).expect("create files dir");
+    fs::write(
+        visible_root.join("Files/source.md"),
+        "# Source\n\nManual preview",
+    )
+    .expect("write source file");
+
+    let entries = browse_files_command_with_connection(
+        &connection,
+        &visible_root,
+        FileBrowseCommandRequest {
+            root_key: "zoid_visible".to_string(),
+            relative_path: "Files".to_string(),
+        },
+    )
+    .expect("browse manual files");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].relative_path, "Files/source.md");
+
+    let opened = open_file_reference_command_with_connection(
+        &connection,
+        &visible_root,
+        FileReferenceCommandRequest {
+            root_key: "zoid_visible".to_string(),
+            relative_path: "Files/source.md".to_string(),
+        },
+    )
+    .expect("open manual file");
+    assert_eq!(opened.display_name, "source.md");
+
+    let preview = preview_file_command_with_connection(
+        &connection,
+        &visible_root,
+        FileReferenceCommandRequest {
+            root_key: "zoid_visible".to_string(),
+            relative_path: "Files/source.md".to_string(),
+        },
+    )
+    .expect("preview manual file");
+    assert!(preview.preview_text.contains("Manual preview"));
+
+    let blocked = perform_file_action_command_with_connection(
+        &connection,
+        &visible_root,
+        FileActionCommandRequest {
+            action: "copy".to_string(),
+            root_key: "zoid_visible".to_string(),
+            source_relative_path: "Files/source.md".to_string(),
+            destination_relative_path: Some("Files/confirmed-copy.md".to_string()),
+            confirmation_id: None,
+        },
+    )
+    .expect_err("manual copy without confirmation is blocked");
+    assert!(blocked.contains("confirmation_required"));
+    assert!(!visible_root.join("Files/confirmed-copy.md").exists());
+
+    let confirmation = create_confirmation_decision(
+        &connection,
+        ConfirmationDecisionRequest {
+            action_category: "move_rename_copy_file",
+            decision: ConfirmationDecisionState::Approved,
+            actor: ConfirmationActor::human(Some("p320-test")),
+            summary: "Approve safe manual copy",
+            event_id: None,
+            metadata_json: "{}",
+        },
+    )
+    .expect("persist manual copy confirmation");
+
+    perform_file_action_command_with_connection(
+        &connection,
+        &visible_root,
+        FileActionCommandRequest {
+            action: "copy".to_string(),
+            root_key: "zoid_visible".to_string(),
+            source_relative_path: "Files/source.md".to_string(),
+            destination_relative_path: Some("Files/confirmed-copy.md".to_string()),
+            confirmation_id: Some(confirmation.id),
+        },
+    )
+    .expect("confirmed manual copy succeeds");
+    assert_eq!(
+        fs::read_to_string(visible_root.join("Files/confirmed-copy.md"))
+            .expect("read copied bytes"),
+        "# Source\n\nManual preview"
+    );
 }
 
 #[test]
@@ -4908,6 +5055,51 @@ fn p309_note_links_to_tasks_products_and_runs_with_directional_queries() {
     )
     .expect("list task note links");
     assert_eq!(task_sources, vec![task_link]);
+}
+
+#[test]
+fn p313_content_entity_link_command_lists_note_source_links_without_fake_fallbacks() {
+    let connection = migrated_in_memory_connection();
+    let visible_root = temp_home("p313-content-link-command");
+    let note = create_markdown_note_service(
+        &connection,
+        &visible_root,
+        NoteCreateInput::new("Panel Note", "Real link source"),
+    )
+    .expect("create note");
+    let task = p204_task(&connection, "Panel task");
+
+    create_content_entity_link_service(
+        &connection,
+        ContentEntityLinkCreateRequest {
+            source_type: "note",
+            source_id: &note.id,
+            target_type: "task",
+            target_id: &task.id,
+            relation_type: "mentions",
+            created_by_actor_type: "system",
+            metadata_json: "{}",
+        },
+    )
+    .expect("create persisted note link");
+
+    let links = list_content_entity_links_by_source_command_with_connection(
+        &connection,
+        ContentEntityLinkCommandListRequest {
+            entity_type: "note".to_string(),
+            entity_id: note.id.clone(),
+            relation_type: Some("mentions".to_string()),
+            counterpart_type: Some("task".to_string()),
+        },
+    )
+    .expect("list real source links through bridge helper");
+
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].source_type, "note");
+    assert_eq!(links[0].source_id, note.id);
+    assert_eq!(links[0].target_type, "task");
+    assert_eq!(links[0].target_id, task.id);
+    assert_eq!(links[0].relation_type, "mentions");
 }
 
 #[test]

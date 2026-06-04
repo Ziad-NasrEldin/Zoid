@@ -65,6 +65,13 @@ import {
 } from "./fileBridgeIntegration";
 import type { FileActionDraft } from "./fileViewModel";
 import { FileWorkspace } from "./fileWorkspace";
+import {
+  createIdleContentLinkedPanelsState,
+  fileReferenceEntityId,
+  loadContentLinkedPanelsFromBridge,
+  type ContentLinkedPanelsState,
+} from "./contentLinkedPanels";
+import { ContentLinkedPanels } from "./contentLinkedPanelsView";
 import type { TaskFormDraft } from "./taskViewModel";
 import { TaskWorkspace } from "./taskWorkspace";
 import { loadTaskLinkedPanelsFromBridge, type TaskLinkedPanelsState } from "./taskLinkedPanels";
@@ -563,6 +570,7 @@ function TodayWorkspaceOverview({
   );
 }
 
+
 function App() {
   const [activeWorkspace, setActiveWorkspace] = useState("today");
   const [status, setStatus] = useState<FoundationStatus | null>(null);
@@ -573,6 +581,8 @@ function App() {
   const [noteBridgeUi, setNoteBridgeUi] = useState<NoteBridgeUiState>(() => createInitialNoteBridgeState());
   const [fileBridgeUi, setFileBridgeUi] = useState<FileBridgeUiState>(() => createInitialFileBridgeState());
   const [taskLinkedPanels, setTaskLinkedPanels] = useState<TaskLinkedPanelsState>({ mode: "idle", taskId: null });
+  const [noteLinkedPanels, setNoteLinkedPanels] = useState<ContentLinkedPanelsState>(() => createIdleContentLinkedPanelsState("note"));
+  const [fileLinkedPanels, setFileLinkedPanels] = useState<ContentLinkedPanelsState>(() => createIdleContentLinkedPanelsState("file"));
   const [cleanSessions, setCleanSessions] = useState<Record<string, CleanSessionState>>({});
   const [runControls, setRunControls] = useState<RunControlsState>(() => createInitialRunControlsState({ taskId: null, profileId: "default", cwd: "" }));
   const [manualReview, setManualReview] = useState<ManualReviewState>(() => createInitialManualReviewState(null, null));
@@ -620,6 +630,18 @@ function App() {
       setManualReview((current) => resetManualReviewForTask(current, taskId, null));
     }
   }, [loadCleanSession]);
+
+  const loadNoteLinkedPanels = useCallback(async (noteId: string) => {
+    setNoteLinkedPanels({ mode: "loading", entityType: "note", entityId: noteId });
+    setNoteLinkedPanels(await loadContentLinkedPanelsFromBridge(noteInvoke, "note", noteId));
+  }, []);
+
+  const loadFileLinkedPanels = useCallback(async (relativePath: string) => {
+    const fileId = fileReferenceEntityId(fileBridgeUi.rootKey, relativePath);
+    setFileLinkedPanels({ mode: "loading", entityType: "file", entityId: fileId });
+    setFileLinkedPanels(await loadContentLinkedPanelsFromBridge(fileInvoke, "file", fileId));
+  }, [fileBridgeUi.rootKey]);
+
 
   useEffect(() => {
     let cancelled = false;
@@ -763,7 +785,8 @@ function App() {
   const handleSelectNote = useCallback(async (noteId: string) => {
     const state = await selectNoteThroughBridge(noteInvoke, noteId);
     setNoteBridgeUi((current) => ({ ...current, form: state.mode === "ready" ? formDraftForNote(state.notes.find((note) => note.id === state.selectedNoteId) ?? state.notes[0] ?? { id: "", title: "", slug: "", relative_path: "Notes/untitled.md", status: "active", conflict_state: "clean", body_digest: "", metadata_json: "{}", markdown: "" }) : current.form, formErrors: {}, state }));
-  }, []);
+    if (state.mode === "ready" && state.selectedNoteId) await loadNoteLinkedPanels(state.selectedNoteId);
+  }, [loadNoteLinkedPanels]);
   const handleRefreshNotes = useCallback(async () => {
     const state = await refreshNotesFromBridge(noteInvoke, { selectedNoteId: noteBridgeUi.state.selectedNoteId });
     setNoteBridgeUi((current) => ({ ...current, state }));
@@ -785,7 +808,8 @@ function App() {
   const handleSelectFile = useCallback(async (relativePath: string) => {
     const state = await previewFileThroughBridge(fileInvoke, fileBridgeUi.state, relativePath);
     setFileBridgeUi((current) => ({ ...current, actionDraft: { ...current.actionDraft, source_relative_path: relativePath }, state }));
-  }, [fileBridgeUi.state]);
+    await loadFileLinkedPanels(relativePath);
+  }, [fileBridgeUi.state, loadFileLinkedPanels]);
   const handleFileActionDraftChange = useCallback((actionDraft: FileActionDraft) => setFileBridgeUi((current) => ({ ...current, actionDraft, actionErrors: [] })), []);
   const handlePerformFileActionClick = useCallback(async () => setFileBridgeUi(await performFileActionThroughBridge(fileInvoke, fileBridgeUi)), [fileBridgeUi]);
 
@@ -948,6 +972,7 @@ function App() {
                 onScan={handleScanNotes}
                 onSelectNote={handleSelectNote}
                 onTrashNote={handleTrashNote}
+                linkedPanels={<ContentLinkedPanels state={noteLinkedPanels} onRefresh={loadNoteLinkedPanels} />}
                 state={noteBridgeUi.state}
               />
             ) : active?.id === "files" ? (
@@ -959,6 +984,7 @@ function App() {
                 onPerformAction={handlePerformFileActionClick}
                 onRefresh={handleRefreshFiles}
                 onSelectFile={handleSelectFile}
+                linkedPanels={<ContentLinkedPanels state={fileLinkedPanels} onRefresh={() => fileBridgeUi.state.selectedPath && loadFileLinkedPanels(fileBridgeUi.state.selectedPath)} />}
                 relativePath={fileBridgeUi.relativePath}
                 rootKey={fileBridgeUi.rootKey}
                 state={fileBridgeUi.state}

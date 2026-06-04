@@ -1,9 +1,10 @@
-import type { FormEvent } from "react";
+import type { FormEvent, ReactNode } from "react";
 import { buildNoteWorkspaceView, noteBridgeCommands, validateNoteForm, type NoteFormDraft, type NoteValidationErrors, type NoteWorkspaceState } from "./noteViewModel";
 
 export type NoteWorkspaceProps = {
   state: NoteWorkspaceState;
   form: NoteFormDraft;
+  linkedPanels?: ReactNode;
   formErrors?: NoteValidationErrors;
   onFormChange?: (form: NoteFormDraft) => void;
   onCreateNote?: (form: NoteFormDraft) => void;
@@ -16,7 +17,7 @@ export type NoteWorkspaceProps = {
 
 function FieldError({ message }: { message?: string }) { return message ? <p role="alert">{message}</p> : null; }
 
-export function NoteWorkspace({ state, form, formErrors, onFormChange, onCreateNote, onEditNote, onSelectNote, onRefresh, onScan, onTrashNote }: NoteWorkspaceProps) {
+export function NoteWorkspace({ state, form, linkedPanels, formErrors, onFormChange, onCreateNote, onEditNote, onSelectNote, onRefresh, onScan, onTrashNote }: NoteWorkspaceProps) {
   const view = buildNoteWorkspaceView(state);
   const selectedNote = view.detail.kind === "note" ? view.detail.note : null;
   const validation = validateNoteForm(form);
@@ -57,6 +58,8 @@ export function NoteWorkspace({ state, form, formErrors, onFormChange, onCreateN
       </div>
 
       <section className="native-workspace-panel" aria-label="Note conflicts"><p>{view.conflictsCopy}</p>{"scanCopy" in view ? <p>{view.scanCopy}</p> : null}</section>
+
+      {linkedPanels}
 
       <section className="native-workspace-panel" aria-label="Create or edit note">
         <h3>{selectedNote ? "Edit Markdown note" : "Create Markdown note"}</h3>

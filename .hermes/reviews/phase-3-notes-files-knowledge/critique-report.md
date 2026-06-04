@@ -1,79 +1,109 @@
-# Critique Report: Phase 3 Notes/Files/Knowledge P3.01–P3.02
+# Critique Report: Phase 3 Notes/Files/Knowledge Closeout Re-review
 
 Verdict: APPROVED
 
 ## Scope reviewed
 
-Reviewed the P3.01 scope plan and P3.02 backend/database schema slice:
+Independent re-review of the live working tree at `/Users/ziadnasreldin/Zoid` after the latest required fixes, with focus on prior findings:
 
-- `Docs/2026-06-03-phase-3-notes-files-scope-plan.md`
-- `src-tauri/migrations/0009_phase3_notes_files_knowledge.sql`
+- R1: no untracked required Phase 3 files.
+- R2: no active unrelated Phase 4/5 code, migration registrations, commands, or tests in the Phase 3 closeout tree.
+- R3: handoff/tracker truthfully reflect final verification and cleanup.
+
+## Evidence checked
+
+### Working-tree hygiene / R1
+
+`git status --porcelain=v1` showed only tracked/staged Phase 3 closeout files and no untracked (`??`) files:
+
+```text
+ M .hermes/reviews/phase-3-notes-files-knowledge/critique-report.md
+ M .hermes/reviews/phase-3-notes-files-knowledge/handoff.md
+ M Docs/2026-06-01-zoid-implementation-tracker.md
+ M package.json
+ M src-tauri/src/lib.rs
+ M src-tauri/src/tests.rs
+ M src/App.tsx
+A  src/contentLinkedPanels.test.ts
+A  src/contentLinkedPanels.ts
+A  src/contentLinkedPanelsView.tsx
+ M src/fileWorkspace.tsx
+ M src/noteWorkspace.tsx
+```
+
+The required new frontend files are staged/tracked (`A`), not untracked scratch files. No `??` entries were present.
+
+Result: R1 resolved.
+
+### Future-scope Phase 4/5 cleanup / R2
+
+Targeted grep over the explicitly sensitive Phase 3 build areas returned no matches:
+
 - `src-tauri/src/lib.rs`
 - `src-tauri/src/tests.rs`
+- `src-tauri/migrations`
 
-This was a review-only pass; no source files were modified.
+Pattern used:
 
-## Verification performed
-
-Commands run from `/Users/ziadnasreldin/Zoid`:
-
-```bash
-cargo test --manifest-path src-tauri/Cargo.toml p302_ -- --nocapture
+```text
+0010_phase4|phase4_code_repos|RepoProfile|repo_profiles|LaunchGate|launch_gate|VerificationEvidence|verification_evidence|p400_repo|p501|p503|p504|ContentPlanInput|phase5_content
 ```
 
-Result: PASS — 3 P3.02 tests passed.
+Result: 0 matches.
 
-```bash
-npm run verify:local
+A broader repository search found only documentation references in PRD/plan/tracker future-phase text, not active source, tests, migration registration, or build/runtime code. This is acceptable because Phase 4 remains documented as future scope.
+
+I also inspected the current command surface around the Phase 3 linked-panel addition. `src-tauri/src/lib.rs` contains the new Phase 3 command `list_content_entity_links_by_source_command`, its request type, helper, and registration in `tauri::generate_handler!`. No Phase 4 repo/launch-gate or Phase 5 content/social command registrations were present in the sensitive grep set.
+
+Result: R2 resolved.
+
+### Handoff/tracker truthfulness / R3
+
+The handoff now states:
+
+- unrelated partial Phase 4/5 registration/test fragments were removed from the tracked Phase 3 working tree;
+- scratch future migrations were moved out of the repository;
+- final `npm run verify:local` passed;
+- `git diff --check` passed;
+- `git status --porcelain=v1` has no untracked files.
+
+The implementation tracker now records P3.13-P3.21 with concrete test/evidence names and final verification. It keeps Phase 4 as pending future work. P3.19/P3.20 are truthfully described as native-command disk workflow tests, not overclaimed as GUI installed-app manual verification.
+
+Independent verification in this re-review matched the handoff/tracker claims:
+
+```text
+$ git diff --check
+# PASS (no output)
 ```
 
-Result: PASS — Rust suite reported 134 passed, 0 failed, 1 ignored; frontend tests and frontend build passed; final marker `PASS: local push verification passed (--skip-package)`.
-
-```bash
-git diff --check
+```text
+$ npm run verify:local
+PASS: Rust tests passed
+PASS: frontend build passed
+PASS: local push verification passed (--skip-package)
 ```
 
-Result: PASS — no whitespace errors reported.
+Detailed `verify:local` output included:
 
-## Findings
+- Rust: 168 passed / 0 failed / 1 ignored.
+- Frontend tests: passed, including `contentLinkedPanels tests passed`.
+- Build: Vite production build passed with 58 modules transformed.
 
-### Migration/versioning
+Result: R3 resolved.
 
-- Migration version 9 is registered in `MIGRATIONS` as `phase3_notes_files_knowledge` and points to `0009_phase3_notes_files_knowledge.sql`.
-- Fresh migration path creates the expected `notes`, upgraded `file_references`, and `knowledge_index_entries` tables.
-- The migration includes a compatibility `create table if not exists file_references` step before rebuilding into the P3 shape, which supports older/simulated DBs where the foundation table is absent.
-- Existing `workspace_key` and `content_hash` are meaningfully carried forward into `root_key` and `content_fingerprint` respectively.
+### Command surface and linked panels
 
-### `file_references` rebuild compatibility
+The content linked-panel implementation queries persisted/native bridge data:
 
-- The rebuild pattern preserves legacy rows into the new P3 table shape and then renames the rebuilt table.
-- Legacy `workspace_key` values in the known visible-root set are preserved; unknown/null values are safely normalized to `zoid_visible`.
-- Existing `content_hash` is preserved as `content_fingerprint`.
-- No foreign keys appear to reference `file_references`, so the drop/rename rebuild does not appear to break dependent constraints.
+- `loadContentLinkedPanelsFromBridge` invokes `list_entity_history_command` for history.
+- It invokes `list_content_entity_links_by_source_command` for content entity links.
+- Idle/empty states render truthful copy and no fabricated links.
+- The frontend test asserts bridge command calls and verifies no fallback link fabrication in idle state.
 
-### Constraints and guardrails
+This satisfies the closeout focus area that linked panels must not invent fake note/file relationship data.
 
-- `notes`, `file_references`, and `knowledge_index_entries` use fail-closed enum checks for statuses/kinds/source types/scan states.
-- JSON fields are guarded with `json_valid(...)` checks.
-- Path guardrails prevent empty, oversized, absolute, and `..`-containing relative paths for notes/files. This is intentionally conservative and appropriate for a schema foundation; later filesystem services should still canonicalize resolved paths inside allowed roots.
-- `knowledge_index_entries` limits indexing to `note` and `file` entity types and constrains note/file source-type compatibility.
+## Final approval statement
 
-### Entity-link compatibility
+APPROVED. R1, R2, and R3 are resolved.
 
-- P3.02 tests show note and file entities can link to existing tasks through the existing entity-link service without adding special-purpose link tables.
-- This preserves the existing event/entity-link/history architecture.
-
-### Scope control
-
-- The scope plan explicitly excludes Apple Notes import/sync, iCloud/CloudKit, whole-home crawling, full file-manager replacement, OCR, embeddings/semantic search, remote sync, and destructive automatic conflict resolution.
-- The implementation stays within schema/planning. It does not add note CRUD, file-manager UI, Apple Notes import, background crawlers, or overbuilt knowledge services.
-
-## Non-blocking notes
-
-- The schema-level path checks are conservative (`not like '%..%'`) and may reject benign filenames containing `..`; acceptable for this foundation slice, but later service-layer path validation should be more precise and canonicalization-based.
-- Migration 0009 is not written with an explicit transaction wrapper. The existing migration runner applies SQL via `execute_batch`; this matches current project style, but future rebuild-style migrations may benefit from explicit transactional handling if feasible.
-- `knowledge_index_entries.entity_id` intentionally has no FK to `notes`/`file_references`; this keeps the index generic but means service-layer cleanup/upsert discipline will matter in later slices.
-
-## Conclusion
-
-The P3.01–P3.02 slice satisfies the requested lean backend/database scope. Migration registration, fresh/upgrade compatibility, `file_references` data preservation, fail-closed constraints, entity-link compatibility, and scope boundaries all look acceptable for this schema-only foundation.
+No further required fixes for this closeout review.

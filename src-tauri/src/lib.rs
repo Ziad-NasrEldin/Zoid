@@ -3911,7 +3911,7 @@ struct IntegrationStatusInput<'a> {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct EntityLinkRecord {
     id: String,
     source_type: String,
@@ -4026,6 +4026,7 @@ const TAURI_BRIDGE_COMMAND_NAMES: &[&str] = &[
     "list_run_history_command",
     "list_notification_history_command",
     "list_entity_history_command",
+    "list_content_entity_links_by_source_command",
     "create_markdown_note_command",
     "read_note_command",
     "list_notes_command",
@@ -4144,6 +4145,14 @@ struct HistoryCommandEntityListRequest {
     include_related: Option<bool>,
     limit: Option<usize>,
     before: Option<HistoryCommandCursorRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ContentEntityLinkCommandListRequest {
+    entity_type: String,
+    entity_id: String,
+    relation_type: Option<String>,
+    counterpart_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4421,6 +4430,14 @@ fn list_entity_history_command(
 ) -> Result<Vec<HistoryTimelineItem>, String> {
     let connection = open_ready_connection()?;
     list_entity_history_command_with_connection(&connection, request)
+}
+
+#[tauri::command]
+fn list_content_entity_links_by_source_command(
+    request: ContentEntityLinkCommandListRequest,
+) -> Result<Vec<EntityLinkRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_content_entity_links_by_source_command_with_connection(&connection, request)
 }
 
 #[tauri::command]
@@ -5265,6 +5282,22 @@ fn list_entity_history_command_with_connection(
             include_related: request.include_related.unwrap_or(true),
             limit: request.limit.unwrap_or(50),
             before: history_command_cursor(request.before),
+        },
+    )
+    .map_err(repository_error_message)
+}
+
+fn list_content_entity_links_by_source_command_with_connection(
+    connection: &Connection,
+    request: ContentEntityLinkCommandListRequest,
+) -> Result<Vec<EntityLinkRecord>, String> {
+    list_content_entity_links_by_source(
+        connection,
+        ContentEntityLinkListFilter {
+            entity_type: &request.entity_type,
+            entity_id: &request.entity_id,
+            relation_type: request.relation_type.as_deref(),
+            counterpart_type: request.counterpart_type.as_deref(),
         },
     )
     .map_err(repository_error_message)
@@ -10685,6 +10718,7 @@ fn now_millis() -> u128 {
         .as_millis()
 }
 
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -10728,6 +10762,7 @@ pub fn run() {
             list_run_history_command,
             list_notification_history_command,
             list_entity_history_command,
+            list_content_entity_links_by_source_command,
             create_markdown_note_command,
             read_note_command,
             list_notes_command,

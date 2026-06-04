@@ -199,19 +199,32 @@ Goal: Today → Task → CLI Session → AgentRun → ReviewRecord → Notificat
   - 2026-06-03 added backend-only content entity-link helpers for `note`/`file` sources to `task`/`product`/`run` targets. The service uses deterministic logical IDs for idempotence, validates create-time source/linkability (`active`/`draft` notes and `indexed` file references), validates task/run targets, supports opaque future product IDs until a `products` table exists, delegates metadata validation/redaction to the approved generic entity-link service, and keeps existing links source-queryable after later note/file lifecycle changes. Verification passed: `cargo test --manifest-path src-tauri/Cargo.toml p309 -- --nocapture` (4 passed), `npm run verify:local && git diff --check` (Rust 161 passed, 1 ignored guarded P2.32 harness; frontend tests/build passed). Review artifacts: `.hermes/reviews/phase-3-p309-content-entity-links/handoff.md`; critique loop ended `APPROVED`.
 - [x] P3.10 Tauri bridge: commands for notes CRUD, scan/index, conflicts, file browse/open/preview/actions.
   - 2026-06-03 added Tauri bridge commands for note CRUD/list/scan/conflicts and file browse/open/preview/actions. File actions require persisted confirmation decisions; missing/unreadable note markdown now reports truthful errors. Focused P3.10 tests and `npm run verify:local && git diff --check` passed; critique-agent verdict `APPROVED`.
-- [ ] P3.11 Frontend Notes workspace: list/editor/preview/trash/conflict states.
-- [ ] P3.12 Frontend: Files workspace browse/open/preview/actions/confirmation.
-- [ ] P3.13 Frontend: history/links panels for notes and files.
-- [ ] P3.14 Tests: note persistence after restart.
-- [ ] P3.15 Tests: manual file rename preserves note identity.
-- [ ] P3.16 Tests: duplicate ID conflict is non-destructive.
-- [ ] P3.17 Tests: destructive file operations require confirmation.
-- [ ] P3.18 Tests: note/file events and entity links are recorded.
-- [ ] P3.19 Manual verification: create/edit/delete/trash note; restart; inspect files on disk.
-- [ ] P3.20 Manual verification: browse/open/preview file and perform confirmed safe operation.
-- [ ] P3.21 Verification: run `npm run verify:local`.
-- [ ] P3.22 Review: write `.hermes/reviews/phase-3-notes-files-knowledge/handoff.md`.
-- [ ] P3.23 Review: critique loop until `Verdict: APPROVED`.
+- [x] P3.11 Frontend Notes workspace: list/editor/preview/trash/conflict states.
+  - 2026-06-04 wired the Notes workspace to native note CRUD/list/scan/conflict helpers with explicit error states and no fake note fallback. Verification passed: `npm run test:frontend` (`noteBridgeIntegration.test.ts`, `noteViewModel.test.ts`, plus full frontend suite).
+- [x] P3.12 Frontend: Files workspace browse/open/preview/actions/confirmation.
+  - 2026-06-04 wired the Files workspace to native browse/open/preview/action helpers, surfaces persisted confirmation IDs, and keeps confirmation-required failures truthful. Verification passed: `npm run test:frontend` (`fileBridgeIntegration.test.ts`, `fileViewModel.test.ts`, plus full frontend suite).
+- [x] P3.13 Frontend: history/links panels for notes and files.
+  - 2026-06-04 added shared content linked panels for selected notes/files and native `list_content_entity_links_by_source_command` bridge support. Verification passed: `npm run test:frontend` (`contentLinkedPanels.test.ts`) and `cargo test --manifest-path src-tauri/Cargo.toml p313_ -- --nocapture` (1 passed).
+- [x] P3.14 Tests: note persistence after restart.
+  - Covered by existing file-backed persistence and note lifecycle tests: `file_backed_repository_event_and_entity_links_persist_across_reopen`, `p304_note_service_create_edit_persists_file_db_index_and_events`, and scanner restart/rescan behavior in `p305_note_scanner_writes_missing_frontmatter_indexes_and_marks_missing_files`. Revalidated in focused Phase 3 test runs on 2026-06-04.
+- [x] P3.15 Tests: manual file rename preserves note identity.
+  - Exact test: `p306_note_scanner_detects_manual_rename_without_mutating_original_identity`. Verification passed: `cargo test --manifest-path src-tauri/Cargo.toml p306_ -- --nocapture` (3 passed).
+- [x] P3.16 Tests: duplicate ID conflict is non-destructive.
+  - Exact tests: `p305_note_scanner_preserves_existing_ids_and_flags_duplicates_non_destructively` and `p306_duplicate_id_acceptance_is_rejected_without_mutating_files_or_metadata`. Verification passed: `cargo test --manifest-path src-tauri/Cargo.toml p305_ -- --nocapture` (4 passed) and `cargo test --manifest-path src-tauri/Cargo.toml p306_ -- --nocapture` (3 passed).
+- [x] P3.17 Tests: destructive file operations require confirmation.
+  - Exact tests: `p308_file_actions_block_without_confirmation_and_preserve_state`, `p308_file_trash_is_non_destructive_and_marks_old_index_stale`, and `p310_file_bridge_commands_browse_preview_and_require_persisted_confirmation_for_actions`. Verification passed: `cargo test --manifest-path src-tauri/Cargo.toml p308 -- --nocapture` (5 passed) and `cargo test --manifest-path src-tauri/Cargo.toml p310_ -- --nocapture` (4 passed).
+- [x] P3.18 Tests: note/file events and entity links are recorded.
+  - Exact tests: `p304_note_service_create_edit_persists_file_db_index_and_events`, `p309_note_links_to_tasks_products_and_runs_with_directional_queries`, `p309_file_links_to_tasks_products_and_runs_after_file_reference_exists`, `p309_content_link_source_queries_survive_later_note_and_file_state_changes`, and `p313_content_entity_link_command_lists_note_source_links_without_fake_fallbacks`. Verification passed: `cargo test --manifest-path src-tauri/Cargo.toml p309 -- --nocapture` (4 passed) and `cargo test --manifest-path src-tauri/Cargo.toml p313_ -- --nocapture` (1 passed).
+- [x] P3.19 Manual verification: create/edit/delete/trash note; restart; inspect files on disk.
+  - 2026-06-04 added and ran native-command disk workflow test `p319_manual_note_workflow_persists_after_restart_and_matches_disk_state`: creates a file-backed note, edits the Markdown on disk, trashes and soft-deletes it, reopens the SQLite DB, and inspects the `.Trash` Markdown file after restart. Verification passed: `cargo test --manifest-path src-tauri/Cargo.toml p319_ -- --nocapture` (1 passed).
+- [x] P3.20 Manual verification: browse/open/preview file and perform confirmed safe operation.
+  - 2026-06-04 added and ran native-command disk workflow test `p320_manual_file_workflow_browses_previews_and_performs_confirmed_safe_operation`: writes a real file, browses/opens/previews it, proves copy is blocked without persisted confirmation, then performs confirmed copy and inspects copied bytes. Verification passed: `cargo test --manifest-path src-tauri/Cargo.toml p320_ -- --nocapture` (1 passed).
+- [x] P3.21 Verification: run `npm run verify:local`.
+  - 2026-06-04 passed `npm run verify:local`: Rust tests 168 passed / 0 failed / 1 ignored, frontend test suite passed, and frontend build passed (`vite v7.3.3`, 58 modules).
+- [x] P3.22 Review: write `.hermes/reviews/phase-3-notes-files-knowledge/handoff.md`.
+  - 2026-06-04 wrote combined Phase 3 closeout handoff with changed files, exact tests, final `verify:local` output, and reviewer focus areas.
+- [x] P3.23 Review: critique loop until `Verdict: APPROVED`.
+  - 2026-06-04 final combined Phase 3 closeout critique verdict: `APPROVED` in `.hermes/reviews/phase-3-notes-files-knowledge/critique-report.md`; R1/R2/R3 resolved after future-scope cleanup, final `npm run verify:local` passed, and `git diff --check` passed.
 
 ---
 
