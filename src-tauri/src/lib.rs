@@ -1,6 +1,7 @@
 mod agent_execution_service;
 mod history_service;
 mod notification_service;
+mod phase4_service;
 mod review_service;
 mod task_service;
 
@@ -10,6 +11,8 @@ pub(crate) use agent_execution_service::*;
 pub(crate) use history_service::*;
 #[allow(unused_imports)]
 pub(crate) use notification_service::*;
+#[allow(unused_imports)]
+pub(crate) use phase4_service::*;
 #[allow(unused_imports)]
 pub(crate) use review_service::*;
 #[allow(unused_imports)]
@@ -34,6 +37,9 @@ static CLI_SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 static AGENT_RUN_COUNTER: AtomicU64 = AtomicU64::new(0);
 static REVIEW_RECORD_COUNTER: AtomicU64 = AtomicU64::new(0);
 static NOTIFICATION_COUNTER: AtomicU64 = AtomicU64::new(0);
+static REPO_PROFILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+static LAUNCH_GATE_COUNTER: AtomicU64 = AtomicU64::new(0);
+static LAUNCH_GATE_EVIDENCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_RUN_CHILDREN: OnceLock<Mutex<HashMap<String, Arc<Mutex<std::process::Child>>>>> =
     OnceLock::new();
 
@@ -283,6 +289,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 9,
         name: "phase3_notes_files_knowledge",
         sql: include_str!("../migrations/0009_phase3_notes_files_knowledge.sql"),
+    },
+    Migration {
+        version: 10,
+        name: "phase4_code_repos_launch_gate",
+        sql: include_str!("../migrations/0010_phase4_code_repos_launch_gate.sql"),
     },
 ];
 
@@ -4027,6 +4038,16 @@ const TAURI_BRIDGE_COMMAND_NAMES: &[&str] = &[
     "list_notification_history_command",
     "list_entity_history_command",
     "list_content_entity_links_by_source_command",
+    "add_repo_profile_command",
+    "list_repo_profiles_command",
+    "read_repo_profile_command",
+    "link_repo_entity_command",
+    "list_repo_integration_states_command",
+    "create_launch_gate_command",
+    "read_launch_gate_command",
+    "add_launch_gate_evidence_command",
+    "evaluate_launch_gate_command",
+    "preview_launch_action_policy_command",
     "create_markdown_note_command",
     "read_note_command",
     "list_notes_command",
@@ -4422,6 +4443,70 @@ fn list_notification_history_command(
 ) -> Result<Vec<HistoryTimelineItem>, String> {
     let connection = open_ready_connection()?;
     list_notification_history_command_with_connection(&connection, notification_id, request)
+}
+
+#[tauri::command]
+fn add_repo_profile_command(request: RepoProfileInput) -> Result<RepoProfileRecord, String> {
+    let connection = open_ready_connection()?;
+    add_repo_profile(&connection, request).map_err(repository_error_message)
+}
+
+#[tauri::command]
+fn list_repo_profiles_command() -> Result<Vec<RepoProfileRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_repo_profiles(&connection).map_err(repository_error_message)
+}
+
+#[tauri::command]
+fn read_repo_profile_command(repo_id: String) -> Result<RepoProfileRecord, String> {
+    let connection = open_ready_connection()?;
+    read_repo_profile(&connection, &repo_id)
+        .map_err(repository_error_message)?
+        .ok_or_else(|| format!("repo profile not found: {repo_id}"))
+}
+
+#[tauri::command]
+fn link_repo_entity_command(request: RepoEntityLinkInput) -> Result<EntityLinkRecord, String> {
+    let connection = open_ready_connection()?;
+    link_repo_entity(&connection, request).map_err(repository_error_message)
+}
+
+#[tauri::command]
+fn list_repo_integration_states_command() -> Result<Vec<IntegrationStatusRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_phase4_repo_integration_states(&connection).map_err(repository_error_message)
+}
+
+#[tauri::command]
+fn create_launch_gate_command(request: LaunchGateCreateInput) -> Result<LaunchGateRecord, String> {
+    let connection = open_ready_connection()?;
+    create_launch_gate(&connection, request).map_err(repository_error_message)
+}
+
+#[tauri::command]
+fn read_launch_gate_command(launch_gate_id: String) -> Result<LaunchGateRecord, String> {
+    let connection = open_ready_connection()?;
+    read_launch_gate(&connection, &launch_gate_id)
+        .map_err(repository_error_message)?
+        .ok_or_else(|| format!("launch gate not found: {launch_gate_id}"))
+}
+
+#[tauri::command]
+fn add_launch_gate_evidence_command(request: LaunchGateEvidenceInput) -> Result<LaunchGateEvidenceRecord, String> {
+    let connection = open_ready_connection()?;
+    add_launch_gate_evidence(&connection, request).map_err(repository_error_message)
+}
+
+#[tauri::command]
+fn evaluate_launch_gate_command(launch_gate_id: String) -> Result<LaunchGateRecord, String> {
+    let connection = open_ready_connection()?;
+    evaluate_launch_gate(&connection, &launch_gate_id).map_err(repository_error_message)
+}
+
+#[tauri::command]
+fn preview_launch_action_policy_command(action_category: String) -> Result<ActionPolicyDecision, String> {
+    let category = normalize_launch_action_policy_category(&action_category)?;
+    Ok(evaluate_action_policy(&category))
 }
 
 #[tauri::command]
@@ -10763,6 +10848,16 @@ pub fn run() {
             list_notification_history_command,
             list_entity_history_command,
             list_content_entity_links_by_source_command,
+            add_repo_profile_command,
+            list_repo_profiles_command,
+            read_repo_profile_command,
+            link_repo_entity_command,
+            list_repo_integration_states_command,
+            create_launch_gate_command,
+            read_launch_gate_command,
+            add_launch_gate_evidence_command,
+            evaluate_launch_gate_command,
+            preview_launch_action_policy_command,
             create_markdown_note_command,
             read_note_command,
             list_notes_command,

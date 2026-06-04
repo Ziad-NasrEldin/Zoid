@@ -571,6 +571,101 @@ function TodayWorkspaceOverview({
 }
 
 
+
+type CodeRepoRecord = {
+  id: string;
+  display_name: string;
+  root_path: string;
+  profile_type: string;
+  default_branch?: string | null;
+  package_manager?: string | null;
+  linked_product_id?: string | null;
+  status: string;
+  metadata_json: string;
+};
+
+type CodeIntegrationRecord = {
+  integration_key: string;
+  display_name: string;
+  status: string;
+  config_json: string;
+};
+
+type CodePolicyDecision = {
+  category: string;
+  reason: string;
+  policy: { category: string; requires_confirmation: boolean; reviewer_required: boolean };
+  reviewer_required: string;
+  human_confirmation: string;
+};
+
+type CodeWorkspaceState =
+  | { mode: "loading" }
+  | { mode: "error"; error: string }
+  | { mode: "ready"; repos: CodeRepoRecord[]; integrations: CodeIntegrationRecord[]; policy: CodePolicyDecision };
+
+function CodeWorkspace({ state, onRefresh }: { state: CodeWorkspaceState; onRefresh: () => void }) {
+  if (state.mode === "loading") {
+    return <EmptyState icon="</>">Loading repo registry, truthful integration states, and Launch Gate policy previews…</EmptyState>;
+  }
+  if (state.mode === "error") {
+    return (
+      <InfoCard className="large-card">
+        <p className="eyebrow">Code workspace</p>
+        <h3>Native Phase 4 bridge unavailable</h3>
+        <BlockerState>{state.error}</BlockerState>
+        <button className="secondary-action" onClick={onRefresh} type="button">Retry native load</button>
+      </InfoCard>
+    );
+  }
+  return (
+    <section className="dashboard-grid">
+      <InfoCard className="large-card">
+        <div className="card-header">
+          <div>
+            <p className="eyebrow">Code / repos</p>
+            <h3>Lightweight repo registry</h3>
+          </div>
+          <StatusBadge tone="ready">Native</StatusBadge>
+        </div>
+        {state.repos.length > 0 ? (
+          <ul className="compact-list">
+            {state.repos.map((repo) => (
+              <li key={repo.id}>
+                <div><strong>{repo.display_name}</strong><span>{repo.profile_type}</span></div>
+                <p>{repo.root_path}</p>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <EmptyState icon="⌘">No repos are fabricated. Add/list/profile/link is native-only.</EmptyState>
+        )}
+      </InfoCard>
+
+      <InfoCard>
+        <p className="eyebrow">Integrations</p>
+        <h3>Truthful state only</h3>
+        <ul className="compact-list">
+          {state.integrations.map((integration) => (
+            <li key={integration.integration_key}>
+              <div><strong>{integration.display_name}</strong><span>{integration.status}</span></div>
+              <p>No fake connected state or deploy execution is shown.</p>
+            </li>
+          ))}
+        </ul>
+      </InfoCard>
+
+      <InfoCard>
+        <p className="eyebrow">Launch Gate</p>
+        <h3>Evidence required</h3>
+        <p>Commit/push/merge/deploy actions are policy previews only until real evidence is captured.</p>
+        <StatusBadge tone="blocked">{state.policy.category}</StatusBadge>
+        <p className="muted-copy">{state.policy.reason}</p>
+      </InfoCard>
+    </section>
+  );
+}
+
 function App() {
   const [activeWorkspace, setActiveWorkspace] = useState("today");
   const [status, setStatus] = useState<FoundationStatus | null>(null);
@@ -586,6 +681,7 @@ function App() {
   const [cleanSessions, setCleanSessions] = useState<Record<string, CleanSessionState>>({});
   const [runControls, setRunControls] = useState<RunControlsState>(() => createInitialRunControlsState({ taskId: null, profileId: "default", cwd: "" }));
   const [manualReview, setManualReview] = useState<ManualReviewState>(() => createInitialManualReviewState(null, null));
+  const [codeWorkspace, setCodeWorkspace] = useState<CodeWorkspaceState>({ mode: "loading" });
 
   useEffect(() => {
     invoke<FoundationStatus>("get_foundation_status")
@@ -594,6 +690,24 @@ function App() {
         setStatusError("Native foundation status is available inside the packaged Tauri app. Browser preview is UI-only.");
       });
   }, []);
+
+  const loadCodeWorkspace = useCallback(async () => {
+    setCodeWorkspace({ mode: "loading" });
+    try {
+      const [repos, integrations, policy] = await Promise.all([
+        invoke<CodeRepoRecord[]>("list_repo_profiles_command"),
+        invoke<CodeIntegrationRecord[]>("list_repo_integration_states_command"),
+        invoke<CodePolicyDecision>("preview_launch_action_policy_command", { actionCategory: "deploy" }),
+      ]);
+      setCodeWorkspace({ mode: "ready", repos, integrations, policy });
+    } catch (error) {
+      setCodeWorkspace({ mode: "error", error: bridgeErrorReason("Native Code workspace", error) });
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadCodeWorkspace();
+  }, [loadCodeWorkspace]);
 
   const applyTaskState = useCallback((state: TaskBridgeUiState["state"]) => {
     setTaskBridgeUi((current) => ({ ...current, state }));
@@ -961,6 +1075,8 @@ function App() {
                 }
                 state={taskBridgeUi.state}
               />
+            ) : active?.id === "code" ? (
+              <CodeWorkspace state={codeWorkspace} onRefresh={loadCodeWorkspace} />
             ) : active?.id === "notes" ? (
               <NoteWorkspace
                 form={noteBridgeUi.form}

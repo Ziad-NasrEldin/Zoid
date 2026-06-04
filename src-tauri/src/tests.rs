@@ -3078,6 +3078,112 @@ fn integration_status_service_rejects_secret_config_invalid_json_and_raw_credent
     assert_eq!(db_count, 0);
 }
 
+
+#[test]
+fn p401_phase4_schema_has_lightweight_repo_and_launch_gate_tables() {
+    let connection = migrated_in_memory_connection();
+    assert!(get_migration_version(&connection).expect("migration version") >= 10);
+    assert_table_has_columns(
+        &connection,
+        "repo_profiles",
+        &["id", "display_name", "root_path", "profile_type", "default_branch", "package_manager", "linked_product_id", "status", "metadata_json"],
+    );
+    assert_table_has_columns(
+        &connection,
+        "launch_gates",
+        &["id", "repo_id", "product_id", "task_id", "state", "final_verdict", "metadata_json"],
+    );
+    assert_table_has_columns(
+        &connection,
+        "launch_gate_evidence",
+        &["id", "launch_gate_id", "evidence_type", "label", "url", "status_code", "manual_note", "metadata_json"],
+    );
+}
+
+#[test]
+fn p403_repo_registry_adds_lists_and_links_without_git_status_diff_surface() {
+    let connection = migrated_in_memory_connection();
+    let repo = add_repo_profile(&connection, RepoProfileInput {
+        display_name: "Zoid app".to_string(),
+        root_path: "/Users/ziadnasreldin/Zoid".to_string(),
+        profile_type: "product_app".to_string(),
+        default_branch: Some("main".to_string()),
+        package_manager: Some("npm".to_string()),
+        linked_product_id: Some("zoid".to_string()),
+        metadata_json: "{}".to_string(),
+    }).expect("add repo profile");
+    assert_eq!(repo.status, "active");
+    assert_eq!(read_repo_profile(&connection, &repo.id).expect("read repo").expect("repo exists").id, repo.id);
+    assert_eq!(list_repo_profiles(&connection).expect("list repos").len(), 1);
+    let link = link_repo_entity(&connection, RepoEntityLinkInput {
+        repo_id: repo.id.clone(),
+        target_type: "product".to_string(),
+        target_id: "zoid".to_string(),
+        relation_type: "source_repo".to_string(),
+        metadata_json: "{}".to_string(),
+    }).expect("link repo to product");
+    assert_eq!(link.source_type, "repo");
+    assert_eq!(link.target_type, "product");
+    assert!(!TAURI_BRIDGE_COMMAND_NAMES.iter().any(|name| name.contains("git_status") || name.contains("git_diff") || name.contains("commit_command") || name.contains("push_command")));
+}
+
+#[test]
+fn p404_repo_integration_states_are_truthful_not_connected() {
+    let connection = migrated_in_memory_connection();
+    let states = list_phase4_repo_integration_states(&connection).expect("integration states");
+    let github = states.iter().find(|state| state.integration_key == "github").expect("github state");
+    let vercel = states.iter().find(|state| state.integration_key == "vercel").expect("vercel state");
+    assert_eq!(github.status, IntegrationStatus::NotConfigured);
+    assert_eq!(vercel.status, IntegrationStatus::NotConfigured);
+    assert!(github.credential_ref.is_none());
+    assert!(vercel.credential_ref.is_none());
+}
+
+#[test]
+fn p405_commit_push_merge_deploy_are_policy_previews_not_executions() {
+    assert_eq!(normalize_launch_action_policy_category("commit").expect("commit category"), "commit_push_merge");
+    assert_eq!(normalize_launch_action_policy_category("push").expect("push category"), "commit_push_merge");
+    assert_eq!(normalize_launch_action_policy_category("deploy").expect("deploy category"), "deploy_redeploy_rollback");
+    let policy = preview_launch_action_policy_command("deploy".to_string()).expect("policy preview");
+    assert_eq!(policy.category, "deploy_redeploy_rollback");
+}
+
+#[test]
+fn p408_launch_gate_fails_closed_until_real_evidence_exists() {
+    let connection = migrated_in_memory_connection();
+    let repo = add_repo_profile(&connection, RepoProfileInput {
+        display_name: "Launch repo".to_string(),
+        root_path: "/tmp/launch-repo".to_string(),
+        profile_type: "product_app".to_string(),
+        default_branch: Some("main".to_string()),
+        package_manager: None,
+        linked_product_id: Some("zoid".to_string()),
+        metadata_json: "{}".to_string(),
+    }).expect("add repo");
+    let gate = create_launch_gate(&connection, LaunchGateCreateInput {
+        repo_id: repo.id,
+        product_id: Some("zoid".to_string()),
+        task_id: None,
+        metadata_json: "{}".to_string(),
+    }).expect("create gate");
+    assert_eq!(gate.state, LaunchGateState::VerificationBlocked);
+    assert_eq!(gate.final_verdict.as_deref(), Some("blocked_missing_evidence"));
+    let blocked = evaluate_launch_gate(&connection, &gate.id).expect("evaluate empty gate");
+    assert_eq!(blocked.state, LaunchGateState::VerificationBlocked);
+    add_launch_gate_evidence(&connection, LaunchGateEvidenceInput {
+        launch_gate_id: gate.id.clone(),
+        evidence_type: "test_output".to_string(),
+        label: "cargo test focused pass".to_string(),
+        url: None,
+        status_code: None,
+        manual_note: Some("Focused Phase 4 test output captured locally.".to_string()),
+        metadata_json: "{}".to_string(),
+    }).expect("add evidence");
+    let verified = evaluate_launch_gate(&connection, &gate.id).expect("evaluate with evidence");
+    assert_eq!(verified.state, LaunchGateState::Verified);
+    assert_eq!(verified.final_verdict.as_deref(), Some("verified_with_evidence"));
+}
+
 #[test]
 fn tauri_bridge_command_surface_lists_registered_p116_commands() {
     assert!(TAURI_BRIDGE_COMMAND_NAMES.len() >= 33);
@@ -3135,9 +3241,19 @@ fn tauri_bridge_command_surface_lists_registered_p116_commands() {
 
 #[test]
 fn p310_tauri_bridge_command_surface_registers_notes_and_files_commands() {
-    assert_eq!(TAURI_BRIDGE_COMMAND_NAMES.len(), 47);
+    assert_eq!(TAURI_BRIDGE_COMMAND_NAMES.len(), 57);
     for command_name in [
         "list_content_entity_links_by_source_command",
+        "add_repo_profile_command",
+        "list_repo_profiles_command",
+        "read_repo_profile_command",
+        "link_repo_entity_command",
+        "list_repo_integration_states_command",
+        "create_launch_gate_command",
+        "read_launch_gate_command",
+        "add_launch_gate_evidence_command",
+        "evaluate_launch_gate_command",
+        "preview_launch_action_policy_command",
         "create_markdown_note_command",
         "read_note_command",
         "list_notes_command",
