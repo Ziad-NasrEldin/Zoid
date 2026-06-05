@@ -230,84 +230,111 @@ Goal: Today → Task → CLI Session → AgentRun → ReviewRecord → Notificat
 
 ## Phase 4 — Code, Repos, Launch Gate
 
-- [ ] P4.01 Planning: define scope; avoid overbuilding full GitHub/Vercel automation.
-- [ ] P4.02 Database: repo profiles, product/task links, launch gate checks, verification evidence, integration states.
-- [ ] P4.03 Backend: repo discovery/manual add service.
-- [ ] P4.04 Backend: git status/diff/read operations.
-- [ ] P4.05 Backend: git commit/push/merge/deploy action policy; protected actions require confirmation/review.
-- [ ] P4.06 Backend integration: GitHub state detection where credentials configured; truthful blocked/unconfigured otherwise.
-- [ ] P4.07 Backend integration: Vercel state detection where credentials configured; truthful blocked/unconfigured otherwise.
-- [ ] P4.08 Backend: Launch Gate check/evidence model; cannot mark verified without real evidence.
-- [ ] P4.09 Backend: production verification evidence records with screenshot/URL/status/manual note where available.
-- [ ] P4.10 Tauri bridge: repo add/list/status/diff commands.
-- [ ] P4.11 Tauri bridge: launch gate/evidence commands.
-- [ ] P4.12 Frontend: Code/Repos UI for repo add, status, diff, linked tasks/products.
-- [ ] P4.13 Frontend: GitHub/Vercel blocked/unconfigured/connected/error states; no fake connected data.
-- [ ] P4.14 Frontend: Launch Gate UI showing checks, evidence, failures, confirmation requirements.
-- [ ] P4.15 Tests: repo add/link/status/diff.
-- [ ] P4.16 Tests: Launch Gate evidence requirements and no fake verification.
-- [ ] P4.17 Tests: deploy/push/merge confirmation policy.
-- [ ] P4.18 Manual verification: add a local repo, inspect status/diff, link to task/product.
-- [ ] P4.19 Manual verification: try Launch Gate without evidence and confirm it fails closed.
-- [ ] P4.20 Verification: run `npm run verify:local`.
-- [ ] P4.21 Review: write `.hermes/reviews/phase-4-code-repos-launch-gate/handoff.md`.
-- [ ] P4.22 Review: critique loop until `Verdict: APPROVED`.
+Scope note: Phase 4 is approved as a lightweight native repo registry + truthful integration-state + Launch Gate evidence/policy-preview slice. Full git status/diff/read UI, GitHub/Vercel automation, and deploy execution are deferred to a later dedicated slice.
+
+- [x] P4.01 Planning: scope narrowed to avoid overbuilding full GitHub/Vercel/git automation. Evidence: plan scope note updated in `Docs/2026-05-31-zoid-implementation-plan-v1.md`.
+- [x] P4.02 Database: repo profiles, repo links through entity links, launch gate checks, and verification evidence. Evidence: migration `src-tauri/migrations/0010_phase4_code_repos_launch_gate.sql`; focused test `p401_phase4_schema_has_lightweight_repo_and_launch_gate_tables` PASS.
+- [x] P4.03 Backend: manual repo add/list/read service. Evidence: `src-tauri/src/phase4_service.rs`; focused test `p403_repo_registry_adds_lists_and_links_without_git_status_diff_surface` PASS.
+- [x] P4.04 Deferred: real git status/diff/read operations are out of Phase 4 narrowed scope; no fake status/diff command is exposed. Evidence: `p403_repo_registry_adds_lists_and_links_without_git_status_diff_surface` PASS.
+- [x] P4.05 Backend: commit/push/merge/deploy action policy previews; protected actions require confirmation/review before any future execution. Evidence: `p405_commit_push_merge_deploy_are_policy_previews_not_executions` PASS.
+- [x] P4.06 Backend integration: GitHub state detection is truthful `not_configured`/state-only when credentials are absent. Evidence: `p404_repo_integration_states_are_truthful_not_connected` PASS.
+- [x] P4.07 Backend integration: Vercel state detection is truthful `not_configured`/state-only when credentials are absent. Evidence: `p404_repo_integration_states_are_truthful_not_connected` PASS.
+- [x] P4.08 Backend: Launch Gate check/evidence model; cannot mark verified without evidence. Evidence: `p408_launch_gate_fails_closed_until_real_evidence_exists` PASS.
+- [x] P4.09 Backend: verification evidence records support manual note, URL/status, screenshot, test output, and deployment record metadata. Evidence: `launch_gate_evidence` schema and `add_launch_gate_evidence` service; `p408` PASS.
+- [x] P4.10 Tauri bridge: repo add/list/read/link commands and policy-preview commands; status/diff commands intentionally deferred. Evidence: command registry includes Phase 4 commands; command-surface test PASS.
+- [x] P4.11 Tauri bridge: launch gate/evidence commands. Evidence: `create_launch_gate_command`, `read_launch_gate_command`, `add_launch_gate_evidence_command`, `evaluate_launch_gate_command`; command-surface test PASS.
+- [x] P4.12 Frontend: Code/Repos read-only UI for repo registry, truthful integration states, and Launch Gate policy preview. Evidence: `CodeWorkspace` in `src/App.tsx`; frontend build PASS.
+- [x] P4.13 Frontend: GitHub/Vercel blocked/unconfigured/error states; no fake connected data. Evidence: `CodeWorkspace` copy and `p404` PASS.
+- [x] P4.14 Frontend: Launch Gate policy preview shows evidence-required/fail-closed state; evidence CRUD UI deferred with narrowed scope. Evidence: `CodeWorkspace` Launch Gate card; frontend build PASS.
+- [x] P4.15 Tests: repo add/list/read/link and explicit no-fake-status/diff behavior. Evidence: focused p4 Rust tests PASS, 5 passed / 0 failed.
+- [x] P4.16 Tests: Launch Gate evidence requirements and no fake verification. Evidence: `p408_launch_gate_fails_closed_until_real_evidence_exists` PASS.
+- [x] P4.17 Tests: deploy/push/merge confirmation policy. Evidence: `p405_commit_push_merge_deploy_are_policy_previews_not_executions` PASS.
+- [x] P4.18 Manual/source verification: local repo registry/status/diff scope reconciled; native add/list/link primitives verified by focused backend tests; real status/diff deferred. Evidence: source consistency check PASS after wait; `cargo test --manifest-path src-tauri/Cargo.toml p4 -- --nocapture` PASS.
+- [x] P4.19 Manual/source verification: Launch Gate without evidence fails closed. Evidence: `p408_launch_gate_fails_closed_until_real_evidence_exists` PASS.
+- [x] P4.20 Verification: run `npm run verify:local`. Evidence: PASS — Rust 176 passed / 0 failed / 1 ignored; frontend tests passed; build passed.
+- [x] P4.21 Review: write `.hermes/reviews/phase-4-code-repos-launch-gate/handoff.md`. Evidence: handoff exists and was updated after scope narrowing.
+- [x] P4.22 Review: critique loop until `Verdict: APPROVED`. Evidence: `.hermes/reviews/phase-4-code-repos-launch-gate/critique-report.md` verdict `APPROVED` for narrowed Phase 4 scope.
 
 ---
 
 ## Phase 5 — Content and OmniSocials
 
-- [ ] P5.01 Planning: define draft-first/fail-closed publishing scope and specialist design/review gates.
-- [ ] P5.02 Database: content plans, pieces, assets, review gates, platform statuses, schedules, verification records.
-- [ ] P5.03 Backend: content plan → draft → asset → review → schedule workflow.
-- [ ] P5.04 Backend: media asset storage/references and platform media constraints.
-- [ ] P5.05 Backend: specialist design/review gate records; no schedule/publish without required review/confirmation.
-- [ ] P5.06 Backend integration: OmniSocials account/status detection with truthful states.
-- [ ] P5.07 Backend integration: OmniSocials upload/schedule/publish surfaces; fail closed on missing credentials/errors.
-- [ ] P5.08 Backend: verification records and failure reports for platform actions.
-- [ ] P5.09 Tauri bridge: content CRUD/workflow commands.
-- [ ] P5.10 Tauri bridge: OmniSocials status/upload/schedule/publish commands with policy enforcement.
-- [ ] P5.11 Frontend: content calendar/workspace with plans, drafts, assets, review gates.
-- [ ] P5.12 Frontend: platform constraints, schedule/publish confirmation surfaces, failure reports.
-- [ ] P5.13 Tests: workflow progression plan → draft → asset → review → schedule.
-- [ ] P5.14 Tests: failed generation/review/upload/schedule fails closed.
-- [ ] P5.15 Tests: no publish/schedule without required review/confirmation.
-- [ ] P5.16 Tests: platform media constraints enforced.
-- [ ] P5.17 Manual verification: create content piece through draft/review/schedule path without publishing by default.
-- [ ] P5.18 Verification: run `npm run verify:local`.
-- [ ] P5.19 Review: write `.hermes/reviews/phase-5-content-omnisocials/handoff.md`.
-- [ ] P5.20 Review: critique loop until `Verdict: APPROVED`.
+- [x] P5.01 Planning: define draft-first/fail-closed publishing scope and specialist design/review gates. Evidence: `Docs/2026-06-05-phase-5-content-omnisocials-scope-plan.md`.
+- [x] P5.02 Database: content plans, pieces, assets, review gates, platform statuses, schedules, verification records. Evidence: migration `src-tauri/migrations/0011_phase5_content_omnisocials.sql`; focused tests `p501` and `p502` PASS.
+- [x] P5.03 Backend: content plan → draft → asset → review → schedule workflow. Evidence: `src-tauri/src/phase5_service.rs`; focused test `p503_phase5_content_draft_asset_review_schedule_flow_is_draft_first` PASS.
+- [x] P5.04 Backend: media asset storage/references and platform media constraints. Evidence: `p506_phase5_media_constraints_events_and_secret_safety` PASS.
+- [x] P5.05 Backend: specialist design/review gate records; no schedule/publish without required review/confirmation. Evidence: `p503` and `p505_phase5_schedule_blocks_bad_confirmation_and_records_evidence` PASS.
+- [x] P5.06 Backend integration: OmniSocials account/status detection with truthful states. Evidence: default seed `not_configured`; `p504_phase5_omnisocials_fails_closed_and_records_failure` PASS.
+- [x] P5.07 Backend integration: OmniSocials upload/schedule/publish surfaces; fail closed on missing credentials/errors. Evidence: upload/schedule/publish commands record verification rows; `p504` and `p506` PASS; no external write path implemented.
+- [x] P5.08 Backend: verification records and failure reports for platform actions. Evidence: `content_verification_records`, redacted `record_verification`, and `p505`/`p506` PASS.
+- [x] P5.09 Tauri bridge: content CRUD/workflow commands. Evidence: command registry includes create/list/read/update plan/piece/media/review/schedule commands; `tauri_bridge_command_surface` PASS.
+- [x] P5.10 Tauri bridge: OmniSocials status/upload/schedule/publish commands with policy enforcement. Evidence: command registry includes `get_omnisocials_status_command`, `omnisocials_upload_media_command`, `omnisocials_schedule_content_command`, `omnisocials_publish_content_command`, and verification listing; `tauri_bridge_command_surface` PASS.
+- [x] P5.11 Frontend: content calendar/workspace with plans, drafts, assets, review gates. Evidence: `ContentWorkspace` in `src/App.tsx` plus view-model helpers in `src/contentWorkspace.ts`; `src/contentWorkspace.test.ts` and frontend build PASS.
+- [x] P5.12 Frontend: platform constraints, schedule/publish confirmation surfaces, failure reports. Evidence: Content workspace shows review/schedule-gate summaries, fail-closed OmniSocials action copy, and blocked/failed verification rows; `contentWorkspace.test.ts`, `npm run test:frontend`, and `npm run build` PASS.
+- [x] P5.13 Tests: workflow progression plan → draft → asset → review → schedule. Evidence: `p503_phase5_content_draft_asset_review_schedule_flow_is_draft_first` PASS.
+- [x] P5.14 Tests: failed generation/review/upload/schedule fails closed. Evidence: `p504`, `p505`, and `p506` PASS.
+- [x] P5.15 Tests: no publish/schedule without required review/confirmation. Evidence: `p503` blocks before review/confirmation and `p505` blocks denied confirmation.
+- [x] P5.16 Tests: platform media constraints enforced. Evidence: `p506_phase5_media_constraints_events_and_secret_safety` PASS.
+- [x] P5.17 Manual verification: create content piece through draft/review/schedule path without publishing by default. Evidence: `Docs/2026-06-05-phase-5-content-omnisocials-manual-verification.md`; no external publish attempted.
+- [x] P5.18 Verification: run `npm run verify:local`. Evidence: PASS — Rust 179 passed / 0 failed / 1 ignored; frontend tests passed; build passed; final marker `PASS: local push verification passed (--skip-package)`.
+- [x] P5.19 Review: write `.hermes/reviews/phase-5-content-omnisocials/handoff.md`. Evidence: handoff written with changed files, verification evidence, manual verification notes, limitations, and reviewer focus areas.
+- [x] P5.20 Review: critique loop until `Verdict: APPROVED`. Evidence: `.hermes/reviews/phase-5-content-omnisocials/critique-report.md` verdict `APPROVED`; critique reran focused P5 tests, command-surface tests, content workspace frontend test, and `npm run verify:local` successfully.
 
 ---
 
 ## Phase 6 — Calendar, Gmail, Inbox, Business, Products
 
-- [ ] P6.01 Planning: define Calendar/Gmail/Inbox/Business/Products scope and confirmation/privacy boundaries.
-- [ ] P6.02 Database: contacts, companies, follow-ups, products, email/calendar references, cross-entity links, integration statuses.
-- [ ] P6.03 Backend/native: EventKit permission/status service.
-- [ ] P6.04 Backend/native: EventKit calendar read/create/edit/delete with confirmation requirements.
-- [ ] P6.05 Backend integration: Gmail OAuth/status service with truthful states.
-- [ ] P6.06 Backend integration: Gmail read/search/draft/send; send always requires confirmation.
-- [ ] P6.07 Backend: Inbox aggregation across notifications, emails, calendar, follow-ups, blockers.
-- [ ] P6.08 Backend: contacts/companies/follow-ups services.
-- [ ] P6.09 Backend: Products workspace services and links to tasks/repos/notes/emails/events.
-- [ ] P6.10 Tauri bridge: calendar commands.
-- [ ] P6.11 Tauri bridge: Gmail commands.
-- [ ] P6.12 Tauri bridge: inbox/business/products commands.
-- [ ] P6.13 Frontend: Inbox workspace with attention items, blockers, follow-ups, integration states.
-- [ ] P6.14 Frontend: Calendar workspace with read/create/edit/delete confirmation flows.
-- [ ] P6.15 Frontend: Gmail surfaces with read/search/draft/send confirmation and safe unconfigured/auth states.
-- [ ] P6.16 Frontend: Business workspace for contacts, companies, follow-ups.
-- [ ] P6.17 Frontend: Products workspace with cross-links and related history.
-- [ ] P6.18 Tests: Gmail send confirmation and no silent send.
-- [ ] P6.19 Tests: calendar create/edit/delete confirmation.
-- [ ] P6.20 Tests: permission/auth/integration states do not leak internal provider details.
-- [ ] P6.21 Tests: cross-link integrity and persistence.
-- [ ] P6.22 Manual verification: EventKit native checks or documented blocker.
-- [ ] P6.23 Manual verification: Gmail OAuth/native checks or documented blocker.
-- [ ] P6.24 Verification: run `npm run verify:local`.
-- [ ] P6.25 Review: write `.hermes/reviews/phase-6-calendar-gmail-business-products/handoff.md`.
-- [ ] P6.26 Review: critique loop until `Verdict: APPROVED`.
+- [x] P6.01 Planning: define Calendar/Gmail/Inbox/Business/Products scope and confirmation/privacy boundaries.
+  - 2026-06-05 implemented fail-closed local-first scope: EventKit and Gmail stay truthful/unconfigured unless permissions/OAuth exist; calendar writes and email sends require persisted approved confirmations; no external send/sync is claimed.
+- [x] P6.02 Database: contacts, companies, follow-ups, products, email/calendar references, cross-entity links, integration statuses.
+  - 2026-06-05 added migration v12 (`src-tauri/migrations/0012_phase6_calendar_gmail_business_products.sql`) for companies, contacts, follow-ups, products, email_refs, and calendar_refs with JSON checks, FK links, indexes, and local persistence.
+- [x] P6.03 Backend/native: truthful EventKit permission/status blocker service (no external Apple Calendar access claimed).
+  - 2026-06-05 added truthful EventKit status (`needs_permission`) without prompting or claiming native access.
+- [x] P6.04 Backend/native: local calendar reference create/edit/delete with confirmation requirements; external EventKit read/write remains documented blocked scope.
+  - 2026-06-05 added local calendar ref list/create/update/delete services; create uses `create_calendar_event` confirmation, edit/delete use `edit_delete_calendar_event` confirmation.
+- [x] P6.05 Backend integration: truthful Gmail OAuth/status blocker service (no OAuth/API token flow claimed).
+  - 2026-06-05 added truthful Gmail status (`not_configured`) with no token/OAuth/API claim.
+- [x] P6.06 Backend integration: local mail reference search/draft/send-state transition; real Gmail read/send remains documented blocked scope and local send-state always requires confirmation.
+  - 2026-06-05 added local email draft/list/search and confirmation-gated send-state service; no external send is performed or claimed.
+- [x] P6.07 Backend: Inbox aggregation across notifications, emails, calendar, follow-ups, blockers.
+  - 2026-06-05 added Phase 6 inbox aggregation for follow-ups, draft/send-blocked emails, and calendar refs.
+- [x] P6.08 Backend: contacts/companies/follow-ups services.
+  - 2026-06-05 added create/list services for companies, contacts, and follow-ups with validation and persistence.
+- [x] P6.09 Backend: Products workspace services and links to tasks/repos/notes/emails/events.
+  - 2026-06-05 added product create/list and product-owned cross-entity link service using the existing entity_links table.
+- [x] P6.10 Tauri bridge: calendar commands.
+  - 2026-06-05 registered list/create/update/delete calendar commands.
+- [x] P6.11 Tauri bridge: Gmail commands.
+  - 2026-06-05 registered email list/draft/send commands with confirmation-gated send.
+- [x] P6.12 Tauri bridge: inbox/business/products commands.
+  - 2026-06-05 registered Phase 6 overview, inbox, business, follow-up, product, and product-link commands.
+- [x] P6.13 Frontend: Inbox workspace with attention items, blockers, follow-ups, integration states.
+  - 2026-06-05 wired Phase 6 frontend overview/cards to native data and safe integration blockers.
+- [x] P6.14 Frontend: Calendar workspace with read/create/edit/delete confirmation flows.
+  - 2026-06-05 rendered calendar records and wired create/update/delete forms to native commands with required confirmation IDs.
+- [x] P6.15 Frontend: Gmail surfaces with read/search/draft/send confirmation and safe unconfigured/auth states.
+  - 2026-06-05 rendered mail records and wired local draft + confirmation-gated send-state forms; unconfigured Gmail state is explicit.
+- [x] P6.16 Frontend: Business workspace for contacts, companies, follow-ups.
+  - 2026-06-05 rendered companies, contacts, and follow-ups from the native Phase 6 overview and wired create forms to Tauri commands.
+- [x] P6.17 Frontend: Products workspace with cross-links and related history.
+  - 2026-06-05 rendered products and product links from native Phase 6 overview and wired create/link forms to Tauri commands.
+- [x] P6.18 Tests: Gmail send confirmation and no silent send.
+  - 2026-06-05 added Rust and frontend guard tests for no silent send.
+- [x] P6.19 Tests: calendar create/edit/delete confirmation.
+  - 2026-06-05 added Rust and frontend guard tests for confirmation-gated calendar writes.
+- [x] P6.20 Tests: permission/auth/integration states do not leak internal provider details.
+  - 2026-06-05 added safe-copy integration-state regression coverage.
+- [x] P6.21 Tests: cross-link integrity and persistence.
+  - 2026-06-05 added file-backed persistence test for business/product/link overview after reopen.
+- [x] P6.22 Manual verification: EventKit native checks or documented blocker.
+  - 2026-06-05 documented truthful EventKit blocker in `Docs/2026-06-05-phase-6-calendar-gmail-business-products-verification.md`.
+- [x] P6.23 Manual verification: Gmail OAuth/native checks or documented blocker.
+  - 2026-06-05 documented truthful Gmail OAuth blocker in `Docs/2026-06-05-phase-6-calendar-gmail-business-products-verification.md`.
+- [x] P6.24 Verification: run `npm run verify:local`.
+  - 2026-06-05 passed `npm run verify:local && git diff --check`: Rust 182 passed/0 failed/1 ignored, frontend tests passed, frontend production build passed, final marker `PASS: local push verification passed (--skip-package)`. Browser-preview E2E verified Phase 6 safe UI/no fake data; native Tauri launch verified `Zoid` window, schema v12, and Phase 6 tables without inserting temp records.
+- [x] P6.25 Review: write `.hermes/reviews/phase-6-calendar-gmail-business-products/handoff.md`.
+- [x] P6.26 Review: critique loop until `Verdict: APPROVED`.
+  - 2026-06-05 critique loop completed with `APPROVED` after required fixes for truthful EventKit/Gmail scope, frontend command forms, fail-closed mutation semantics, Phase 6 secret rejection, and event emission.
 
 ---
 

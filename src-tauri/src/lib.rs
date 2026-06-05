@@ -2,6 +2,8 @@ mod agent_execution_service;
 mod history_service;
 mod notification_service;
 mod phase4_service;
+mod phase5_service;
+mod phase6_service;
 mod review_service;
 mod task_service;
 
@@ -13,6 +15,10 @@ pub(crate) use history_service::*;
 pub(crate) use notification_service::*;
 #[allow(unused_imports)]
 pub(crate) use phase4_service::*;
+#[allow(unused_imports)]
+pub(crate) use phase5_service::*;
+#[allow(unused_imports)]
+pub(crate) use phase6_service::*;
 #[allow(unused_imports)]
 pub(crate) use review_service::*;
 #[allow(unused_imports)]
@@ -40,6 +46,12 @@ static NOTIFICATION_COUNTER: AtomicU64 = AtomicU64::new(0);
 static REPO_PROFILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LAUNCH_GATE_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LAUNCH_GATE_EVIDENCE_COUNTER: AtomicU64 = AtomicU64::new(0);
+static CONTENT_PLAN_COUNTER: AtomicU64 = AtomicU64::new(0);
+static CONTENT_PIECE_COUNTER: AtomicU64 = AtomicU64::new(0);
+static MEDIA_ASSET_COUNTER: AtomicU64 = AtomicU64::new(0);
+static CONTENT_REVIEW_GATE_COUNTER: AtomicU64 = AtomicU64::new(0);
+static CONTENT_SCHEDULE_COUNTER: AtomicU64 = AtomicU64::new(0);
+static CONTENT_VERIFICATION_COUNTER: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_RUN_CHILDREN: OnceLock<Mutex<HashMap<String, Arc<Mutex<std::process::Child>>>>> =
     OnceLock::new();
 
@@ -294,6 +306,16 @@ const MIGRATIONS: &[Migration] = &[
         version: 10,
         name: "phase4_code_repos_launch_gate",
         sql: include_str!("../migrations/0010_phase4_code_repos_launch_gate.sql"),
+    },
+    Migration {
+        version: 11,
+        name: "phase5_content_omnisocials",
+        sql: include_str!("../migrations/0011_phase5_content_omnisocials.sql"),
+    },
+    Migration {
+        version: 12,
+        name: "phase6_calendar_gmail_business_products",
+        sql: include_str!("../migrations/0012_phase6_calendar_gmail_business_products.sql"),
     },
 ];
 
@@ -731,9 +753,9 @@ struct ExecutionGateResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct RedactionOutcome {
-    text: String,
-    redaction_count: usize,
+pub(crate) struct RedactionOutcome {
+    pub(crate) text: String,
+    pub(crate) redaction_count: usize,
 }
 
 #[derive(Debug)]
@@ -758,10 +780,10 @@ struct EventInput<'a> {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct EventTargetInput<'a> {
-    entity_type: &'a str,
-    entity_id: &'a str,
-    relation_type: &'a str,
+pub(crate) struct EventTargetInput<'a> {
+    pub(crate) entity_type: &'a str,
+    pub(crate) entity_id: &'a str,
+    pub(crate) relation_type: &'a str,
 }
 
 #[allow(dead_code)]
@@ -774,16 +796,16 @@ struct EventTargetRecord {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
-struct EventCreateInput<'a> {
-    action_type: &'a str,
-    outcome: &'a str,
-    actor_type: &'a str,
-    actor_id: Option<&'a str>,
-    workspace_key: Option<&'a str>,
-    summary: &'a str,
-    source: &'a str,
-    metadata_json: &'a str,
-    targets: Vec<EventTargetInput<'a>>,
+pub(crate) struct EventCreateInput<'a> {
+    pub(crate) action_type: &'a str,
+    pub(crate) outcome: &'a str,
+    pub(crate) actor_type: &'a str,
+    pub(crate) actor_id: Option<&'a str>,
+    pub(crate) workspace_key: Option<&'a str>,
+    pub(crate) summary: &'a str,
+    pub(crate) source: &'a str,
+    pub(crate) metadata_json: &'a str,
+    pub(crate) targets: Vec<EventTargetInput<'a>>,
 }
 
 #[allow(dead_code)]
@@ -4000,6 +4022,10 @@ const ALLOWED_ENTITY_LINK_TYPES: &[&str] = &[
     "email",
     "event",
     "browser_capture",
+    "contact",
+    "company",
+    "follow_up",
+    "calendar_event",
 ];
 
 #[cfg(test)]
@@ -4061,6 +4087,44 @@ const TAURI_BRIDGE_COMMAND_NAMES: &[&str] = &[
     "open_file_reference_command",
     "preview_file_command",
     "perform_file_action_command",
+    "create_content_plan_command",
+    "list_content_plans_command",
+    "create_content_piece_command",
+    "read_content_piece_command",
+    "list_content_pieces_command",
+    "update_content_piece_draft_command",
+    "add_media_asset_reference_command",
+    "list_media_asset_references_command",
+    "create_content_review_gate_command",
+    "approve_content_review_gate_command",
+    "reject_content_review_gate_command",
+    "list_content_review_gates_command",
+    "create_content_schedule_command",
+    "list_content_schedules_command",
+    "cancel_content_schedule_command",
+    "get_omnisocials_status_command",
+    "omnisocials_upload_media_command",
+    "omnisocials_schedule_content_command",
+    "omnisocials_publish_content_command",
+    "list_content_verification_records_command",
+    "get_phase6_overview_command",
+    "list_phase6_inbox_command",
+    "list_calendar_events_command",
+    "create_calendar_event_command",
+    "update_calendar_event_command",
+    "delete_calendar_event_command",
+    "list_emails_command",
+    "create_email_draft_command",
+    "send_email_draft_command",
+    "list_business_companies_command",
+    "create_business_company_command",
+    "list_business_contacts_command",
+    "create_business_contact_command",
+    "list_follow_ups_command",
+    "create_follow_up_command",
+    "list_products_command",
+    "create_product_command",
+    "link_product_entity_command",
 ];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -4145,6 +4209,16 @@ struct InboxNotificationCommandListRequest {
 #[derive(Debug, Clone, Deserialize)]
 struct NotificationCommandStateRequest {
     state: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CalendarDeleteCommandRequest {
+    confirmation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct EmailListCommandRequest {
+    query: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -4492,7 +4566,9 @@ fn read_launch_gate_command(launch_gate_id: String) -> Result<LaunchGateRecord, 
 }
 
 #[tauri::command]
-fn add_launch_gate_evidence_command(request: LaunchGateEvidenceInput) -> Result<LaunchGateEvidenceRecord, String> {
+fn add_launch_gate_evidence_command(
+    request: LaunchGateEvidenceInput,
+) -> Result<LaunchGateEvidenceRecord, String> {
     let connection = open_ready_connection()?;
     add_launch_gate_evidence(&connection, request).map_err(repository_error_message)
 }
@@ -4504,7 +4580,9 @@ fn evaluate_launch_gate_command(launch_gate_id: String) -> Result<LaunchGateReco
 }
 
 #[tauri::command]
-fn preview_launch_action_policy_command(action_category: String) -> Result<ActionPolicyDecision, String> {
+fn preview_launch_action_policy_command(
+    action_category: String,
+) -> Result<ActionPolicyDecision, String> {
     let category = normalize_launch_action_policy_category(&action_category)?;
     Ok(evaluate_action_policy(&category))
 }
@@ -4702,6 +4780,125 @@ fn preview_action_policy(request: PolicyPreviewRequest) -> Result<ActionPolicyDe
         destructive: request.destructive.unwrap_or(false),
     };
     Ok(evaluate_action_request(&action_request))
+}
+
+
+#[tauri::command]
+fn get_phase6_overview_command() -> Result<Phase6OverviewRecord, String> {
+    let connection = open_ready_connection()?;
+    list_phase6_overview(&connection).map_err(repository_error_message)
+}
+
+#[tauri::command]
+fn list_phase6_inbox_command() -> Result<Vec<InboxAggregateRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_phase6_inbox(&connection).map_err(repository_error_message)
+}
+
+#[tauri::command]
+fn list_calendar_events_command() -> Result<Vec<CalendarRefRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_calendar_events(&connection).map_err(repository_error_message)
+}
+
+#[tauri::command]
+fn create_calendar_event_command(request: CalendarEventInput) -> Result<CalendarRefRecord, String> {
+    let connection = open_ready_connection()?;
+    create_calendar_event(&connection, request).map_err(repository_error_message)
+}
+
+#[tauri::command]
+fn update_calendar_event_command(
+    event_id: String,
+    request: CalendarEventInput,
+) -> Result<CalendarRefRecord, String> {
+    let connection = open_ready_connection()?;
+    update_calendar_event(&connection, &event_id, request).map_err(repository_error_message)
+}
+
+#[tauri::command]
+fn delete_calendar_event_command(
+    event_id: String,
+    request: CalendarDeleteCommandRequest,
+) -> Result<CalendarRefRecord, String> {
+    let connection = open_ready_connection()?;
+    delete_calendar_event(&connection, &event_id, request.confirmation_id.as_deref())
+        .map_err(repository_error_message)
+}
+
+#[tauri::command]
+fn list_emails_command(request: EmailListCommandRequest) -> Result<Vec<EmailRefRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_emails(&connection, request.query).map_err(repository_error_message)
+}
+
+#[tauri::command]
+fn create_email_draft_command(request: EmailDraftInput) -> Result<EmailRefRecord, String> {
+    let connection = open_ready_connection()?;
+    create_email_draft(&connection, request).map_err(repository_error_message)
+}
+
+#[tauri::command]
+fn send_email_draft_command(
+    email_id: String,
+    request: EmailSendInput,
+) -> Result<EmailRefRecord, String> {
+    let connection = open_ready_connection()?;
+    send_email_draft(&connection, &email_id, request).map_err(repository_error_message)
+}
+
+#[tauri::command]
+fn list_business_companies_command() -> Result<Vec<BusinessCompanyRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_companies(&connection).map_err(repository_error_message)
+}
+
+#[tauri::command]
+fn create_business_company_command(request: CompanyInput) -> Result<BusinessCompanyRecord, String> {
+    let connection = open_ready_connection()?;
+    create_company(&connection, request).map_err(repository_error_message)
+}
+
+#[tauri::command]
+fn list_business_contacts_command() -> Result<Vec<BusinessContactRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_contacts(&connection).map_err(repository_error_message)
+}
+
+#[tauri::command]
+fn create_business_contact_command(request: ContactInput) -> Result<BusinessContactRecord, String> {
+    let connection = open_ready_connection()?;
+    create_contact(&connection, request).map_err(repository_error_message)
+}
+
+#[tauri::command]
+fn list_follow_ups_command() -> Result<Vec<FollowUpRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_follow_ups(&connection).map_err(repository_error_message)
+}
+
+#[tauri::command]
+fn create_follow_up_command(request: FollowUpInput) -> Result<FollowUpRecord, String> {
+    let connection = open_ready_connection()?;
+    create_follow_up(&connection, request).map_err(repository_error_message)
+}
+
+#[tauri::command]
+fn list_products_command() -> Result<Vec<ProductRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_products(&connection).map_err(repository_error_message)
+}
+
+#[tauri::command]
+fn create_product_command(request: ProductInput) -> Result<ProductRecord, String> {
+    let connection = open_ready_connection()?;
+    create_product(&connection, request).map_err(repository_error_message)
+}
+
+#[tauri::command]
+fn link_product_entity_command(request: ProductLinkInput) -> Result<EntityLinkRecord, String> {
+    let connection = open_ready_connection()?;
+    link_product_entity(&connection, request).map_err(repository_error_message)
 }
 
 fn open_ready_connection() -> Result<Connection, String> {
@@ -8731,7 +8928,7 @@ fn reject_secret(field: &'static str, message: impl Into<String>) -> RepositoryE
 }
 
 #[allow(dead_code)]
-fn validate_no_secret_json(field: &'static str, value: &str) -> RepoResult<()> {
+pub(crate) fn validate_no_secret_json(field: &'static str, value: &str) -> RepoResult<()> {
     let parsed = parse_json_field(field, value)?;
     if json_contains_secret_like_material(&parsed, None) {
         return Err(reject_secret(
@@ -9625,7 +9822,7 @@ fn write_event(connection: &Connection, input: EventInput<'_>) -> rusqlite::Resu
 }
 
 #[allow(dead_code)]
-fn create_event_record(
+pub(crate) fn create_event_record(
     connection: &Connection,
     input: EventCreateInput<'_>,
 ) -> RepoResult<EventRecord> {
@@ -9879,7 +10076,7 @@ fn keychain_readiness_status() -> KeychainReadinessStatus {
     }
 }
 
-fn redact_secrets(input: &str) -> RedactionOutcome {
+pub(crate) fn redact_secrets(input: &str) -> RedactionOutcome {
     let mut redaction_count = 0;
     let text = input
         .split_inclusive('\n')
@@ -10803,6 +11000,151 @@ fn now_millis() -> u128 {
         .as_millis()
 }
 
+#[tauri::command]
+fn create_content_plan_command(request: ContentPlanInput) -> Result<ContentPlanRecord, String> {
+    let connection = open_ready_connection()?;
+    create_content_plan(&connection, request).map_err(repository_error_message)
+}
+#[tauri::command]
+fn list_content_plans_command(
+    request: ContentListRequest,
+) -> Result<Vec<ContentPlanRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_content_plans(&connection, request).map_err(repository_error_message)
+}
+#[tauri::command]
+fn create_content_piece_command(request: ContentPieceInput) -> Result<ContentPieceRecord, String> {
+    let connection = open_ready_connection()?;
+    create_content_piece(&connection, request).map_err(repository_error_message)
+}
+#[tauri::command]
+fn read_content_piece_command(piece_id: String) -> Result<Option<ContentPieceRecord>, String> {
+    let connection = open_ready_connection()?;
+    read_content_piece(&connection, &piece_id).map_err(repository_error_message)
+}
+#[tauri::command]
+fn list_content_pieces_command(
+    request: ContentListRequest,
+) -> Result<Vec<ContentPieceRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_content_pieces(&connection, request).map_err(repository_error_message)
+}
+#[tauri::command]
+fn update_content_piece_draft_command(
+    request: ContentPieceDraftInput,
+) -> Result<ContentPieceRecord, String> {
+    let connection = open_ready_connection()?;
+    update_content_piece_draft(&connection, request).map_err(repository_error_message)
+}
+#[tauri::command]
+fn add_media_asset_reference_command(request: MediaAssetInput) -> Result<MediaAssetRecord, String> {
+    let connection = open_ready_connection()?;
+    add_media_asset_reference(&connection, request).map_err(repository_error_message)
+}
+#[tauri::command]
+fn list_media_asset_references_command(piece_id: String) -> Result<Vec<MediaAssetRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_media_asset_references(&connection, &piece_id).map_err(repository_error_message)
+}
+#[tauri::command]
+fn create_content_review_gate_command(
+    request: ContentReviewGateInput,
+) -> Result<ContentReviewGateRecord, String> {
+    let connection = open_ready_connection()?;
+    create_content_review_gate(&connection, request).map_err(repository_error_message)
+}
+#[tauri::command]
+fn approve_content_review_gate_command(
+    gate_id: String,
+    request: ContentReviewGateDecisionInput,
+) -> Result<ContentReviewGateRecord, String> {
+    let connection = open_ready_connection()?;
+    decide_content_review_gate(&connection, &gate_id, true, request)
+        .map_err(repository_error_message)
+}
+#[tauri::command]
+fn reject_content_review_gate_command(
+    gate_id: String,
+    request: ContentReviewGateDecisionInput,
+) -> Result<ContentReviewGateRecord, String> {
+    let connection = open_ready_connection()?;
+    decide_content_review_gate(&connection, &gate_id, false, request)
+        .map_err(repository_error_message)
+}
+#[tauri::command]
+fn list_content_review_gates_command(
+    piece_id: String,
+) -> Result<Vec<ContentReviewGateRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_content_review_gates(&connection, &piece_id).map_err(repository_error_message)
+}
+#[tauri::command]
+fn create_content_schedule_command(
+    request: ContentScheduleInput,
+) -> Result<ContentScheduleRecord, String> {
+    let connection = open_ready_connection()?;
+    create_content_schedule(&connection, request).map_err(repository_error_message)
+}
+#[tauri::command]
+fn list_content_schedules_command(
+    piece_id: Option<String>,
+) -> Result<Vec<ContentScheduleRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_content_schedules(&connection, piece_id).map_err(repository_error_message)
+}
+#[tauri::command]
+fn cancel_content_schedule_command(schedule_id: String) -> Result<ContentScheduleRecord, String> {
+    let connection = open_ready_connection()?;
+    cancel_content_schedule(&connection, &schedule_id).map_err(repository_error_message)
+}
+#[tauri::command]
+fn get_omnisocials_status_command() -> Result<OmniSocialsStatusRecord, String> {
+    let connection = open_ready_connection()?;
+    get_omnisocials_status(&connection).map_err(repository_error_message)
+}
+#[tauri::command]
+fn omnisocials_upload_media_command(
+    request: OmniSocialsActionInput,
+) -> Result<ContentVerificationRecord, String> {
+    let connection = open_ready_connection()?;
+    omnisocials_upload_media(&connection, &request.piece_id, &request.platform)
+        .map_err(repository_error_message)
+}
+#[tauri::command]
+fn omnisocials_schedule_content_command(
+    request: OmniSocialsActionInput,
+) -> Result<ContentVerificationRecord, String> {
+    let connection = open_ready_connection()?;
+    omnisocials_fail_closed(
+        &connection,
+        &request.piece_id,
+        request.schedule_id.as_deref(),
+        &request.platform,
+        "schedule",
+    )
+    .map_err(repository_error_message)
+}
+#[tauri::command]
+fn omnisocials_publish_content_command(
+    request: OmniSocialsActionInput,
+) -> Result<ContentVerificationRecord, String> {
+    let connection = open_ready_connection()?;
+    omnisocials_fail_closed(
+        &connection,
+        &request.piece_id,
+        request.schedule_id.as_deref(),
+        &request.platform,
+        "publish",
+    )
+    .map_err(repository_error_message)
+}
+#[tauri::command]
+fn list_content_verification_records_command(
+    request: ContentVerificationListRequest,
+) -> Result<Vec<ContentVerificationRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_content_verification_records(&connection, request).map_err(repository_error_message)
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -10870,7 +11212,45 @@ pub fn run() {
             browse_files_command,
             open_file_reference_command,
             preview_file_command,
-            perform_file_action_command
+            perform_file_action_command,
+            get_phase6_overview_command,
+            list_phase6_inbox_command,
+            list_calendar_events_command,
+            create_calendar_event_command,
+            update_calendar_event_command,
+            delete_calendar_event_command,
+            list_emails_command,
+            create_email_draft_command,
+            send_email_draft_command,
+            list_business_companies_command,
+            create_business_company_command,
+            list_business_contacts_command,
+            create_business_contact_command,
+            list_follow_ups_command,
+            create_follow_up_command,
+            list_products_command,
+            create_product_command,
+            link_product_entity_command,
+            create_content_plan_command,
+            list_content_plans_command,
+            create_content_piece_command,
+            read_content_piece_command,
+            list_content_pieces_command,
+            update_content_piece_draft_command,
+            add_media_asset_reference_command,
+            list_media_asset_references_command,
+            create_content_review_gate_command,
+            approve_content_review_gate_command,
+            reject_content_review_gate_command,
+            list_content_review_gates_command,
+            create_content_schedule_command,
+            list_content_schedules_command,
+            cancel_content_schedule_command,
+            get_omnisocials_status_command,
+            omnisocials_upload_media_command,
+            omnisocials_schedule_content_command,
+            omnisocials_publish_content_command,
+            list_content_verification_records_command,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

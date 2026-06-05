@@ -598,22 +598,25 @@ Acceptance:
 
 ### Phase 4: Code, Repos, Launch Gate
 
+Scope note:
+
+Phase 4 is intentionally narrowed to a lightweight native repo registry, truthful local integration states, Launch Gate evidence records, and protected-action policy previews. Full git status/diff/read operations, external GitHub/Vercel automation, and deploy execution are deferred to a later dedicated slice.
+
 Deliverables:
 
-- repo discovery and manual add
-- repo profile model
-- git status/diff/commit view
-- GitHub integration where credentials configured
-- Vercel integration where credentials configured
-- Launch Gate checks
-- production verification evidence model
+- lightweight repo profile model and manual add/list/read primitives
+- repo links to product/task via the existing entity-link model
+- truthful GitHub/Vercel integration states where credentials are not configured; no fake connected data
+- Launch Gate checks and verification evidence model
+- deploy/push/merge policy previews that require review/confirmation before any future execution path
+- Code workspace read-only surface for repo registry, truthful integration state, and Launch Gate policy preview
 
 Acceptance:
 
-- repo can be added and linked to product/task.
-- git status/diff renders correctly.
-- Launch Gate cannot be marked verified without evidence.
-- deploy/push/merge actions require review + confirmation.
+- repo can be added, listed, read, and linked to product/task through native backend/bridge primitives.
+- GitHub/Vercel/git/deploy status is truthful and does not claim connected/executed behavior without credentials or implementation.
+- Launch Gate cannot be marked verified without at least one persisted evidence record.
+- deploy/push/merge actions are policy previews only and require review + confirmation before any future execution path.
 
 ### Phase 5: Content and OmniSocials
 

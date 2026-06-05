@@ -39,6 +39,7 @@
   --color-window-close: #ff5f57;
   --color-window-minimize: #febc2e;
   --color-window-zoom: #28c840;
+  --color-danger: #c4312d;
 
   --material-page: #eceef2;
   --material-shell:
@@ -524,21 +525,87 @@ input:focus-visible {
 
 .native-workspace-header {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-8);
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-12);
+}
+
+.native-workspace-title-copy {
+  display: grid;
+  gap: var(--space-5);
+  min-width: 0;
 }
 
 .native-workspace-header h2,
 .native-workspace-header p {
-  flex-basis: 100%;
   margin: 0;
+}
+
+.native-workspace-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-7);
 }
 
 .native-workspace-grid {
   display: grid;
-  grid-template-columns: minmax(180px, 0.8fr) minmax(0, 1.2fr);
+  grid-template-columns: minmax(260px, 0.9fr) minmax(0, 1.4fr);
   gap: var(--space-12);
+}
+
+.native-workspace-unavailable {
+  max-width: 760px;
+}
+
+.native-workspace-unavailable h3,
+.native-editor-panel h3,
+.native-workspace-detail h3 {
+  margin-top: 0;
+}
+
+.native-list-panel li[aria-current="true"] button {
+  border-color: color-mix(in srgb, var(--color-accent) 42%, var(--border-soft));
+  background: color-mix(in srgb, var(--color-accent) 12%, var(--material-control));
+}
+
+.native-list-panel li button strong,
+.native-list-panel li button span {
+  display: block;
+  min-width: 0;
+}
+
+.native-list-panel li button span {
+  margin-top: var(--space-4);
+  color: var(--color-text-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.native-detail-list {
+  display: grid;
+  gap: var(--space-6);
+  margin: var(--space-10) 0;
+}
+
+.native-detail-list div {
+  display: grid;
+  grid-template-columns: minmax(112px, 0.35fr) minmax(0, 1fr);
+  gap: var(--space-8);
+  border-top: 1px solid var(--border-soft);
+  padding-top: var(--space-6);
+}
+
+.native-detail-list dt {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.native-detail-list dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .native-workspace-panel ul {
@@ -568,6 +635,15 @@ input:focus-visible {
 .native-workspace-panel form {
   display: grid;
   gap: var(--space-10);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+}
+
+.native-workspace-panel form label:has(textarea),
+.native-workspace-panel form .field-error,
+.native-workspace-panel form p,
+.native-workspace-panel form button {
+  grid-column: 1 / -1;
 }
 
 .native-workspace-panel label {
@@ -602,6 +678,27 @@ input:focus-visible {
   background: var(--material-control-muted);
   padding: var(--space-10);
   white-space: pre-wrap;
+}
+
+.field-error {
+  color: var(--color-danger);
+  font-size: 12px;
+  margin: 0;
+}
+
+@media (max-width: 980px) {
+  .native-workspace-grid,
+  .native-workspace-panel form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .native-workspace-header {
+    flex-direction: column;
+  }
+
+  .native-workspace-actions {
+    justify-content: flex-start;
+  }
 }
 
 .hero-card,
@@ -1094,5 +1191,256 @@ input:focus-visible {
   .hero-card {
     align-items: flex-start;
     flex-direction: column;
+  }
+}
+
+
+/* Zoid motion system: page, panel, form, list, and control animation coverage. */
+:root {
+  --motion-fast: 140ms;
+  --motion-medium: 220ms;
+  --motion-slow: 420ms;
+  --motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-spring: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes zoid-shell-rise {
+  from { opacity: 0; transform: translateY(10px) scale(0.992); filter: blur(8px); }
+  to { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+}
+
+@keyframes zoid-panel-rise {
+  from { opacity: 0; transform: translateY(14px) scale(0.985); filter: blur(6px); }
+  to { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+}
+
+@keyframes zoid-item-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes zoid-status-pulse {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 0 4px var(--state-pending-ring); }
+  50% { transform: scale(1.08); box-shadow: 0 0 0 7px rgba(142, 142, 147, 0.08); }
+}
+
+@keyframes zoid-ready-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.08); }
+}
+
+@keyframes zoid-attention-glow {
+  0%, 100% { box-shadow: var(--shadow-card); }
+  50% { box-shadow: var(--shadow-card), 0 0 0 1px rgba(255, 159, 10, 0.12), 0 0 26px rgba(255, 159, 10, 0.12); }
+}
+
+.zoid-shell {
+  animation: zoid-shell-rise var(--motion-slow) var(--motion-spring) both;
+}
+
+.sidebar,
+.toolbar,
+.primary-pane,
+.inspector-pane,
+.native-workspace,
+.phase6-grid,
+.history-timeline,
+.content-linked-panels,
+.task-linked-panels,
+.run-controls-panel,
+.clean-session-panel,
+.inbox-attention-panel,
+.manual-review-panel,
+.run-history-panels {
+  animation: zoid-panel-rise var(--motion-slow) var(--motion-spring) both;
+}
+
+.toolbar { animation-delay: 30ms; }
+.primary-pane { animation-delay: 70ms; }
+.inspector-pane { animation-delay: 110ms; }
+
+.hero-card,
+.card,
+.inspector-card,
+.native-workspace-header,
+.native-workspace-panel,
+.history-timeline__entry,
+.history-timeline__notice,
+.inbox-attention-card,
+.clean-session-cards > *,
+.content-linked-panels__grid > *,
+.task-linked-panels__grid > * {
+  animation: zoid-panel-rise var(--motion-slow) var(--motion-spring) both;
+  transform-origin: center top;
+  transition:
+    border-color var(--motion-medium) var(--motion-ease),
+    background-color var(--motion-medium) var(--motion-ease),
+    box-shadow var(--motion-medium) var(--motion-ease),
+    transform var(--motion-medium) var(--motion-ease),
+    opacity var(--motion-medium) var(--motion-ease);
+}
+
+.hero-card:hover,
+.card:hover,
+.inspector-card:hover,
+.native-workspace-panel:hover,
+.native-workspace-header:hover,
+.history-timeline__entry:hover,
+.inbox-attention-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--border-strong);
+}
+
+.dashboard-grid > *,
+.today-dashboard > *,
+.native-workspace-grid > *,
+.phase6-grid > *,
+.inspector-pane > *,
+.registry-list > *,
+.today-metric-grid > *,
+.today-widget-list > *,
+.compact-list > *,
+.integration-list > *,
+.confirmation-requirement-list > *,
+.settings-status-list > *,
+.status-list > *,
+.native-detail-list > *,
+.native-workspace-panel ul > *,
+.phase6-list > *,
+.history-timeline__list > *,
+.inbox-attention-card__intents > *,
+.clean-session-cards > * {
+  animation: zoid-item-rise var(--motion-medium) var(--motion-spring) both;
+}
+
+.dashboard-grid > :nth-child(1), .today-dashboard > :nth-child(1), .native-workspace-grid > :nth-child(1), .inspector-pane > :nth-child(1), .workspace-nav > :nth-child(1) { animation-delay: 20ms; }
+.dashboard-grid > :nth-child(2), .today-dashboard > :nth-child(2), .native-workspace-grid > :nth-child(2), .inspector-pane > :nth-child(2), .workspace-nav > :nth-child(2) { animation-delay: 45ms; }
+.dashboard-grid > :nth-child(3), .today-dashboard > :nth-child(3), .native-workspace-grid > :nth-child(3), .inspector-pane > :nth-child(3), .workspace-nav > :nth-child(3) { animation-delay: 70ms; }
+.dashboard-grid > :nth-child(4), .today-dashboard > :nth-child(4), .native-workspace-grid > :nth-child(4), .inspector-pane > :nth-child(4), .workspace-nav > :nth-child(4) { animation-delay: 95ms; }
+.dashboard-grid > :nth-child(n+5), .today-dashboard > :nth-child(n+5), .native-workspace-grid > :nth-child(n+5), .inspector-pane > :nth-child(n+5), .workspace-nav > :nth-child(n+5) { animation-delay: 120ms; }
+
+.workspace-item,
+.registry-chip,
+.primary-action,
+.secondary-action,
+.native-workspace-panel li button,
+.native-workspace-panel input,
+.native-workspace-panel select,
+.native-workspace-panel textarea,
+.toolbar-center,
+.badge,
+.status-pill,
+.empty-state,
+.phase6-actions button,
+.phase6-form input,
+.phase6-form select,
+.phase6-form textarea,
+.content-inline-actions button,
+.history-timeline__footer button {
+  transition:
+    background-color var(--motion-fast) var(--motion-ease),
+    border-color var(--motion-fast) var(--motion-ease),
+    box-shadow var(--motion-fast) var(--motion-ease),
+    color var(--motion-fast) var(--motion-ease),
+    opacity var(--motion-fast) var(--motion-ease),
+    transform var(--motion-fast) var(--motion-ease);
+}
+
+.workspace-item:hover,
+.registry-chip:hover,
+.primary-action:hover,
+.secondary-action:hover:not(:disabled),
+.native-workspace-panel li button:hover,
+.phase6-actions button:hover,
+.content-inline-actions button:hover,
+.history-timeline__footer button:hover {
+  transform: translateY(-1px);
+}
+
+.workspace-item:active,
+.registry-chip:active,
+.primary-action:active,
+.secondary-action:active:not(:disabled),
+.native-workspace-panel li button:active,
+.phase6-actions button:active,
+.content-inline-actions button:active,
+.history-timeline__footer button:active {
+  transform: translateY(0) scale(0.985);
+}
+
+.workspace-item.active,
+.registry-chip.active,
+.native-list-panel li[aria-current="true"] button {
+  transform: translateX(2px);
+}
+
+.workspace-glyph,
+.brand-mark,
+.empty-state span,
+.status-dot {
+  transition: transform var(--motion-medium) var(--motion-spring), box-shadow var(--motion-medium) var(--motion-ease), background var(--motion-medium) var(--motion-ease);
+}
+
+.workspace-item:hover .workspace-glyph,
+.registry-chip:hover,
+.brand-lockup:hover .brand-mark,
+.empty-state:hover span {
+  transform: scale(1.06);
+}
+
+.status-dot.pending {
+  animation: zoid-status-pulse 2.4s ease-in-out infinite;
+}
+
+.status-dot.ready {
+  animation: zoid-ready-pulse 3.2s ease-in-out infinite;
+}
+
+.badge.blocked,
+.status-dot.blocked,
+.inbox-attention-panel,
+.manual-review-panel,
+.run-controls-panel:has(.field-error),
+.native-workspace-unavailable,
+.history-timeline__notice--error {
+  animation-name: zoid-attention-glow;
+  animation-duration: 3.4s;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+}
+
+.native-workspace-panel form,
+.phase6-form,
+.run-controls-panel form,
+.manual-review-panel form {
+  animation: zoid-panel-rise var(--motion-slow) var(--motion-spring) both;
+}
+
+.native-workspace-panel form > *,
+.phase6-form > *,
+.run-controls-panel form > *,
+.manual-review-panel form > * {
+  animation: zoid-item-rise var(--motion-medium) var(--motion-spring) both;
+}
+
+.native-workspace-panel input:focus,
+.native-workspace-panel select:focus,
+.native-workspace-panel textarea:focus,
+.phase6-form input:focus,
+.phase6-form select:focus,
+.phase6-form textarea:focus,
+.toolbar-center:focus-within {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-inset-highlight), 0 0 0 3px var(--focus-ring);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 1ms !important;
   }
 }

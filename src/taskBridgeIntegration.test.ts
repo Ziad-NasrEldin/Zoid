@@ -2,6 +2,7 @@ import {
   createInitialTaskBridgeState,
   createTaskThroughBridge,
   formDraftForTask,
+  performTaskActionThroughBridge,
   refreshTasksFromBridge,
   selectTaskThroughBridge,
   updateTaskThroughBridge,
@@ -120,6 +121,32 @@ function makeInvoke(responses: Record<string, unknown[]>) {
   assertEqual(draft.priority, baseTask.priority, "selected task priority should hydrate edit form");
   assertEqual(draft.workspace_key, baseTask.workspace_key, "selected task workspace should hydrate edit form");
   assertEqual(draft.metadata_json, baseTask.metadata_json, "selected task metadata should hydrate edit form");
+}
+
+{
+  const { invoke, calls } = makeInvoke({ update_task_status_command: [{ ...baseTask, status: "completed" }], list_tasks_command: [[{ ...baseTask, status: "completed" }]] });
+  const result = await performTaskActionThroughBridge(invoke, createInitialTaskBridgeState("tasks"), "task-1", { kind: "status", status: "completed" });
+  assertEqual(result.state.selectedTaskId, "task-1", "status action preserves selected task");
+  assertEqual(calls[0]?.command, "update_task_status_command", "status action uses native status command");
+  assertEqual(calls[0]?.args?.taskId, "task-1", "status action passes taskId camel-case arg expected by Tauri invoke");
+  assertEqual((calls[0]?.args?.request as Record<string, unknown>).status, "completed", "status action passes native status request");
+  assertEqual(calls[1]?.command, "list_tasks_command", "status action refreshes persisted tasks");
+}
+
+{
+  const { invoke, calls } = makeInvoke({ archive_task_command: [{ ...baseTask, status: "archived" }], list_tasks_command: [[{ ...baseTask, status: "archived" }]] });
+  const result = await performTaskActionThroughBridge(invoke, createInitialTaskBridgeState("tasks"), "task-1", { kind: "archive" });
+  assertEqual(result.state.selectedTaskId, "task-1", "archive keeps archived task selected when still returned by backend");
+  assertEqual(calls[0]?.command, "archive_task_command", "archive action uses native archive command");
+  assertEqual(calls[0]?.args?.taskId, "task-1", "archive action passes taskId camel-case arg expected by Tauri invoke");
+}
+
+{
+  const { invoke, calls } = makeInvoke({ delete_task_command: [{ ...baseTask, status: "deleted" }], list_tasks_command: [[]] });
+  const result = await performTaskActionThroughBridge(invoke, createInitialTaskBridgeState("tasks"), "task-1", { kind: "delete" });
+  assertEqual(result.state.selectedTaskId, null, "delete clears selected task after backend delete");
+  assertEqual(calls[0]?.command, "delete_task_command", "delete action uses native delete command");
+  assertEqual(calls[0]?.args?.taskId, "task-1", "delete action passes taskId camel-case arg expected by Tauri invoke");
 }
 
 {

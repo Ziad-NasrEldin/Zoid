@@ -31,8 +31,11 @@ export function createInitialTaskBridgeState(workspaceKey = "tasks"): TaskBridge
 }
 
 function bridgeError(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (typeof error === "string") return error;
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  if (/invoke|__TAURI|Tauri/i.test(message)) {
+    return "Native task backend is only available inside the Tauri desktop app. Browser preview keeps task data unavailable instead of simulating records.";
+  }
+  if (message) return message;
   return "unknown native task bridge error";
 }
 
@@ -134,6 +137,36 @@ export async function createTaskThroughBridge(invoke: TaskBridgeInvoke, form: Ta
       form,
       formErrors: {},
       state: { mode: "error", selectedTaskId: null, error: bridgeError(error) },
+    };
+  }
+}
+
+export async function performTaskActionThroughBridge(
+  invoke: TaskBridgeInvoke,
+  current: TaskBridgeUiState,
+  taskId: string,
+  action: { kind: "status"; status: string } | { kind: "archive" } | { kind: "delete" },
+): Promise<TaskBridgeUiState> {
+  try {
+    const selectedTaskId = action.kind === "delete" ? null : taskId;
+    if (action.kind === "status") {
+      await invoke<TaskRecord>(taskBridgeCommands.updateStatus, { taskId, request: { status: action.status } });
+    } else if (action.kind === "archive") {
+      await invoke<TaskRecord>(taskBridgeCommands.archive, { taskId });
+    } else {
+      await invoke<TaskRecord>(taskBridgeCommands.delete, { taskId });
+    }
+
+    return {
+      ...current,
+      formErrors: {},
+      state: await refreshTasksFromBridge(invoke, { selectedTaskId }),
+    };
+  } catch (error) {
+    return {
+      ...current,
+      formErrors: {},
+      state: { mode: "error", selectedTaskId: taskId, error: bridgeError(error) },
     };
   }
 }
