@@ -115,6 +115,26 @@ import {
   type MediaAssetRecord,
   type OmniSocialsStatusRecord,
 } from "./contentWorkspace";
+import {
+  allowedAttachmentTargets,
+  attachCaptureThroughBridge,
+  createCaptureThroughBridge,
+  createInitialBrowserWorkspaceState,
+  loadBrowserWorkspaceFromBridge,
+  moveWidget,
+  resetWidgetsThroughBridge,
+  resizeWidget,
+  saveWorkUrlThroughBridge,
+  toggleWidget,
+  updateBrowserDraft,
+  updateWidgetThroughBridge,
+  type BrowserBridgeInvoke,
+  type BrowserCaptureTarget,
+  type BrowserWorkspaceDraft,
+  type BrowserWorkspaceState,
+  type WidgetConfigRecord,
+  type WidgetSize,
+} from "./browserWorkspace";
 
 const integrationStates: IntegrationState[] = defaultIntegrationStates;
 
@@ -450,6 +470,7 @@ const ACTIVE_RUNS_BRIDGE_GAP =
 const taskInvoke: TaskBridgeInvoke = (command, args) => invoke(command, args);
 const noteInvoke: NoteBridgeInvoke = (command, args) => invoke(command, args);
 const fileInvoke: FileBridgeInvoke = (command, args) => invoke(command, args);
+const browserInvoke: BrowserBridgeInvoke = (command, args) => invoke(command, args);
 
 function bridgeErrorReason(label: string, error: unknown) {
   const detail = error instanceof Error ? error.message : typeof error === "string" ? error : "unknown native bridge error";
@@ -784,6 +805,122 @@ function ContentWorkspace({ state, onRefresh, actions }: { state: ContentWorkspa
   );
 }
 
+type BrowserWorkspaceActions = {
+  refresh: () => void;
+  updateDraft: (patch: Partial<BrowserWorkspaceDraft>) => void;
+  saveUrl: () => void;
+  createCapture: () => void;
+  attachCapture: () => void;
+  selectCapture: (captureId: string) => void;
+  persistWidget: (widget: WidgetConfigRecord) => void;
+  resetWidgets: () => void;
+};
+
+function formatWidgetLabel(widgetKey: string) {
+  return widgetKey.replace(/_/g, " ");
+}
+
+function BrowserWorkspace({ state, actions }: { state: BrowserWorkspaceState; actions: BrowserWorkspaceActions }) {
+  if (state.mode === "loading") {
+    return <EmptyState icon="◌">Loading Browser workspace tabs, captures, and widget preferences from the native bridge…</EmptyState>;
+  }
+  if (state.mode === "error") {
+    return (
+      <InfoCard className="large-card">
+        <p className="eyebrow">Browser workspace</p>
+        <h3>Native Phase 7 bridge unavailable</h3>
+        <BlockerState>{bridgeErrorReason("Native Browser workspace", state.error)}</BlockerState>
+        <button className="secondary-action" onClick={actions.refresh} type="button">Retry native load</button>
+      </InfoCard>
+    );
+  }
+
+  const selectedCapture = state.captures.find((capture) => capture.id === state.selectedCaptureId) ?? state.captures[0] ?? null;
+
+  return (
+    <section aria-label="Browser workspace" className="dashboard-grid">
+      <InfoCard className="large-card">
+        <div className="card-header">
+          <div>
+            <p className="eyebrow">Work webview/capture workspace</p>
+            <h3>Open work URL</h3>
+          </div>
+          <StatusBadge tone="ready">Native data</StatusBadge>
+        </div>
+        <label className="field-label" htmlFor="browser-url-input">URL</label>
+        <input id="browser-url-input" aria-label="Work URL" onChange={(event) => actions.updateDraft({ url: event.target.value })} placeholder="https://example.com/work" value={state.draft.url} />
+        <label className="field-label" htmlFor="browser-title-input">Title</label>
+        <input id="browser-title-input" aria-label="Work URL title" onChange={(event) => actions.updateDraft({ title: event.target.value })} placeholder="Evidence title" value={state.draft.title} />
+        <label className="field-label" htmlFor="browser-note-input">Manual note</label>
+        <textarea id="browser-note-input" aria-label="Browser manual note" onChange={(event) => actions.updateDraft({ manualNote: event.target.value })} placeholder="Optional non-secret note" value={state.draft.manualNote} />
+        <p className="muted-copy">This workspace saves work URLs and metadata fallback captures. It does not claim personal browser sync, extensions, cookies, auth headers, or password management.</p>
+        <button className="secondary-action" onClick={actions.saveUrl} type="button" aria-label="Save work URL metadata fallback">Save URL metadata</button>
+        <button className="secondary-action" onClick={actions.createCapture} type="button" aria-label="Create metadata fallback capture">Capture metadata fallback</button>
+        {state.message ? <p className="muted-copy">{state.message}</p> : null}
+        {state.errorMessage ? <BlockerState>{state.errorMessage}</BlockerState> : null}
+      </InfoCard>
+
+      <InfoCard>
+        <p className="eyebrow">Tabs / saved pages</p>
+        <h3>Real native rows</h3>
+        {state.tabs.length > 0 ? (
+          <ul className="compact-list">
+            {state.tabs.map((tab) => (
+              <li key={tab.id}>
+                <div><strong>{tab.title || tab.url}</strong><span>{tab.state}</span></div>
+                <p>{tab.url}</p>
+              </li>
+            ))}
+          </ul>
+        ) : <EmptyState icon="∅">No saved work URLs returned by the native browser bridge.</EmptyState>}
+      </InfoCard>
+
+      <InfoCard>
+        <p className="eyebrow">Captures</p>
+        <h3>Metadata fallback evidence</h3>
+        <EmptyState icon="◌">Tauri screenshot capture is unsupported here; capture stores URL, title, timestamp, optional HTTP status, manual note, and entity links.</EmptyState>
+        {state.captures.length > 0 ? (
+          <ul className="compact-list">
+            {state.captures.map((capture) => (
+              <li key={capture.id}>
+                <div><strong>{capture.title || capture.url}</strong><span>{capture.capture_mode}</span></div>
+                <p>{capture.url}</p>
+                <button className="secondary-action" onClick={() => actions.selectCapture(capture.id)} type="button" aria-label={`Select capture ${capture.id}`}>Select capture</button>
+              </li>
+            ))}
+          </ul>
+        ) : <p className="muted-copy">No capture records returned yet.</p>}
+        {selectedCapture ? <p className="muted-copy">Selected capture: {selectedCapture.id}; screenshot supported: {selectedCapture.screenshot_supported ? "yes" : "no"}</p> : null}
+        <label className="field-label" htmlFor="browser-attach-target">Attachment target</label>
+        <select id="browser-attach-target" aria-label="Attachment target picker" onChange={(event) => actions.updateDraft({ entityType: event.target.value as BrowserCaptureTarget })} value={state.draft.entityType}>
+          {allowedAttachmentTargets.map((target) => <option key={target} value={target}>{target.replace(/_/g, " ")}</option>)}
+        </select>
+        <label className="field-label" htmlFor="browser-attach-entity">Entity id</label>
+        <input id="browser-attach-entity" aria-label="Attachment entity id" onChange={(event) => actions.updateDraft({ entityId: event.target.value })} placeholder="task-123 / launch-gate id" value={state.draft.entityId} />
+        <button className="secondary-action" onClick={actions.attachCapture} type="button" aria-label="Attach browser capture evidence">Attach capture evidence</button>
+      </InfoCard>
+
+      <InfoCard>
+        <p className="eyebrow">Widget customization</p>
+        <h3>Persisted layout controls</h3>
+        {state.widgets.length > 0 ? (
+          <ul className="compact-list">
+            {state.widgets.map((widget) => (
+              <li key={widget.widget_key}>
+                <div><strong>{formatWidgetLabel(widget.widget_key)}</strong><span>{widget.visible ? "visible" : "hidden"} · {widget.size}</span></div>
+                <button type="button" aria-label={`Toggle ${widget.widget_key}`} onClick={() => actions.persistWidget(toggleWidget(widget))}>Show/hide</button>
+                <button type="button" aria-label={`Move ${widget.widget_key} up`} onClick={() => actions.persistWidget(moveWidget(state.widgets, widget.widget_key, "up").find((item) => item.widget_key === widget.widget_key) ?? widget)}>Move up</button>
+                <button type="button" aria-label={`Resize ${widget.widget_key}`} onClick={() => actions.persistWidget(resizeWidget(widget, widget.size === "large" ? "small" : (widget.size === "small" ? "medium" : "large") as WidgetSize))}>Resize</button>
+              </li>
+            ))}
+          </ul>
+        ) : <p className="muted-copy">No widget configs returned yet.</p>}
+        <button type="button" aria-label="Reset widgets" onClick={actions.resetWidgets}>Reset widgets</button>
+      </InfoCard>
+    </section>
+  );
+}
+
 function App() {
   const [activeWorkspace, setActiveWorkspace] = useState("today");
   const [status, setStatus] = useState<FoundationStatus | null>(null);
@@ -801,6 +938,7 @@ function App() {
   const [manualReview, setManualReview] = useState<ManualReviewState>(() => createInitialManualReviewState(null, null));
   const [codeWorkspace, setCodeWorkspace] = useState<CodeWorkspaceState>({ mode: "loading" });
   const [contentWorkspace, setContentWorkspace] = useState<ContentWorkspaceState>({ mode: "loading" });
+  const [browserWorkspace, setBrowserWorkspace] = useState<BrowserWorkspaceState>(() => createInitialBrowserWorkspaceState());
 
   useEffect(() => {
     invoke<FoundationStatus>("get_foundation_status")
@@ -848,10 +986,18 @@ function App() {
     }
   }, []);
 
+  const loadBrowserWorkspace = useCallback(() => {
+    setBrowserWorkspace((current) => {
+      void loadBrowserWorkspaceFromBridge(browserInvoke, current.draft).then(setBrowserWorkspace);
+      return { mode: "loading", draft: current.draft };
+    });
+  }, []);
+
   useEffect(() => {
     void loadCodeWorkspace();
     void loadContentWorkspace();
-  }, [loadCodeWorkspace, loadContentWorkspace]);
+    loadBrowserWorkspace();
+  }, [loadCodeWorkspace, loadContentWorkspace, loadBrowserWorkspace]);
 
   const applyTaskState = useCallback((state: TaskBridgeUiState["state"]) => {
     setTaskBridgeUi((current) => ({ ...current, state }));
@@ -1211,6 +1357,28 @@ function App() {
     }
   }, [refreshContentWithStatus]);
 
+  const handleBrowserDraftChange = useCallback((patch: Partial<BrowserWorkspaceDraft>) => {
+    setBrowserWorkspace((current) => updateBrowserDraft(current, patch));
+  }, []);
+  const handleSaveBrowserUrl = useCallback(async () => {
+    setBrowserWorkspace(await saveWorkUrlThroughBridge(browserInvoke, browserWorkspace));
+  }, [browserWorkspace]);
+  const handleCreateBrowserCapture = useCallback(async () => {
+    setBrowserWorkspace(await createCaptureThroughBridge(browserInvoke, browserWorkspace));
+  }, [browserWorkspace]);
+  const handleAttachBrowserCapture = useCallback(async () => {
+    setBrowserWorkspace(await attachCaptureThroughBridge(browserInvoke, browserWorkspace));
+  }, [browserWorkspace]);
+  const handleSelectBrowserCapture = useCallback((captureId: string) => {
+    setBrowserWorkspace((current) => current.mode === "ready" ? { ...current, selectedCaptureId: captureId, errorMessage: null } : current);
+  }, []);
+  const handlePersistBrowserWidget = useCallback(async (widget: WidgetConfigRecord) => {
+    setBrowserWorkspace(await updateWidgetThroughBridge(browserInvoke, browserWorkspace, widget));
+  }, [browserWorkspace]);
+  const handleResetBrowserWidgets = useCallback(async () => {
+    setBrowserWorkspace(await resetWidgetsThroughBridge(browserInvoke, browserWorkspace));
+  }, [browserWorkspace]);
+
   const workspaceRegistry = useMemo(() => buildWorkspaceRegistryView(status, statusError), [status, statusError]);
   const workspaces = workspaceRegistry.workspaces;
   const workspaceChrome = useMemo(
@@ -1361,6 +1529,20 @@ function App() {
               />
             ) : active?.id === "code" ? (
               <CodeWorkspace state={codeWorkspace} onRefresh={loadCodeWorkspace} />
+            ) : active?.id === "browser" ? (
+              <BrowserWorkspace
+                state={browserWorkspace}
+                actions={{
+                  refresh: loadBrowserWorkspace,
+                  updateDraft: handleBrowserDraftChange,
+                  saveUrl: handleSaveBrowserUrl,
+                  createCapture: handleCreateBrowserCapture,
+                  attachCapture: handleAttachBrowserCapture,
+                  selectCapture: handleSelectBrowserCapture,
+                  persistWidget: handlePersistBrowserWidget,
+                  resetWidgets: handleResetBrowserWidgets,
+                }}
+              />
             ) : active?.id === "content" ? (
               <ContentWorkspace
                 state={contentWorkspace}

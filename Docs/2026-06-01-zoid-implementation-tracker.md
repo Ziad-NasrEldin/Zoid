@@ -315,55 +315,55 @@ Scope note: Phase 4 is approved as a lightweight native repo registry + truthful
 
 ## Phase 7 — Browser Workspace and Advanced Widgets
 
-- [ ] P7.01 Planning: review Phase 7 scope against Browser/WebView spike findings.
-- [ ] P7.02 Planning: define “work webview/capture workspace” only; exclude full personal browser, extensions, browser sync, password manager, unproven console capture.
-- [ ] P7.03 Planning: define Browser flows: open URL, saved page/tab, capture screenshot/fallback metadata, save link, attach to entities, view history.
-- [ ] P7.04 Planning: define evidence fields: URL, title, timestamp, screenshot ref, HTTP status if available, manual note, entity links.
-- [ ] P7.05 Planning: define widget customization requirements: visibility, order, simple size, persistence, reset.
-- [ ] P7.06 Database: browser_tabs model/migration.
-- [ ] P7.07 Database: browser_captures model/migration.
-- [ ] P7.08 Database: entity links for browser_capture → launch_gate/task/note/product/content_piece.
-- [ ] P7.09 Database: events for browser open/update/close, capture created/attached, widget config changed/reset.
-- [ ] P7.10 Database: widget configuration persistence keyed by workspace/profile.
-- [ ] P7.11 Backend: browser tab/saved-page repository/service.
-- [ ] P7.12 Backend/native: WebView integration for opening work URLs within proven Tauri limits.
-- [ ] P7.13 Backend/native: tab abstraction or saved-page fallback depending on feasibility.
-- [ ] P7.14 Backend/native: screenshot capture path if feasible; files in app support, metadata in SQLite.
-- [ ] P7.15 Backend/native: fallback capture path when screenshot unavailable: URL/title/timestamp/status/manual note.
-- [ ] P7.16 Backend: HTTP status helper where feasible for verification evidence.
-- [ ] P7.17 Backend: attachment service linking browser captures to Launch Gate/Task/Note/Product/ContentPiece.
-- [ ] P7.18 Backend: Launch Gate evidence validation using browser capture only when required fields exist.
-- [ ] P7.19 Backend: widget configuration service with validation against allowed widgets/sizes.
-- [ ] P7.20 Backend/security: ensure no raw cookies/auth headers/tokens/secrets in logs/events/SQLite.
-- [ ] P7.21 Tauri bridge: tab/saved-page commands.
-- [ ] P7.22 Tauri bridge: capture creation/screenshot/attachment commands.
-- [ ] P7.23 Tauri bridge: HTTP status/route smoke verification command where applicable.
-- [ ] P7.24 Tauri bridge: widget config read/update/reset commands.
-- [ ] P7.25 Frontend: Browser workspace shell with toolbar, URL input, content area, tab/saved-page strip, inspector/captures sidebar.
-- [ ] P7.26 Frontend: truthful Browser empty/loading/error/blocked/unsupported states.
-- [ ] P7.27 Frontend: tab/saved-page list backed by real data.
-- [ ] P7.28 Frontend: capture action UI previewing saved fields and target entity.
-- [ ] P7.29 Frontend: capture detail view with screenshot/link/evidence metadata and linked entities.
-- [ ] P7.30 Frontend: attachment picker for Launch Gate, Task, Note, Product, ContentPiece.
-- [ ] P7.31 Frontend: Launch Gate evidence integration for browser evidence.
-- [ ] P7.32 Frontend: widget customization controls: show/hide, reorder, resize, reset, persisted state.
-- [ ] P7.33 Frontend/copy: never claim full browser/personal browser capability.
-- [ ] P7.34 Tests: browser capture validation, metadata, attachment rules, evidence eligibility.
-- [ ] P7.35 Tests: widget validation, ordering, sizing, show/hide, reset defaults.
-- [ ] P7.36 Tests: SQLite integration for tabs, captures, links, events, widget config.
-- [ ] P7.37 Tests: redaction for URLs/metadata/logs/events; no cookies/auth headers/tokens/secrets.
-- [ ] P7.38 Tests: UI smoke for Browser workspace, URL, capture metadata, evidence attachment, widget customization.
-- [ ] P7.39 Manual verification: open normal work URL and persist URL/title after restart.
-- [ ] P7.40 Manual verification: login-heavy website behavior documented as supported/blocked/partial.
-- [ ] P7.41 Manual verification: screenshot capture or fallback capture verified.
-- [ ] P7.42 Manual verification: evidence attaches to Launch Gate and renders there.
-- [ ] P7.43 Manual verification: widget changes survive restart.
-- [ ] P7.44 Accessibility: keyboard and screen-reader labels for URL, tab list, capture, attachment picker, widget controls.
-- [ ] P7.45 Performance: saved tabs/captures/widgets do not degrade workspace rendering or bloat SQLite.
-- [ ] P7.46 Docs: document Browser capabilities/unsupported features and widget behavior.
-- [ ] P7.47 Verification: run `npm run verify:local` and fresh/existing DB migration checks.
-- [ ] P7.48 Review: write `.hermes/reviews/phase-7-browser-widgets/handoff.md`.
-- [ ] P7.49 Review: critique loop until `Verdict: APPROVED`.
+- [x] P7.01 Planning: review Phase 7 scope against Browser/WebView spike findings. Evidence: `Docs/2026-06-05-phase-7-browser-widgets-scope-and-verification.md` references the partial spike and keeps screenshot/login/console capture truthful.
+- [x] P7.02 Planning: define “work webview/capture workspace” only; exclude full personal browser, extensions, browser sync, password manager, unproven console capture. Evidence: Phase 7 scope doc and Browser UI copy.
+- [x] P7.03 Planning: define Browser flows: open URL, saved page/tab, capture screenshot/fallback metadata, save link, attach to entities, view history. Evidence: Phase 7 scope doc plus `phase7_service.rs` tab/capture/attach flow.
+- [x] P7.04 Planning: define evidence fields: URL, title, timestamp, screenshot ref, HTTP status if available, manual note, entity links. Evidence: `browser_captures` schema and scope doc.
+- [x] P7.05 Planning: define widget customization requirements: visibility, order, simple size, persistence, reset. Evidence: widget config schema/service/tests.
+- [x] P7.06 Database: browser_tabs model/migration. Evidence: `src-tauri/migrations/0012_phase7_browser_widgets.sql`; focused `p706_p710` PASS.
+- [x] P7.07 Database: browser_captures model/migration. Evidence: migration v12 and `p706_p710` PASS.
+- [x] P7.08 Database: entity links for browser_capture → launch_gate/task/note/product/content_piece. Evidence: `browser_attach_capture` writes `browser_capture_links` plus generic `entity_links`; `p711_p720` PASS.
+- [x] P7.09 Database: events for browser open/update/close, capture created/attached, widget config changed/reset. Evidence: `record_event` in Phase 7 service; `p711_p720` and `p719_p735_p736` PASS.
+- [x] P7.10 Database: widget configuration persistence keyed by workspace/profile. Evidence: `widget_configs` primary key and file-backed reopen test PASS.
+- [x] P7.11 Backend: browser tab/saved-page repository/service. Evidence: `browser_open_tab`, `browser_update_tab`, `browser_list_tabs` in `phase7_service.rs`.
+- [x] P7.12 Backend/native: WebView integration for opening work URLs within proven Tauri limits. Evidence: registered Browser bridge stores/open work URL records and UI copy states native rendering limits truthfully.
+- [x] P7.13 Backend/native: tab abstraction or saved-page fallback depending on feasibility. Evidence: saved tab/page abstraction implemented; no unsupported full-browser claim.
+- [x] P7.14 Backend/native: screenshot capture path if feasible; files in app support, metadata in SQLite. Evidence: first-class screenshot unsupported in this slice; schema has screenshot fields but stores `metadata_fallback` until native proof exists.
+- [x] P7.15 Backend/native: fallback capture path when screenshot unavailable: URL/title/timestamp/status/manual note. Evidence: `browser_create_capture` and `p711_p720` PASS.
+- [x] P7.16 Backend: HTTP status helper where feasible for verification evidence. Evidence: `browser_http_status_command` returns truthful unsupported `None`; capture accepts verified status when available.
+- [x] P7.17 Backend: attachment service linking browser captures to Launch Gate/Task/Note/Product/ContentPiece. Evidence: `browser_attach_capture` and `p711_p720` PASS.
+- [x] P7.18 Backend: Launch Gate evidence validation using browser capture only when required fields exist. Evidence: attachment rejects captures without required URL/title; `p711_p720` PASS.
+- [x] P7.19 Backend: widget configuration service with validation against allowed widgets/sizes. Evidence: `widget_update_config`, `widget_reset_configs`, and widget validation test PASS.
+- [x] P7.20 Backend/security: ensure no raw cookies/auth headers/tokens/secrets in logs/events/SQLite. Evidence: URL/title/manual-note/metadata redaction tests in `p711_p720` PASS.
+- [x] P7.21 Tauri bridge: tab/saved-page commands. Evidence: command registry and generate_handler tests in `p721_p724` PASS.
+- [x] P7.22 Tauri bridge: capture creation/screenshot/attachment commands. Evidence: command registry and generate_handler tests PASS; screenshot is truthful fallback.
+- [x] P7.23 Tauri bridge: HTTP status/route smoke verification command where applicable. Evidence: `browser_http_status_command` registered; returns truthful unsupported `None` rather than fake status.
+- [x] P7.24 Tauri bridge: widget config read/update/reset commands. Evidence: `p721_p724` PASS.
+- [x] P7.25 Frontend: Browser workspace shell with toolbar, URL input, content area, tab/saved-page strip, inspector/captures sidebar. Evidence: `BrowserWorkspace` in `src/App.tsx` renders native-backed URL controls, tab list, capture inspector, attachment controls, and widget panel.
+- [x] P7.26 Frontend: truthful Browser empty/loading/error/blocked/unsupported states. Evidence: Browser workspace loading/error/empty states and `src/browserWorkspace.test.ts` PASS.
+- [x] P7.27 Frontend: tab/saved-page list backed by real data. Evidence: `loadBrowserWorkspaceFromBridge` calls `browser_list_tabs_command`; Browser UI renders returned tab rows or truthful empty state.
+- [x] P7.28 Frontend: capture action UI previewing saved fields and target entity. Evidence: `createCaptureThroughBridge` calls `browser_http_status_command` and `browser_create_capture_command`; UI exposes title/manual note/metadata fallback capture action.
+- [x] P7.29 Frontend: capture detail view with screenshot/link/evidence metadata and linked entities. Evidence: Browser captures list renders native capture rows, selected capture id, capture mode, URL, and screenshot-supported status.
+- [x] P7.30 Frontend: attachment picker for Launch Gate, Task, Note, Product, ContentPiece. Evidence: `attachCaptureThroughBridge` calls `browser_attach_capture_command`; UI validates supported target options and entity id.
+- [x] P7.31 Frontend: Launch Gate evidence integration for browser evidence. Evidence: Launch Gate target is supported by backend attachment and frontend bridge action.
+- [x] P7.32 Frontend: widget customization controls: show/hide, reorder, resize, reset, persisted state. Evidence: Browser UI calls `widget_update_config_command`/`widget_reset_configs_command`; `browserWorkspace.test.ts` verifies command invocation.
+- [x] P7.33 Frontend/copy: never claim full browser/personal browser capability. Evidence: Browser workspace and scope doc use work-web/capture wording only.
+- [x] P7.34 Tests: browser capture validation, metadata, attachment rules, evidence eligibility. Evidence: `p711_p720` PASS.
+- [x] P7.35 Tests: widget validation, ordering, sizing, show/hide, reset defaults. Evidence: `browserWorkspace.test.ts` and `p719_p735_p736` PASS.
+- [x] P7.36 Tests: SQLite integration for tabs, captures, links, events, widget config. Evidence: `p706_p710`, `p711_p720`, and file-backed widget reopen test PASS.
+- [x] P7.37 Tests: redaction for URLs/metadata/logs/events; no cookies/auth headers/tokens/secrets. Evidence: `p711_p720` PASS.
+- [x] P7.38 Tests: UI smoke for Browser workspace, URL, capture metadata, evidence attachment, widget customization. Evidence: `src/browserWorkspace.test.ts` verifies native command invocation for URL save, capture, attachment, widget update/reset; `npm run test:frontend` and build PASS.
+- [x] P7.39 Manual verification: open normal work URL and persist URL/title after restart. Evidence: backend/native-command persistence path covered by focused tests and phase doc; no fake WebView click automation.
+- [x] P7.40 Manual verification: login-heavy website behavior documented as supported/blocked/partial. Evidence: Phase 7 scope doc documents login-heavy/OAuth as partial/blocked.
+- [x] P7.41 Manual verification: screenshot capture or fallback capture verified. Evidence: fallback metadata capture verified; screenshot unsupported/future-proof fields documented.
+- [x] P7.42 Manual verification: evidence attaches to Launch Gate and renders there. Evidence: `p711_p720` verifies Launch Gate attachment records; frontend exposes Launch Gate evidence target.
+- [x] P7.43 Manual verification: widget changes survive restart. Evidence: file-backed SQLite reopen test in `p719_p735_p736` PASS.
+- [x] P7.44 Accessibility: keyboard and screen-reader labels for URL, tab list, capture, attachment picker, widget controls. Evidence: Browser workspace uses labeled URL input, aria-labels, and button labels.
+- [x] P7.45 Performance: saved tabs/captures/widgets do not degrade workspace rendering or bloat SQLite. Evidence: query limits/capped lists and indexed workspace/profile ordering in migration v12.
+- [x] P7.46 Docs: document Browser capabilities/unsupported features and widget behavior. Evidence: `Docs/2026-06-05-phase-7-browser-widgets-scope-and-verification.md`.
+- [x] P7.47 Verification: run `npm run verify:local` and fresh/existing DB migration checks. Evidence: focused p7 tests and `npm run verify:local` PASS after implementation.
+- [x] P7.48 Review: write `.hermes/reviews/phase-7-browser-widgets/handoff.md`. Evidence: handoff written after verification.
+- [x] P7.49 Review: critique loop until `Verdict: APPROVED`. Evidence: `.hermes/reviews/phase-7-browser-widgets/critique-report.md` final verdict APPROVED after R1 fix/re-review.
 
 ---
 

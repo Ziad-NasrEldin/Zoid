@@ -3,6 +3,7 @@ mod history_service;
 mod notification_service;
 mod phase4_service;
 mod phase5_service;
+mod phase7_service;
 mod review_service;
 mod task_service;
 
@@ -16,6 +17,8 @@ pub(crate) use notification_service::*;
 pub(crate) use phase4_service::*;
 #[allow(unused_imports)]
 pub(crate) use phase5_service::*;
+#[allow(unused_imports)]
+pub(crate) use phase7_service::*;
 #[allow(unused_imports)]
 pub(crate) use review_service::*;
 #[allow(unused_imports)]
@@ -176,16 +179,16 @@ const WORKSPACE_REGISTRY: &[WorkspaceDefinition] = &[
     WorkspaceDefinition {
         key: "browser",
         label: "Browser",
-        description: "Work webview/capture workspace.",
+        description: "Work URL webview/capture workspace with metadata fallback evidence.",
         position: 10,
-        availability: WorkspaceAvailability::Planned,
+        availability: WorkspaceAvailability::Available,
         integrations: &[WorkspaceIntegration {
             key: "browser_webview",
-            label: "Browser Webview",
+            label: "Browser WebView",
             state: WorkspaceIntegrationState::Planned,
-            note: "Browser/web capture is planned and not implemented by this backend registry task.",
+            note: "In-app rendering is bounded by Tauri WebView behavior; screenshots use truthful metadata fallback when unsupported.",
         }],
-        status_note: "Browser workspace is listed for canonical navigation, but webview/capture functionality is planned.",
+        status_note: "Work URL saved pages and metadata captures are available; no personal browser, extension, sync, cookies, or password manager is claimed.",
     },
     WorkspaceDefinition {
         key: "inbox",
@@ -308,6 +311,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 11,
         name: "phase5_content_omnisocials",
         sql: include_str!("../migrations/0011_phase5_content_omnisocials.sql"),
+    },
+    Migration {
+        version: 12,
+        name: "phase7_browser_widgets",
+        sql: include_str!("../migrations/0012_phase7_browser_widgets.sql"),
     },
 ];
 
@@ -4014,6 +4022,8 @@ const ALLOWED_ENTITY_LINK_TYPES: &[&str] = &[
     "email",
     "event",
     "browser_capture",
+    "launch_gate",
+    "content_piece",
 ];
 
 #[cfg(test)]
@@ -4095,6 +4105,16 @@ const TAURI_BRIDGE_COMMAND_NAMES: &[&str] = &[
     "omnisocials_schedule_content_command",
     "omnisocials_publish_content_command",
     "list_content_verification_records_command",
+    "browser_open_tab_command",
+    "browser_list_tabs_command",
+    "browser_update_tab_command",
+    "browser_create_capture_command",
+    "browser_list_captures_command",
+    "browser_attach_capture_command",
+    "browser_http_status_command",
+    "widget_read_configs_command",
+    "widget_update_config_command",
+    "widget_reset_configs_command",
 ];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -10987,6 +11007,72 @@ fn list_content_verification_records_command(
     list_content_verification_records(&connection, request).map_err(repository_error_message)
 }
 
+#[tauri::command]
+fn browser_open_tab_command(request: BrowserOpenTabRequest) -> Result<BrowserTabRecord, String> {
+    let connection = open_ready_connection()?;
+    browser_open_tab(&connection, request)
+}
+#[tauri::command]
+fn browser_list_tabs_command(request: BrowserListRequest) -> Result<Vec<BrowserTabRecord>, String> {
+    let connection = open_ready_connection()?;
+    browser_list_tabs(&connection, request)
+}
+#[tauri::command]
+fn browser_update_tab_command(
+    request: BrowserUpdateTabRequest,
+) -> Result<BrowserTabRecord, String> {
+    let connection = open_ready_connection()?;
+    browser_update_tab(&connection, request)
+}
+#[tauri::command]
+fn browser_create_capture_command(
+    request: BrowserCreateCaptureRequest,
+) -> Result<BrowserCaptureRecord, String> {
+    let connection = open_ready_connection()?;
+    browser_create_capture(&connection, request)
+}
+#[tauri::command]
+fn browser_list_captures_command(
+    request: BrowserListRequest,
+) -> Result<Vec<BrowserCaptureRecord>, String> {
+    let connection = open_ready_connection()?;
+    browser_list_captures(&connection, request)
+}
+#[tauri::command]
+fn browser_attach_capture_command(
+    request: BrowserAttachCaptureRequest,
+) -> Result<BrowserCaptureLinkRecord, String> {
+    let connection = open_ready_connection()?;
+    browser_attach_capture(&connection, request)
+}
+#[tauri::command]
+fn browser_http_status_command(url: String) -> Result<Option<i64>, String> {
+    browser_http_status(url)
+}
+#[tauri::command]
+fn widget_read_configs_command(
+    workspace_key: String,
+    profile_key: Option<String>,
+) -> Result<Vec<WidgetConfigRecord>, String> {
+    let connection = open_ready_connection()?;
+    widget_read_configs(&connection, workspace_key, profile_key)
+}
+#[tauri::command]
+fn widget_update_config_command(
+    request: WidgetConfigUpdateRequest,
+) -> Result<WidgetConfigRecord, String> {
+    let connection = open_ready_connection()?;
+    widget_update_config(&connection, request)
+}
+#[tauri::command]
+fn widget_reset_configs_command(
+    workspace_key: String,
+    profile_key: Option<String>,
+) -> Result<Vec<WidgetConfigRecord>, String> {
+    let connection = open_ready_connection()?;
+    widget_reset_configs(&connection, workspace_key, profile_key)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -11074,6 +11160,16 @@ pub fn run() {
             omnisocials_schedule_content_command,
             omnisocials_publish_content_command,
             list_content_verification_records_command,
+            browser_open_tab_command,
+            browser_list_tabs_command,
+            browser_update_tab_command,
+            browser_create_capture_command,
+            browser_list_captures_command,
+            browser_attach_capture_command,
+            browser_http_status_command,
+            widget_read_configs_command,
+            widget_update_config_command,
+            widget_reset_configs_command,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

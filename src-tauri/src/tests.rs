@@ -3750,7 +3750,7 @@ fn tauri_bridge_command_surface_lists_registered_p116_commands() {
 
 #[test]
 fn p310_tauri_bridge_command_surface_registers_notes_and_files_commands() {
-    assert_eq!(TAURI_BRIDGE_COMMAND_NAMES.len(), 77);
+    assert_eq!(TAURI_BRIDGE_COMMAND_NAMES.len(), 87);
     for command_name in [
         "list_content_entity_links_by_source_command",
         "add_repo_profile_command",
@@ -4736,6 +4736,8 @@ fn entity_link_service_validates_allowed_entity_types_and_required_fields_before
         "email",
         "event",
         "browser_capture",
+        "launch_gate",
+        "content_piece",
     ] {
         create_entity_link(
             &connection,
@@ -4846,7 +4848,7 @@ fn entity_link_service_validates_allowed_entity_types_and_required_fields_before
     let persisted_count: i64 = connection
         .query_row("select count(*) from entity_links", [], |row| row.get(0))
         .expect("count entity links");
-    assert_eq!(persisted_count, 9);
+    assert_eq!(persisted_count, 11);
 }
 
 #[test]
@@ -10681,6 +10683,276 @@ fn p219_p230_history_bridge_commands_query_task_run_notification_and_entity_with
     let serialized = serde_json::to_string(&entity_history).expect("serialize history");
     assert!(!serialized.contains("raw_log"));
     assert!(!serialized.contains("stdout:"));
+}
+
+#[test]
+fn p706_p710_phase7_schema_has_browser_capture_links_and_widget_tables() {
+    let connection = migrated_in_memory_connection();
+    assert_table_has_columns(
+        &connection,
+        "browser_tabs",
+        &[
+            "id",
+            "workspace_key",
+            "profile_key",
+            "url",
+            "title",
+            "http_status",
+            "state",
+            "opened_at",
+            "updated_at",
+            "closed_at",
+            "manual_note",
+            "metadata_json",
+        ],
+    );
+    assert_table_has_columns(
+        &connection,
+        "browser_captures",
+        &[
+            "id",
+            "tab_id",
+            "workspace_key",
+            "profile_key",
+            "url",
+            "title",
+            "captured_at",
+            "screenshot_supported",
+            "screenshot_path",
+            "capture_mode",
+            "http_status",
+            "manual_note",
+            "metadata_json",
+        ],
+    );
+    assert_table_has_columns(
+        &connection,
+        "browser_capture_links",
+        &[
+            "capture_id",
+            "entity_type",
+            "entity_id",
+            "relation_type",
+            "created_at",
+        ],
+    );
+    assert_table_has_columns(
+        &connection,
+        "widget_configs",
+        &[
+            "workspace_key",
+            "profile_key",
+            "widget_key",
+            "visible",
+            "position",
+            "size",
+            "updated_at",
+        ],
+    );
+    assert_index_exists(
+        &connection,
+        "browser_tabs",
+        "idx_browser_tabs_workspace_profile_updated",
+    );
+    assert_index_exists(
+        &connection,
+        "browser_captures",
+        "idx_browser_captures_workspace_profile_captured",
+    );
+}
+
+#[test]
+fn p711_p720_browser_capture_metadata_attachment_events_and_redaction_are_fail_closed() {
+    let connection = migrated_in_memory_connection();
+
+    let rejected = browser_open_tab(
+        &connection,
+        BrowserOpenTabRequest {
+            workspace_key: None,
+            profile_key: None,
+            url: "file:///Users/ziad/secret.html".to_string(),
+            title: None,
+            manual_note: None,
+        },
+    )
+    .expect_err("non-http work URLs are unsupported");
+    assert!(rejected.contains("http(s)"));
+
+    let tab = browser_open_tab(
+        &connection,
+        BrowserOpenTabRequest {
+            workspace_key: None,
+            profile_key: None,
+            url: "https://example.com/path?token=raw-token&ok=1".to_string(),
+            title: Some("Client portal api_key=sk-raw-secret".to_string()),
+            manual_note: Some("cookie=session-value should not persist".to_string()),
+        },
+    )
+    .expect("open work tab");
+    assert_eq!(tab.state, "open");
+    assert!(tab.url.contains("token=[REDACTED]"));
+    assert!(!tab.url.contains("raw-token"));
+    assert!(tab.title.contains("[REDACTED]"));
+    assert!(tab.manual_note.contains("[REDACTED]"));
+
+    let capture = browser_create_capture(
+        &connection,
+        BrowserCreateCaptureRequest {
+            tab_id: Some(tab.id.clone()),
+            workspace_key: None,
+            profile_key: None,
+            url: "https://example.com/launch?access_token=raw-access".to_string(),
+            title: Some("Launch Gate Evidence".to_string()),
+            http_status: Some(200),
+            manual_note: Some(
+                "metadata fallback because screenshot is unsupported in this slice".to_string(),
+            ),
+            metadata_json: Some("{\"api_key\":\"sk-raw\",\"safe\":\"kept\"}".to_string()),
+        },
+    )
+    .expect("create metadata fallback capture");
+    assert_eq!(capture.capture_mode, "metadata_fallback");
+    assert!(!capture.screenshot_supported);
+    assert!(capture.screenshot_path.is_none());
+    assert_eq!(capture.http_status, Some(200));
+    assert!(capture.url.contains("access_token=[REDACTED]"));
+    assert!(!capture.url.contains("raw-access"));
+    assert!(capture.metadata_json.contains("[REDACTED]"));
+    assert!(capture.metadata_json.contains("kept"));
+
+    let bad_attachment = browser_attach_capture(
+        &connection,
+        BrowserAttachCaptureRequest {
+            capture_id: capture.id.clone(),
+            entity_type: "cookie_jar".to_string(),
+            entity_id: "unsafe".to_string(),
+            relation_type: None,
+        },
+    )
+    .expect_err("unsupported attachment target must fail closed");
+    assert!(bad_attachment.contains("unsupported"));
+
+    let link = browser_attach_capture(
+        &connection,
+        BrowserAttachCaptureRequest {
+            capture_id: capture.id.clone(),
+            entity_type: "launch_gate".to_string(),
+            entity_id: "launch_gate_001".to_string(),
+            relation_type: None,
+        },
+    )
+    .expect("attach browser capture as launch gate evidence");
+    assert_eq!(link.relation_type, "evidence");
+    assert_eq!(
+        count_rows(
+            &connection,
+            "select count(*) from browser_capture_links where entity_type='launch_gate'"
+        ),
+        1
+    );
+    assert_eq!(
+        count_rows(
+            &connection,
+            "select count(*) from entity_links where source_type='browser_capture' and target_type='launch_gate'"
+        ),
+        1
+    );
+    assert!(
+        count_rows(
+            &connection,
+            "select count(*) from events where type in ('browser.opened','browser.capture_created','browser.capture_attached')"
+        ) >= 3
+    );
+}
+
+#[test]
+fn p719_p735_p736_widget_configs_validate_persist_reset_and_emit_events() {
+    let (connection, db_path) = migrated_file_connection("p719-widget-configs");
+    let defaults = widget_read_configs(
+        &connection,
+        "today".to_string(),
+        Some("default".to_string()),
+    )
+    .expect("read default widgets");
+    assert!(defaults.iter().any(|w| w.widget_key == "browser_captures"));
+    assert!(defaults.iter().all(|w| w.visible));
+
+    let updated = widget_update_config(
+        &connection,
+        WidgetConfigUpdateRequest {
+            workspace_key: "today".to_string(),
+            profile_key: Some("default".to_string()),
+            widget_key: "browser_captures".to_string(),
+            visible: false,
+            position: 0,
+            size: "large".to_string(),
+        },
+    )
+    .expect("update widget config");
+    assert!(!updated.visible);
+    assert_eq!(updated.size, "large");
+
+    let invalid_size = widget_update_config(
+        &connection,
+        WidgetConfigUpdateRequest {
+            workspace_key: "today".to_string(),
+            profile_key: Some("default".to_string()),
+            widget_key: "browser_captures".to_string(),
+            visible: true,
+            position: 1,
+            size: "huge".to_string(),
+        },
+    )
+    .expect_err("unsupported widget size fails closed");
+    assert!(invalid_size.contains("unsupported widget size"));
+
+    drop(connection);
+    let reopened = open_foundation_database(&db_path).expect("reopen widget database");
+    run_migrations(&reopened).expect("rerun migrations idempotently");
+    let persisted =
+        widget_read_configs(&reopened, "today".to_string(), Some("default".to_string()))
+            .expect("read persisted widget config");
+    assert!(persisted
+        .iter()
+        .any(|w| w.widget_key == "browser_captures" && !w.visible && w.size == "large"));
+
+    let reset = widget_reset_configs(&reopened, "today".to_string(), Some("default".to_string()))
+        .expect("reset widgets");
+    assert!(reset
+        .iter()
+        .any(|w| w.widget_key == "browser_captures" && w.visible && w.size == "medium"));
+    assert!(
+        count_rows(
+            &reopened,
+            "select count(*) from events where type in ('widget.config_changed','widget.config_reset')"
+        ) >= 2
+    );
+}
+
+#[test]
+fn p721_p724_phase7_tauri_bridge_commands_are_registered() {
+    let source_commands = parse_generate_handler_command_names(include_str!("lib.rs"));
+    for command in [
+        "browser_open_tab_command",
+        "browser_list_tabs_command",
+        "browser_update_tab_command",
+        "browser_create_capture_command",
+        "browser_list_captures_command",
+        "browser_attach_capture_command",
+        "browser_http_status_command",
+        "widget_read_configs_command",
+        "widget_update_config_command",
+        "widget_reset_configs_command",
+    ] {
+        assert!(
+            TAURI_BRIDGE_COMMAND_NAMES.contains(&command),
+            "{command} must be listed in the command surface registry"
+        );
+        assert!(
+            source_commands.contains(&command),
+            "{command} must be registered in generate_handler!"
+        );
+    }
 }
 
 #[test]
