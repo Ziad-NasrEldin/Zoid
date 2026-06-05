@@ -135,6 +135,11 @@ import {
   type WidgetConfigRecord,
   type WidgetSize,
 } from "./browserWorkspace";
+import {
+  dryRunLogCleanup,
+  loadReleaseHardeningState,
+  type ReleaseHardeningState,
+} from "./releaseAbout";
 
 const integrationStates: IntegrationState[] = defaultIntegrationStates;
 
@@ -347,6 +352,74 @@ function SettingsStatusShell({ view }: SettingsStatusShellProps) {
   );
 }
 
+type ReleaseHardeningPanelProps = {
+  state: ReleaseHardeningState;
+  onRefresh: () => void;
+  onDryRunCleanup: () => void;
+};
+
+function ReleaseHardeningPanel({ state, onRefresh, onDryRunCleanup }: ReleaseHardeningPanelProps) {
+  if (state.mode === "loading") {
+    return <InspectorCard><p className="eyebrow">Release hardening</p><EmptyState icon="…">Loading release readiness and log retention state.</EmptyState></InspectorCard>;
+  }
+  if (state.mode === "error") {
+    return (
+      <InspectorCard>
+        <p className="eyebrow">Release hardening</p>
+        <h3>Native release state unavailable</h3>
+        <BlockerState>{bridgeErrorReason("Release hardening", state.error)}</BlockerState>
+        <button className="secondary-action" onClick={onRefresh} type="button">Retry release state</button>
+      </InspectorCard>
+    );
+  }
+  return (
+    <InspectorCard className="settings-status-shell">
+      <div className="card-header compact">
+        <div>
+          <p className="eyebrow">Release hardening</p>
+          <h3>{state.about.appName} {state.about.version}</h3>
+        </div>
+        <StatusBadge tone="ready">Ready</StatusBadge>
+      </div>
+      <dl className="settings-status-list" aria-label="Release package status">
+        <div><dt>Build</dt><dd>{state.about.build}</dd></div>
+        <div><dt>Packaging</dt><dd>{state.about.packaging}</dd></div>
+        <div><dt>Signing</dt><dd>{state.about.signing}</dd></div>
+        <div><dt>Notarization</dt><dd>{state.about.notarization}</dd></div>
+      </dl>
+      <section className="settings-status-section" aria-label="Log retention settings">
+        <div className="card-header compact">
+          <div>
+            <p className="eyebrow">Log retention</p>
+            <h4>Dry-run before cleanup</h4>
+          </div>
+          <button className="secondary-action" onClick={onDryRunCleanup} type="button">Dry-run cleanup</button>
+        </div>
+        <ul className="compact-list">
+          {state.retention.map((setting) => (
+            <li key={setting.scope}>
+              <div><strong>{setting.scope}</strong><StatusBadge tone={setting.enabled ? "ready" : "pending"}>{setting.enabled ? "Enabled" : "Disabled"}</StatusBadge></div>
+              <p>{setting.summary}</p>
+            </li>
+          ))}
+        </ul>
+        {state.cleanupResult ? <p className="muted-copy">Last dry-run: {state.cleanupResult.files_considered} considered, {state.cleanupResult.files_deleted} deleted.</p> : null}
+      </section>
+      <section className="settings-status-section" aria-label="Migration failure guidance">
+        <p className="eyebrow">Migration recovery</p>
+        <h4>{state.migrationGuidance.title}</h4>
+        <p>{state.migrationGuidance.message}</p>
+        <ul className="compact-list">
+          {state.migrationGuidance.actions.map((action) => <li key={action}><p>{action}</p></li>)}
+        </ul>
+      </section>
+      <ul className="compact-list">
+        {state.about.safeDiagnostics.map((line) => <li key={line}><p>{line}</p></li>)}
+      </ul>
+    </InspectorCard>
+  );
+}
+
 type ConfirmationPolicyPanelProps = {
   view: ConfirmationPolicyView;
 };
@@ -471,6 +544,7 @@ const taskInvoke: TaskBridgeInvoke = (command, args) => invoke(command, args);
 const noteInvoke: NoteBridgeInvoke = (command, args) => invoke(command, args);
 const fileInvoke: FileBridgeInvoke = (command, args) => invoke(command, args);
 const browserInvoke: BrowserBridgeInvoke = (command, args) => invoke(command, args);
+const releaseInvoke = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
 
 function bridgeErrorReason(label: string, error: unknown) {
   const detail = error instanceof Error ? error.message : typeof error === "string" ? error : "unknown native bridge error";
@@ -939,6 +1013,7 @@ function App() {
   const [codeWorkspace, setCodeWorkspace] = useState<CodeWorkspaceState>({ mode: "loading" });
   const [contentWorkspace, setContentWorkspace] = useState<ContentWorkspaceState>({ mode: "loading" });
   const [browserWorkspace, setBrowserWorkspace] = useState<BrowserWorkspaceState>(() => createInitialBrowserWorkspaceState());
+  const [releaseHardening, setReleaseHardening] = useState<ReleaseHardeningState>({ mode: "loading" });
 
   useEffect(() => {
     invoke<FoundationStatus>("get_foundation_status")
@@ -993,11 +1068,17 @@ function App() {
     });
   }, []);
 
+  const loadReleaseHardening = useCallback(() => {
+    setReleaseHardening({ mode: "loading" });
+    void loadReleaseHardeningState(releaseInvoke).then(setReleaseHardening);
+  }, []);
+
   useEffect(() => {
     void loadCodeWorkspace();
     void loadContentWorkspace();
     loadBrowserWorkspace();
-  }, [loadCodeWorkspace, loadContentWorkspace, loadBrowserWorkspace]);
+    loadReleaseHardening();
+  }, [loadCodeWorkspace, loadContentWorkspace, loadBrowserWorkspace, loadReleaseHardening]);
 
   const applyTaskState = useCallback((state: TaskBridgeUiState["state"]) => {
     setTaskBridgeUi((current) => ({ ...current, state }));
@@ -1380,6 +1461,11 @@ function App() {
   }, [browserWorkspace]);
 
   const workspaceRegistry = useMemo(() => buildWorkspaceRegistryView(status, statusError), [status, statusError]);
+  const handleDryRunLogCleanup = useCallback(async () => {
+    const result = await dryRunLogCleanup(releaseInvoke, "default");
+    setReleaseHardening((current) => current.mode === "ready" ? { ...current, cleanupResult: result } : current);
+  }, []);
+
   const workspaces = workspaceRegistry.workspaces;
   const workspaceChrome = useMemo(
     () => buildWorkspaceChromeView(workspaceRegistry, activeWorkspace),
@@ -1680,6 +1766,8 @@ function App() {
             <ConfirmationPolicyPanel view={confirmationPolicyView} />
 
             <SettingsStatusShell view={settingsStatusView} />
+
+            <ReleaseHardeningPanel state={releaseHardening} onRefresh={loadReleaseHardening} onDryRunCleanup={handleDryRunLogCleanup} />
           </InspectorPanel>
         </div>
       </section>

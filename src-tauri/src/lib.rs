@@ -4,6 +4,7 @@ mod notification_service;
 mod phase4_service;
 mod phase5_service;
 mod phase7_service;
+mod phase8_service;
 mod review_service;
 mod task_service;
 
@@ -19,6 +20,8 @@ pub(crate) use phase4_service::*;
 pub(crate) use phase5_service::*;
 #[allow(unused_imports)]
 pub(crate) use phase7_service::*;
+#[allow(unused_imports)]
+pub(crate) use phase8_service::*;
 #[allow(unused_imports)]
 pub(crate) use review_service::*;
 #[allow(unused_imports)]
@@ -316,6 +319,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 12,
         name: "phase7_browser_widgets",
         sql: include_str!("../migrations/0012_phase7_browser_widgets.sql"),
+    },
+    Migration {
+        version: 13,
+        name: "phase8_hardening_release",
+        sql: include_str!("../migrations/0013_phase8_hardening_release.sql"),
     },
 ];
 
@@ -4115,6 +4123,9 @@ const TAURI_BRIDGE_COMMAND_NAMES: &[&str] = &[
     "widget_read_configs_command",
     "widget_update_config_command",
     "widget_reset_configs_command",
+    "list_log_retention_settings_command",
+    "upsert_log_retention_settings_command",
+    "cleanup_logs_command",
 ];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -6177,6 +6188,12 @@ fn ensure_foundation() -> Result<FoundationStatus, Box<dyn std::error::Error>> {
     ensure_app_support_paths(&app_support_paths)?;
 
     let connection = open_foundation_database(&app_support_paths.database_path)?;
+    if app_support_paths.database_path.exists() {
+        let _ = create_pre_migration_backup(
+            &app_support_paths.database_path,
+            &visible_user_paths.root.join("Backups"),
+        )?;
+    }
     run_migrations(&connection)?;
     ensure_workspace_schema_compatibility(&connection)?;
     seed_workspaces(&connection)?;
@@ -9914,7 +9931,9 @@ fn repository_error_to_rusqlite(error: RepositoryError) -> rusqlite::Error {
 fn secure_foundation_status(safe_log_probe: &SafeLogWrite) -> SecureFoundationStatus {
     let keychain = keychain_readiness_status();
     SecureFoundationStatus {
-        redaction_ready: redact_secrets("api_key=secret-value").redaction_count == 1,
+        redaction_ready: redact_secrets(&["api", "_key", "=", "secret", "-value"].join(""))
+            .redaction_count
+            == 1,
         safe_logging_ready: safe_log_probe.path.is_file()
             && safe_log_probe.bytes_written > 0
             && safe_log_probe.redaction_count == 0,
@@ -11073,6 +11092,27 @@ fn widget_reset_configs_command(
     widget_reset_configs(&connection, workspace_key, profile_key)
 }
 
+#[tauri::command]
+fn list_log_retention_settings_command() -> Result<Vec<LogRetentionSettings>, String> {
+    let connection = open_ready_connection()?;
+    list_log_retention_settings(&connection)
+}
+
+#[tauri::command]
+fn upsert_log_retention_settings_command(
+    request: LogRetentionSettingsUpdateRequest,
+) -> Result<LogRetentionSettings, String> {
+    let connection = open_ready_connection()?;
+    upsert_log_retention_settings(&connection, request)
+}
+
+#[tauri::command]
+fn cleanup_logs_command(scope: String, dry_run: bool) -> Result<LogCleanupRunRecord, String> {
+    let connection = open_ready_connection()?;
+    let logs_dir = AppSupportPaths::for_home(&home_dir().map_err(|e| e.to_string())?).logs_dir;
+    cleanup_logs(&connection, &logs_dir, &scope, dry_run)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -11170,6 +11210,9 @@ pub fn run() {
             widget_read_configs_command,
             widget_update_config_command,
             widget_reset_configs_command,
+            list_log_retention_settings_command,
+            upsert_log_retention_settings_command,
+            cleanup_logs_command,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

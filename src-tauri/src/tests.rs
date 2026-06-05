@@ -3750,7 +3750,7 @@ fn tauri_bridge_command_surface_lists_registered_p116_commands() {
 
 #[test]
 fn p310_tauri_bridge_command_surface_registers_notes_and_files_commands() {
-    assert_eq!(TAURI_BRIDGE_COMMAND_NAMES.len(), 87);
+    assert_eq!(TAURI_BRIDGE_COMMAND_NAMES.len(), 90);
     for command_name in [
         "list_content_entity_links_by_source_command",
         "add_repo_profile_command",
@@ -3796,6 +3796,9 @@ fn p310_tauri_bridge_command_surface_registers_notes_and_files_commands() {
         "omnisocials_schedule_content_command",
         "omnisocials_publish_content_command",
         "list_content_verification_records_command",
+        "list_log_retention_settings_command",
+        "upsert_log_retention_settings_command",
+        "cleanup_logs_command",
     ] {
         assert!(
             TAURI_BRIDGE_COMMAND_NAMES.contains(&command_name),
