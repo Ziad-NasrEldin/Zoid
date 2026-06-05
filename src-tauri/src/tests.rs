@@ -3078,7 +3078,6 @@ fn integration_status_service_rejects_secret_config_invalid_json_and_raw_credent
     assert_eq!(db_count, 0);
 }
 
-
 #[test]
 fn p401_phase4_schema_has_lightweight_repo_and_launch_gate_tables() {
     let connection = migrated_in_memory_connection();
@@ -3086,53 +3085,108 @@ fn p401_phase4_schema_has_lightweight_repo_and_launch_gate_tables() {
     assert_table_has_columns(
         &connection,
         "repo_profiles",
-        &["id", "display_name", "root_path", "profile_type", "default_branch", "package_manager", "linked_product_id", "status", "metadata_json"],
+        &[
+            "id",
+            "display_name",
+            "root_path",
+            "profile_type",
+            "default_branch",
+            "package_manager",
+            "linked_product_id",
+            "status",
+            "metadata_json",
+        ],
     );
     assert_table_has_columns(
         &connection,
         "launch_gates",
-        &["id", "repo_id", "product_id", "task_id", "state", "final_verdict", "metadata_json"],
+        &[
+            "id",
+            "repo_id",
+            "product_id",
+            "task_id",
+            "state",
+            "final_verdict",
+            "metadata_json",
+        ],
     );
     assert_table_has_columns(
         &connection,
         "launch_gate_evidence",
-        &["id", "launch_gate_id", "evidence_type", "label", "url", "status_code", "manual_note", "metadata_json"],
+        &[
+            "id",
+            "launch_gate_id",
+            "evidence_type",
+            "label",
+            "url",
+            "status_code",
+            "manual_note",
+            "metadata_json",
+        ],
     );
 }
 
 #[test]
 fn p403_repo_registry_adds_lists_and_links_without_git_status_diff_surface() {
     let connection = migrated_in_memory_connection();
-    let repo = add_repo_profile(&connection, RepoProfileInput {
-        display_name: "Zoid app".to_string(),
-        root_path: "/Users/ziadnasreldin/Zoid".to_string(),
-        profile_type: "product_app".to_string(),
-        default_branch: Some("main".to_string()),
-        package_manager: Some("npm".to_string()),
-        linked_product_id: Some("zoid".to_string()),
-        metadata_json: "{}".to_string(),
-    }).expect("add repo profile");
+    let repo = add_repo_profile(
+        &connection,
+        RepoProfileInput {
+            display_name: "Zoid app".to_string(),
+            root_path: "/Users/ziadnasreldin/Zoid".to_string(),
+            profile_type: "product_app".to_string(),
+            default_branch: Some("main".to_string()),
+            package_manager: Some("npm".to_string()),
+            linked_product_id: Some("zoid".to_string()),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect("add repo profile");
     assert_eq!(repo.status, "active");
-    assert_eq!(read_repo_profile(&connection, &repo.id).expect("read repo").expect("repo exists").id, repo.id);
-    assert_eq!(list_repo_profiles(&connection).expect("list repos").len(), 1);
-    let link = link_repo_entity(&connection, RepoEntityLinkInput {
-        repo_id: repo.id.clone(),
-        target_type: "product".to_string(),
-        target_id: "zoid".to_string(),
-        relation_type: "source_repo".to_string(),
-        metadata_json: "{}".to_string(),
-    }).expect("link repo to product");
+    assert_eq!(
+        read_repo_profile(&connection, &repo.id)
+            .expect("read repo")
+            .expect("repo exists")
+            .id,
+        repo.id
+    );
+    assert_eq!(
+        list_repo_profiles(&connection).expect("list repos").len(),
+        1
+    );
+    let link = link_repo_entity(
+        &connection,
+        RepoEntityLinkInput {
+            repo_id: repo.id.clone(),
+            target_type: "product".to_string(),
+            target_id: "zoid".to_string(),
+            relation_type: "source_repo".to_string(),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect("link repo to product");
     assert_eq!(link.source_type, "repo");
     assert_eq!(link.target_type, "product");
-    assert!(!TAURI_BRIDGE_COMMAND_NAMES.iter().any(|name| name.contains("git_status") || name.contains("git_diff") || name.contains("commit_command") || name.contains("push_command")));
+    assert!(!TAURI_BRIDGE_COMMAND_NAMES
+        .iter()
+        .any(|name| name.contains("git_status")
+            || name.contains("git_diff")
+            || name.contains("commit_command")
+            || name.contains("push_command")));
 }
 
 #[test]
 fn p404_repo_integration_states_are_truthful_not_connected() {
     let connection = migrated_in_memory_connection();
     let states = list_phase4_repo_integration_states(&connection).expect("integration states");
-    let github = states.iter().find(|state| state.integration_key == "github").expect("github state");
-    let vercel = states.iter().find(|state| state.integration_key == "vercel").expect("vercel state");
+    let github = states
+        .iter()
+        .find(|state| state.integration_key == "github")
+        .expect("github state");
+    let vercel = states
+        .iter()
+        .find(|state| state.integration_key == "vercel")
+        .expect("vercel state");
     assert_eq!(github.status, IntegrationStatus::NotConfigured);
     assert_eq!(vercel.status, IntegrationStatus::NotConfigured);
     assert!(github.credential_ref.is_none());
@@ -3141,47 +3195,502 @@ fn p404_repo_integration_states_are_truthful_not_connected() {
 
 #[test]
 fn p405_commit_push_merge_deploy_are_policy_previews_not_executions() {
-    assert_eq!(normalize_launch_action_policy_category("commit").expect("commit category"), "commit_push_merge");
-    assert_eq!(normalize_launch_action_policy_category("push").expect("push category"), "commit_push_merge");
-    assert_eq!(normalize_launch_action_policy_category("deploy").expect("deploy category"), "deploy_redeploy_rollback");
-    let policy = preview_launch_action_policy_command("deploy".to_string()).expect("policy preview");
+    assert_eq!(
+        normalize_launch_action_policy_category("commit").expect("commit category"),
+        "commit_push_merge"
+    );
+    assert_eq!(
+        normalize_launch_action_policy_category("push").expect("push category"),
+        "commit_push_merge"
+    );
+    assert_eq!(
+        normalize_launch_action_policy_category("deploy").expect("deploy category"),
+        "deploy_redeploy_rollback"
+    );
+    let policy =
+        preview_launch_action_policy_command("deploy".to_string()).expect("policy preview");
     assert_eq!(policy.category, "deploy_redeploy_rollback");
 }
 
 #[test]
 fn p408_launch_gate_fails_closed_until_real_evidence_exists() {
     let connection = migrated_in_memory_connection();
-    let repo = add_repo_profile(&connection, RepoProfileInput {
-        display_name: "Launch repo".to_string(),
-        root_path: "/tmp/launch-repo".to_string(),
-        profile_type: "product_app".to_string(),
-        default_branch: Some("main".to_string()),
-        package_manager: None,
-        linked_product_id: Some("zoid".to_string()),
-        metadata_json: "{}".to_string(),
-    }).expect("add repo");
-    let gate = create_launch_gate(&connection, LaunchGateCreateInput {
-        repo_id: repo.id,
-        product_id: Some("zoid".to_string()),
-        task_id: None,
-        metadata_json: "{}".to_string(),
-    }).expect("create gate");
+    let repo = add_repo_profile(
+        &connection,
+        RepoProfileInput {
+            display_name: "Launch repo".to_string(),
+            root_path: "/tmp/launch-repo".to_string(),
+            profile_type: "product_app".to_string(),
+            default_branch: Some("main".to_string()),
+            package_manager: None,
+            linked_product_id: Some("zoid".to_string()),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect("add repo");
+    let gate = create_launch_gate(
+        &connection,
+        LaunchGateCreateInput {
+            repo_id: repo.id,
+            product_id: Some("zoid".to_string()),
+            task_id: None,
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect("create gate");
     assert_eq!(gate.state, LaunchGateState::VerificationBlocked);
-    assert_eq!(gate.final_verdict.as_deref(), Some("blocked_missing_evidence"));
+    assert_eq!(
+        gate.final_verdict.as_deref(),
+        Some("blocked_missing_evidence")
+    );
     let blocked = evaluate_launch_gate(&connection, &gate.id).expect("evaluate empty gate");
     assert_eq!(blocked.state, LaunchGateState::VerificationBlocked);
-    add_launch_gate_evidence(&connection, LaunchGateEvidenceInput {
-        launch_gate_id: gate.id.clone(),
-        evidence_type: "test_output".to_string(),
-        label: "cargo test focused pass".to_string(),
-        url: None,
-        status_code: None,
-        manual_note: Some("Focused Phase 4 test output captured locally.".to_string()),
-        metadata_json: "{}".to_string(),
-    }).expect("add evidence");
+    add_launch_gate_evidence(
+        &connection,
+        LaunchGateEvidenceInput {
+            launch_gate_id: gate.id.clone(),
+            evidence_type: "test_output".to_string(),
+            label: "cargo test focused pass".to_string(),
+            url: None,
+            status_code: None,
+            manual_note: Some("Focused Phase 4 test output captured locally.".to_string()),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect("add evidence");
     let verified = evaluate_launch_gate(&connection, &gate.id).expect("evaluate with evidence");
     assert_eq!(verified.state, LaunchGateState::Verified);
-    assert_eq!(verified.final_verdict.as_deref(), Some("verified_with_evidence"));
+    assert_eq!(
+        verified.final_verdict.as_deref(),
+        Some("verified_with_evidence")
+    );
+}
+
+#[test]
+fn p501_phase5_schema_has_content_and_omnisocials_tables() {
+    let connection = migrated_in_memory_connection();
+    assert!(get_migration_version(&connection).expect("migration version") >= 11);
+    for (table, columns) in [
+        (
+            "content_plans",
+            vec![
+                "id",
+                "title",
+                "pillar",
+                "status",
+                "owner_actor_type",
+                "metadata_json",
+            ],
+        ),
+        (
+            "content_pieces",
+            vec![
+                "id",
+                "plan_id",
+                "title",
+                "body_markdown",
+                "status",
+                "platforms_json",
+                "required_gate",
+            ],
+        ),
+        (
+            "media_assets",
+            vec![
+                "id",
+                "piece_id",
+                "asset_kind",
+                "storage_ref",
+                "alt_text",
+                "metadata_json",
+            ],
+        ),
+        (
+            "content_review_gates",
+            vec!["id", "piece_id", "gate_type", "status", "evidence_summary"],
+        ),
+        (
+            "content_schedules",
+            vec![
+                "id",
+                "piece_id",
+                "platform",
+                "scheduled_for",
+                "status",
+                "confirmation_id",
+            ],
+        ),
+        (
+            "content_verification_records",
+            vec![
+                "id",
+                "piece_id",
+                "schedule_id",
+                "platform",
+                "action_type",
+                "outcome",
+                "failure_report",
+            ],
+        ),
+        (
+            "omnisocials_accounts",
+            vec!["id", "platform", "state", "credential_ref", "status_note"],
+        ),
+    ] {
+        assert_table_has_columns(&connection, table, &columns);
+    }
+}
+
+#[test]
+fn p503_phase5_content_draft_asset_review_schedule_flow_is_draft_first() {
+    let connection = migrated_in_memory_connection();
+    let plan = create_content_plan(
+        &connection,
+        ContentPlanInput {
+            title: "Enterprise ops carousel".to_string(),
+            pillar: Some("operational_control".to_string()),
+            owner_actor_type: Some("human".to_string()),
+            metadata_json: Some("{}".to_string()),
+        },
+    )
+    .expect("create content plan");
+    let piece = create_content_piece(
+        &connection,
+        ContentPieceInput {
+            plan_id: plan.id,
+            title: "Visibility beats guessing".to_string(),
+            body_markdown: Some("Draft caption".to_string()),
+            platforms: Some(vec!["linkedin".to_string(), "instagram".to_string()]),
+            required_gate: Some("specialist_review".to_string()),
+            metadata_json: Some("{}".to_string()),
+        },
+    )
+    .expect("create content piece");
+    assert_eq!(piece.status, "draft");
+    let instagram_constraints =
+        validate_platform_media_constraints(&connection, &piece.id, "instagram")
+            .expect("validate constraints");
+    assert!(!instagram_constraints.passed);
+    assert!(instagram_constraints
+        .violations
+        .contains(&"instagram_requires_media".to_string()));
+    add_media_asset_reference(
+        &connection,
+        MediaAssetInput {
+            piece_id: piece.id.clone(),
+            asset_kind: "image".to_string(),
+            storage_ref: "assets/content/visibility.png".to_string(),
+            mime_type: Some("image/png".to_string()),
+            byte_size: Some(1024),
+            width: Some(1080),
+            height: Some(1080),
+            duration_seconds: None,
+            alt_text: Some("Dashboard visibility illustration".to_string()),
+            metadata_json: Some("{}".to_string()),
+        },
+    )
+    .expect("add media");
+    let gate = create_content_review_gate(
+        &connection,
+        ContentReviewGateInput {
+            piece_id: piece.id.clone(),
+            gate_type: "specialist_review".to_string(),
+            reviewer_actor_type: Some("reviewer".to_string()),
+            reviewer_actor_id: Some("designer-reviewer".to_string()),
+            evidence_summary: Some("Designer/reviewer approval required.".to_string()),
+            metadata_json: Some("{}".to_string()),
+        },
+    )
+    .expect("create review gate");
+    let blocked = create_content_schedule(
+        &connection,
+        ContentScheduleInput {
+            piece_id: piece.id.clone(),
+            platform: "instagram".to_string(),
+            scheduled_for: "2026-06-05T18:00:00+02:00".to_string(),
+            confirmation_id: None,
+            metadata_json: Some("{}".to_string()),
+        },
+    )
+    .expect_err("schedule blocked before review and confirmation");
+    let blocked_message = repository_error_message(blocked);
+    assert!(blocked_message.contains("review gate") || blocked_message.contains("confirmation"));
+    decide_content_review_gate(
+        &connection,
+        &gate.id,
+        true,
+        ContentReviewGateDecisionInput {
+            evidence_summary: "Approved after specialist design/review.".to_string(),
+            reviewer_actor_type: Some("reviewer".to_string()),
+            reviewer_actor_id: Some("designer-reviewer".to_string()),
+            metadata_json: Some("{}".to_string()),
+        },
+    )
+    .expect("approve review gate");
+    let confirmation = create_confirmation_decision(
+        &connection,
+        ConfirmationDecisionRequest {
+            action_category: "publish_schedule_content",
+            decision: ConfirmationDecisionState::Approved,
+            actor: ConfirmationActor::human(Some("p5-test")),
+            summary: "Approve schedule intent only; no external publish yet.",
+            event_id: None,
+            metadata_json: "{}",
+        },
+    )
+    .expect("persist confirmation decision");
+    let schedule = create_content_schedule(
+        &connection,
+        ContentScheduleInput {
+            piece_id: piece.id.clone(),
+            platform: "instagram".to_string(),
+            scheduled_for: "2026-06-05T18:00:00+02:00".to_string(),
+            confirmation_id: Some(confirmation.id),
+            metadata_json: Some("{}".to_string()),
+        },
+    )
+    .expect("create schedule intent");
+    assert_eq!(schedule.status, "intent");
+}
+
+#[test]
+fn p504_phase5_omnisocials_fails_closed_and_records_failure() {
+    let connection = migrated_in_memory_connection();
+    let plan = create_content_plan(
+        &connection,
+        ContentPlanInput {
+            title: "Ops content".to_string(),
+            pillar: None,
+            owner_actor_type: None,
+            metadata_json: Some("{}".to_string()),
+        },
+    )
+    .expect("plan");
+    let piece = create_content_piece(
+        &connection,
+        ContentPieceInput {
+            plan_id: plan.id,
+            title: "Fail closed post".to_string(),
+            body_markdown: Some("draft".to_string()),
+            platforms: Some(vec!["linkedin".to_string()]),
+            required_gate: Some("none".to_string()),
+            metadata_json: Some("{}".to_string()),
+        },
+    )
+    .expect("piece");
+    let status = get_omnisocials_status(&connection).expect("omnisocials status");
+    assert_eq!(status.state, "not_configured");
+    let verification = omnisocials_upload_media(&connection, &piece.id, "linkedin")
+        .expect("record blocked verification");
+    assert_eq!(verification.outcome, "blocked");
+    assert_eq!(verification.action_type, "upload");
+    assert!(verification
+        .failure_report
+        .unwrap_or_default()
+        .contains("not configured"));
+    let records = list_content_verification_records(
+        &connection,
+        ContentVerificationListRequest {
+            piece_id: Some(piece.id),
+            schedule_id: None,
+            limit: Some(10),
+        },
+    )
+    .expect("verification records");
+    assert_eq!(records.len(), 1);
+}
+
+#[test]
+fn p502_phase5_schema_has_indexes_and_richer_status_states() {
+    let connection = migrated_in_memory_connection();
+    for index_name in [
+        "idx_content_plans_status_updated",
+        "idx_content_pieces_plan_status",
+        "idx_media_assets_piece_kind",
+        "idx_content_review_gates_piece_type_status",
+        "idx_content_schedules_piece_platform_status",
+        "idx_content_verification_piece_action",
+        "idx_content_verification_schedule_action",
+        "idx_omnisocials_accounts_platform_state",
+    ] {
+        let exists: i64 = connection
+            .query_row(
+                "select count(*) from sqlite_master where type='index' and name=?1",
+                params![index_name],
+                |row| row.get(0),
+            )
+            .expect("index lookup");
+        assert_eq!(exists, 1, "missing index {index_name}");
+    }
+    connection
+        .execute(
+            "update omnisocials_accounts set state='needs_permission' where id='omnisocials-default'",
+            [],
+        )
+        .expect("needs_permission is valid");
+    connection
+        .execute(
+            "update omnisocials_accounts set state='disabled_by_policy' where id='omnisocials-default'",
+            [],
+        )
+        .expect("disabled_by_policy is valid");
+}
+
+#[test]
+fn p505_phase5_schedule_blocks_bad_confirmation_and_records_evidence() {
+    let connection = migrated_in_memory_connection();
+    let plan = create_content_plan(
+        &connection,
+        ContentPlanInput {
+            title: "Ops content".to_string(),
+            pillar: None,
+            owner_actor_type: None,
+            metadata_json: Some("{}".to_string()),
+        },
+    )
+    .expect("plan");
+    let piece = create_content_piece(
+        &connection,
+        ContentPieceInput {
+            plan_id: plan.id,
+            title: "Blocked confirmation post".to_string(),
+            body_markdown: Some("draft".to_string()),
+            platforms: Some(vec!["linkedin".to_string()]),
+            required_gate: Some("specialist_review".to_string()),
+            metadata_json: Some("{}".to_string()),
+        },
+    )
+    .expect("piece");
+    let gate = create_content_review_gate(
+        &connection,
+        ContentReviewGateInput {
+            piece_id: piece.id.clone(),
+            gate_type: "specialist_review".to_string(),
+            reviewer_actor_type: Some("reviewer".to_string()),
+            reviewer_actor_id: None,
+            evidence_summary: Some("pending".to_string()),
+            metadata_json: Some("{}".to_string()),
+        },
+    )
+    .expect("gate");
+    decide_content_review_gate(
+        &connection,
+        &gate.id,
+        true,
+        ContentReviewGateDecisionInput {
+            evidence_summary: "approved".to_string(),
+            reviewer_actor_type: Some("reviewer".to_string()),
+            reviewer_actor_id: None,
+            metadata_json: Some("{}".to_string()),
+        },
+    )
+    .expect("approve");
+    let denied = create_confirmation_decision(
+        &connection,
+        ConfirmationDecisionRequest {
+            action_category: "publish_schedule_content",
+            decision: ConfirmationDecisionState::Denied,
+            actor: ConfirmationActor::human(Some("p5-test")),
+            summary: "Do not schedule this content.",
+            event_id: None,
+            metadata_json: "{}",
+        },
+    )
+    .expect("denied confirmation");
+    let err = create_content_schedule(
+        &connection,
+        ContentScheduleInput {
+            piece_id: piece.id.clone(),
+            platform: "linkedin".to_string(),
+            scheduled_for: "2026-06-05T18:00:00+02:00".to_string(),
+            confirmation_id: Some(denied.id),
+            metadata_json: Some("{}".to_string()),
+        },
+    )
+    .expect_err("denied confirmation blocks schedule");
+    assert!(repository_error_message(err).contains("confirmation_denied"));
+    let records = list_content_verification_records(
+        &connection,
+        ContentVerificationListRequest {
+            piece_id: Some(piece.id),
+            schedule_id: None,
+            limit: Some(10),
+        },
+    )
+    .expect("records");
+    assert!(records
+        .iter()
+        .any(|record| record.action_type == "schedule" && record.outcome == "blocked"));
+}
+
+#[test]
+fn p506_phase5_media_constraints_events_and_secret_safety() {
+    let connection = migrated_in_memory_connection();
+    let plan = create_content_plan(
+        &connection,
+        ContentPlanInput {
+            title: "Ops content".to_string(),
+            pillar: None,
+            owner_actor_type: None,
+            metadata_json: Some("{}".to_string()),
+        },
+    )
+    .expect("plan");
+    let piece = create_content_piece(
+        &connection,
+        ContentPieceInput {
+            plan_id: plan.id,
+            title: "Asset safety post".to_string(),
+            body_markdown: Some("draft".to_string()),
+            platforms: Some(vec!["instagram".to_string()]),
+            required_gate: Some("none".to_string()),
+            metadata_json: Some("{}".to_string()),
+        },
+    )
+    .expect("piece");
+    let unsafe_asset = add_media_asset_reference(
+        &connection,
+        MediaAssetInput {
+            piece_id: piece.id.clone(),
+            asset_kind: "image".to_string(),
+            storage_ref: "../secret-token.png".to_string(),
+            mime_type: Some("image/png".to_string()),
+            byte_size: Some(1024),
+            width: Some(1080),
+            height: Some(1080),
+            duration_seconds: None,
+            alt_text: None,
+            metadata_json: Some("{}".to_string()),
+        },
+    )
+    .expect_err("unsafe refs are rejected");
+    assert!(repository_error_message(unsafe_asset).contains("unsafe media storage reference"));
+    add_media_asset_reference(
+        &connection,
+        MediaAssetInput {
+            piece_id: piece.id.clone(),
+            asset_kind: "image".to_string(),
+            storage_ref: "assets/content/safe.png".to_string(),
+            mime_type: Some("image/png".to_string()),
+            byte_size: Some(1024),
+            width: Some(1080),
+            height: Some(1080),
+            duration_seconds: None,
+            alt_text: Some("Safe content asset".to_string()),
+            metadata_json: Some("{}".to_string()),
+        },
+    )
+    .expect("safe asset");
+    let assets = list_media_asset_references(&connection, &piece.id).expect("asset list");
+    assert_eq!(assets.len(), 1);
+    let event_count: i64 = connection
+        .query_row(
+            "select count(*) from events where source='phase5_content_omnisocials'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("phase5 event count");
+    assert!(event_count >= 3, "expected plan/piece/asset events");
 }
 
 #[test]
@@ -3241,7 +3750,7 @@ fn tauri_bridge_command_surface_lists_registered_p116_commands() {
 
 #[test]
 fn p310_tauri_bridge_command_surface_registers_notes_and_files_commands() {
-    assert_eq!(TAURI_BRIDGE_COMMAND_NAMES.len(), 57);
+    assert_eq!(TAURI_BRIDGE_COMMAND_NAMES.len(), 77);
     for command_name in [
         "list_content_entity_links_by_source_command",
         "add_repo_profile_command",
@@ -3267,6 +3776,26 @@ fn p310_tauri_bridge_command_surface_registers_notes_and_files_commands() {
         "open_file_reference_command",
         "preview_file_command",
         "perform_file_action_command",
+        "create_content_plan_command",
+        "list_content_plans_command",
+        "create_content_piece_command",
+        "read_content_piece_command",
+        "list_content_pieces_command",
+        "update_content_piece_draft_command",
+        "add_media_asset_reference_command",
+        "list_media_asset_references_command",
+        "create_content_review_gate_command",
+        "approve_content_review_gate_command",
+        "reject_content_review_gate_command",
+        "list_content_review_gates_command",
+        "create_content_schedule_command",
+        "list_content_schedules_command",
+        "cancel_content_schedule_command",
+        "get_omnisocials_status_command",
+        "omnisocials_upload_media_command",
+        "omnisocials_schedule_content_command",
+        "omnisocials_publish_content_command",
+        "list_content_verification_records_command",
     ] {
         assert!(
             TAURI_BRIDGE_COMMAND_NAMES.contains(&command_name),

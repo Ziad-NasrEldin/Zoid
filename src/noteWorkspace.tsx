@@ -15,13 +15,14 @@ export type NoteWorkspaceProps = {
   onTrashNote?: (noteId: string) => void;
 };
 
-function FieldError({ message }: { message?: string }) { return message ? <p role="alert">{message}</p> : null; }
+function FieldError({ message }: { message?: string }) { return message ? <p className="field-error" role="alert">{message}</p> : null; }
 
 export function NoteWorkspace({ state, form, linkedPanels, formErrors, onFormChange, onCreateNote, onEditNote, onSelectNote, onRefresh, onScan, onTrashNote }: NoteWorkspaceProps) {
   const view = buildNoteWorkspaceView(state);
   const selectedNote = view.detail.kind === "note" ? view.detail.note : null;
   const validation = validateNoteForm(form);
   const visibleErrors = formErrors ?? (validation.ok ? {} : validation.errors);
+  const isInteractive = state.mode === "ready";
   const update = (patch: Partial<NoteFormDraft>) => onFormChange?.({ ...form, ...patch });
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -32,46 +33,60 @@ export function NoteWorkspace({ state, form, linkedPanels, formErrors, onFormCha
   return (
     <section className="native-workspace note-workspace" aria-labelledby="note-workspace-heading">
       <header className="native-workspace-header">
-        <h2 id="note-workspace-heading">Notes</h2>
-        <p>{view.copy}</p>
-        <p aria-live="polite">{view.statusLabel}</p>
-        <button type="button" onClick={onRefresh}>Refresh real notes</button>
-        <button type="button" onClick={onScan}>Scan Markdown notes</button>
+        <div className="native-workspace-title-copy">
+          <h2 id="note-workspace-heading">Notes</h2>
+          <p>{view.copy}</p>
+          <p aria-live="polite">{view.statusLabel}</p>
+        </div>
+        <div className="native-workspace-actions">
+          <button className="secondary-action" type="button" onClick={onRefresh}>Refresh real notes</button>
+          <button className="secondary-action" type="button" disabled={!isInteractive} onClick={onScan}>Scan Markdown notes</button>
+        </div>
       </header>
 
-      <div className="native-workspace-grid">
-      <aside className="native-workspace-panel" aria-label="Note list">
-        {view.items.length === 0 ? <p>{view.detail.copy}</p> : null}
-        <ul>{view.items.map((item) => <li key={item.id} aria-current={item.isSelected ? "true" : undefined}><button type="button" onClick={() => onSelectNote?.(item.id)}><strong>{item.title}</strong><span>{item.meta}</span></button></li>)}</ul>
-      </aside>
+      {!isInteractive ? (
+        <section className="native-workspace-panel native-workspace-unavailable" aria-live="polite">
+          <p className="eyebrow">Native backend</p>
+          <h3>{view.detail.kind === "loading" ? "Loading Markdown notes" : "Notes backend unavailable"}</h3>
+          <p>{view.detail.copy}</p>
+          <p className="muted-copy">No note list, conflict scan, links, or editor is shown unless the real native bridge responds.</p>
+        </section>
+      ) : (
+        <>
+          <div className="native-workspace-grid note-workspace-grid">
+            <aside className="native-workspace-panel native-list-panel" aria-label="Note list">
+              {view.items.length === 0 ? <p>{view.detail.copy}</p> : null}
+              <ul>{view.items.map((item) => <li key={item.id} aria-current={item.isSelected ? "true" : undefined}><button type="button" onClick={() => onSelectNote?.(item.id)}><strong>{item.title}</strong><span>{item.meta}</span></button></li>)}</ul>
+            </aside>
 
-      <article className="native-workspace-panel native-workspace-detail" aria-label="Note detail">
-        {view.detail.kind === "note" && selectedNote ? <>
-          <h3>{selectedNote.title}</h3>
-          <p>{selectedNote.relative_path}</p>
-          <pre>{selectedNote.markdown || "No Markdown was returned by the native bridge."}</pre>
-          <h4>Metadata</h4><pre>{view.detail.metadataPreview}</pre>
-          <button type="button" onClick={() => onTrashNote?.(selectedNote.id)}>Trash note</button>
-        </> : <p>{view.detail.copy}</p>}
-      </article>
+            <article className="native-workspace-panel native-workspace-detail" aria-label="Note detail">
+              {view.detail.kind === "note" && selectedNote ? <>
+                <h3>{selectedNote.title}</h3>
+                <p>{selectedNote.relative_path}</p>
+                <pre>{selectedNote.markdown || "No Markdown was returned by the native bridge."}</pre>
+                <h4>Metadata</h4><pre>{view.detail.metadataPreview}</pre>
+                <button className="secondary-action" type="button" onClick={() => onTrashNote?.(selectedNote.id)}>Trash note</button>
+              </> : <p>{view.detail.copy}</p>}
+            </article>
+          </div>
 
-      </div>
+          <section className="native-workspace-panel" aria-label="Note conflicts"><p>{view.conflictsCopy}</p>{"scanCopy" in view ? <p>{view.scanCopy}</p> : null}</section>
 
-      <section className="native-workspace-panel" aria-label="Note conflicts"><p>{view.conflictsCopy}</p>{"scanCopy" in view ? <p>{view.scanCopy}</p> : null}</section>
+          {linkedPanels}
 
-      {linkedPanels}
-
-      <section className="native-workspace-panel" aria-label="Create or edit note">
-        <h3>{selectedNote ? "Edit Markdown note" : "Create Markdown note"}</h3>
-        <p>Create uses {noteBridgeCommands.create}; edit uses {noteBridgeCommands.edit}. This UI does not fabricate notes outside the native bridge.</p>
-        <form aria-label="Note editor" onSubmit={submit}>
-          <label>Title<input value={form.title} onChange={(event) => update({ title: event.currentTarget.value })} required /></label><FieldError message={visibleErrors.title} />
-          <label>Relative path<input value={form.relative_path ?? ""} onChange={(event) => update({ relative_path: event.currentTarget.value })} /></label><FieldError message={visibleErrors.relative_path} />
-          <label>Markdown<textarea value={form.body_markdown} onChange={(event) => update({ body_markdown: event.currentTarget.value })} required /></label><FieldError message={visibleErrors.body_markdown} />
-          <label>Metadata JSON<textarea value={form.metadata_json ?? "{}"} onChange={(event) => update({ metadata_json: event.currentTarget.value })} /></label><FieldError message={visibleErrors.metadata_json} />
-          <button type="submit" disabled={!validation.ok}>{selectedNote ? "Update note" : "Create note"}</button>
-        </form>
-      </section>
+          <section className="native-workspace-panel native-editor-panel" aria-label="Create or edit note">
+            <h3>{selectedNote ? "Edit Markdown note" : "Create Markdown note"}</h3>
+            <p>Create uses {noteBridgeCommands.create}; edit uses {noteBridgeCommands.edit}. This UI does not fabricate notes outside the native bridge.</p>
+            <form aria-label="Note editor" onSubmit={submit}>
+              <label>Title<input value={form.title} onChange={(event) => update({ title: event.currentTarget.value })} required /></label><FieldError message={visibleErrors.title} />
+              <label>Relative path<input value={form.relative_path ?? ""} onChange={(event) => update({ relative_path: event.currentTarget.value })} /></label><FieldError message={visibleErrors.relative_path} />
+              <label>Markdown<textarea value={form.body_markdown} onChange={(event) => update({ body_markdown: event.currentTarget.value })} required /></label><FieldError message={visibleErrors.body_markdown} />
+              <label>Metadata JSON<textarea value={form.metadata_json ?? "{}"} onChange={(event) => update({ metadata_json: event.currentTarget.value })} /></label><FieldError message={visibleErrors.metadata_json} />
+              <button className="primary-action" type="submit" disabled={!validation.ok}>{selectedNote ? "Update note" : "Create note"}</button>
+            </form>
+          </section>
+        </>
+      )}
     </section>
   );
 }

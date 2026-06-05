@@ -2,6 +2,7 @@ mod agent_execution_service;
 mod history_service;
 mod notification_service;
 mod phase4_service;
+mod phase5_service;
 mod review_service;
 mod task_service;
 
@@ -13,6 +14,8 @@ pub(crate) use history_service::*;
 pub(crate) use notification_service::*;
 #[allow(unused_imports)]
 pub(crate) use phase4_service::*;
+#[allow(unused_imports)]
+pub(crate) use phase5_service::*;
 #[allow(unused_imports)]
 pub(crate) use review_service::*;
 #[allow(unused_imports)]
@@ -40,6 +43,12 @@ static NOTIFICATION_COUNTER: AtomicU64 = AtomicU64::new(0);
 static REPO_PROFILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LAUNCH_GATE_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LAUNCH_GATE_EVIDENCE_COUNTER: AtomicU64 = AtomicU64::new(0);
+static CONTENT_PLAN_COUNTER: AtomicU64 = AtomicU64::new(0);
+static CONTENT_PIECE_COUNTER: AtomicU64 = AtomicU64::new(0);
+static MEDIA_ASSET_COUNTER: AtomicU64 = AtomicU64::new(0);
+static CONTENT_REVIEW_GATE_COUNTER: AtomicU64 = AtomicU64::new(0);
+static CONTENT_SCHEDULE_COUNTER: AtomicU64 = AtomicU64::new(0);
+static CONTENT_VERIFICATION_COUNTER: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_RUN_CHILDREN: OnceLock<Mutex<HashMap<String, Arc<Mutex<std::process::Child>>>>> =
     OnceLock::new();
 
@@ -294,6 +303,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 10,
         name: "phase4_code_repos_launch_gate",
         sql: include_str!("../migrations/0010_phase4_code_repos_launch_gate.sql"),
+    },
+    Migration {
+        version: 11,
+        name: "phase5_content_omnisocials",
+        sql: include_str!("../migrations/0011_phase5_content_omnisocials.sql"),
     },
 ];
 
@@ -4061,6 +4075,26 @@ const TAURI_BRIDGE_COMMAND_NAMES: &[&str] = &[
     "open_file_reference_command",
     "preview_file_command",
     "perform_file_action_command",
+    "create_content_plan_command",
+    "list_content_plans_command",
+    "create_content_piece_command",
+    "read_content_piece_command",
+    "list_content_pieces_command",
+    "update_content_piece_draft_command",
+    "add_media_asset_reference_command",
+    "list_media_asset_references_command",
+    "create_content_review_gate_command",
+    "approve_content_review_gate_command",
+    "reject_content_review_gate_command",
+    "list_content_review_gates_command",
+    "create_content_schedule_command",
+    "list_content_schedules_command",
+    "cancel_content_schedule_command",
+    "get_omnisocials_status_command",
+    "omnisocials_upload_media_command",
+    "omnisocials_schedule_content_command",
+    "omnisocials_publish_content_command",
+    "list_content_verification_records_command",
 ];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -4492,7 +4526,9 @@ fn read_launch_gate_command(launch_gate_id: String) -> Result<LaunchGateRecord, 
 }
 
 #[tauri::command]
-fn add_launch_gate_evidence_command(request: LaunchGateEvidenceInput) -> Result<LaunchGateEvidenceRecord, String> {
+fn add_launch_gate_evidence_command(
+    request: LaunchGateEvidenceInput,
+) -> Result<LaunchGateEvidenceRecord, String> {
     let connection = open_ready_connection()?;
     add_launch_gate_evidence(&connection, request).map_err(repository_error_message)
 }
@@ -4504,7 +4540,9 @@ fn evaluate_launch_gate_command(launch_gate_id: String) -> Result<LaunchGateReco
 }
 
 #[tauri::command]
-fn preview_launch_action_policy_command(action_category: String) -> Result<ActionPolicyDecision, String> {
+fn preview_launch_action_policy_command(
+    action_category: String,
+) -> Result<ActionPolicyDecision, String> {
     let category = normalize_launch_action_policy_category(&action_category)?;
     Ok(evaluate_action_policy(&category))
 }
@@ -10803,6 +10841,151 @@ fn now_millis() -> u128 {
         .as_millis()
 }
 
+#[tauri::command]
+fn create_content_plan_command(request: ContentPlanInput) -> Result<ContentPlanRecord, String> {
+    let connection = open_ready_connection()?;
+    create_content_plan(&connection, request).map_err(repository_error_message)
+}
+#[tauri::command]
+fn list_content_plans_command(
+    request: ContentListRequest,
+) -> Result<Vec<ContentPlanRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_content_plans(&connection, request).map_err(repository_error_message)
+}
+#[tauri::command]
+fn create_content_piece_command(request: ContentPieceInput) -> Result<ContentPieceRecord, String> {
+    let connection = open_ready_connection()?;
+    create_content_piece(&connection, request).map_err(repository_error_message)
+}
+#[tauri::command]
+fn read_content_piece_command(piece_id: String) -> Result<Option<ContentPieceRecord>, String> {
+    let connection = open_ready_connection()?;
+    read_content_piece(&connection, &piece_id).map_err(repository_error_message)
+}
+#[tauri::command]
+fn list_content_pieces_command(
+    request: ContentListRequest,
+) -> Result<Vec<ContentPieceRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_content_pieces(&connection, request).map_err(repository_error_message)
+}
+#[tauri::command]
+fn update_content_piece_draft_command(
+    request: ContentPieceDraftInput,
+) -> Result<ContentPieceRecord, String> {
+    let connection = open_ready_connection()?;
+    update_content_piece_draft(&connection, request).map_err(repository_error_message)
+}
+#[tauri::command]
+fn add_media_asset_reference_command(request: MediaAssetInput) -> Result<MediaAssetRecord, String> {
+    let connection = open_ready_connection()?;
+    add_media_asset_reference(&connection, request).map_err(repository_error_message)
+}
+#[tauri::command]
+fn list_media_asset_references_command(piece_id: String) -> Result<Vec<MediaAssetRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_media_asset_references(&connection, &piece_id).map_err(repository_error_message)
+}
+#[tauri::command]
+fn create_content_review_gate_command(
+    request: ContentReviewGateInput,
+) -> Result<ContentReviewGateRecord, String> {
+    let connection = open_ready_connection()?;
+    create_content_review_gate(&connection, request).map_err(repository_error_message)
+}
+#[tauri::command]
+fn approve_content_review_gate_command(
+    gate_id: String,
+    request: ContentReviewGateDecisionInput,
+) -> Result<ContentReviewGateRecord, String> {
+    let connection = open_ready_connection()?;
+    decide_content_review_gate(&connection, &gate_id, true, request)
+        .map_err(repository_error_message)
+}
+#[tauri::command]
+fn reject_content_review_gate_command(
+    gate_id: String,
+    request: ContentReviewGateDecisionInput,
+) -> Result<ContentReviewGateRecord, String> {
+    let connection = open_ready_connection()?;
+    decide_content_review_gate(&connection, &gate_id, false, request)
+        .map_err(repository_error_message)
+}
+#[tauri::command]
+fn list_content_review_gates_command(
+    piece_id: String,
+) -> Result<Vec<ContentReviewGateRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_content_review_gates(&connection, &piece_id).map_err(repository_error_message)
+}
+#[tauri::command]
+fn create_content_schedule_command(
+    request: ContentScheduleInput,
+) -> Result<ContentScheduleRecord, String> {
+    let connection = open_ready_connection()?;
+    create_content_schedule(&connection, request).map_err(repository_error_message)
+}
+#[tauri::command]
+fn list_content_schedules_command(
+    piece_id: Option<String>,
+) -> Result<Vec<ContentScheduleRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_content_schedules(&connection, piece_id).map_err(repository_error_message)
+}
+#[tauri::command]
+fn cancel_content_schedule_command(schedule_id: String) -> Result<ContentScheduleRecord, String> {
+    let connection = open_ready_connection()?;
+    cancel_content_schedule(&connection, &schedule_id).map_err(repository_error_message)
+}
+#[tauri::command]
+fn get_omnisocials_status_command() -> Result<OmniSocialsStatusRecord, String> {
+    let connection = open_ready_connection()?;
+    get_omnisocials_status(&connection).map_err(repository_error_message)
+}
+#[tauri::command]
+fn omnisocials_upload_media_command(
+    request: OmniSocialsActionInput,
+) -> Result<ContentVerificationRecord, String> {
+    let connection = open_ready_connection()?;
+    omnisocials_upload_media(&connection, &request.piece_id, &request.platform)
+        .map_err(repository_error_message)
+}
+#[tauri::command]
+fn omnisocials_schedule_content_command(
+    request: OmniSocialsActionInput,
+) -> Result<ContentVerificationRecord, String> {
+    let connection = open_ready_connection()?;
+    omnisocials_fail_closed(
+        &connection,
+        &request.piece_id,
+        request.schedule_id.as_deref(),
+        &request.platform,
+        "schedule",
+    )
+    .map_err(repository_error_message)
+}
+#[tauri::command]
+fn omnisocials_publish_content_command(
+    request: OmniSocialsActionInput,
+) -> Result<ContentVerificationRecord, String> {
+    let connection = open_ready_connection()?;
+    omnisocials_fail_closed(
+        &connection,
+        &request.piece_id,
+        request.schedule_id.as_deref(),
+        &request.platform,
+        "publish",
+    )
+    .map_err(repository_error_message)
+}
+#[tauri::command]
+fn list_content_verification_records_command(
+    request: ContentVerificationListRequest,
+) -> Result<Vec<ContentVerificationRecord>, String> {
+    let connection = open_ready_connection()?;
+    list_content_verification_records(&connection, request).map_err(repository_error_message)
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -10870,7 +11053,27 @@ pub fn run() {
             browse_files_command,
             open_file_reference_command,
             preview_file_command,
-            perform_file_action_command
+            perform_file_action_command,
+            create_content_plan_command,
+            list_content_plans_command,
+            create_content_piece_command,
+            read_content_piece_command,
+            list_content_pieces_command,
+            update_content_piece_draft_command,
+            add_media_asset_reference_command,
+            list_media_asset_references_command,
+            create_content_review_gate_command,
+            approve_content_review_gate_command,
+            reject_content_review_gate_command,
+            list_content_review_gates_command,
+            create_content_schedule_command,
+            list_content_schedules_command,
+            cancel_content_schedule_command,
+            get_omnisocials_status_command,
+            omnisocials_upload_media_command,
+            omnisocials_schedule_content_command,
+            omnisocials_publish_content_command,
+            list_content_verification_records_command,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -46,9 +46,3 @@ create table if not exists launch_gate_evidence (
 );
 
 create index if not exists idx_launch_gate_evidence_gate_created on launch_gate_evidence(launch_gate_id, created_at, id);
-
-insert or ignore into integration_statuses (
-    integration_key, display_name, status, config_json, credential_ref, last_checked_at, updated_at
-) values
-    ('github', 'GitHub', 'not_configured', '{"phase":"4","scope":"state_only","note":"No deep GitHub automation or git read operations are implemented."}', null, null, current_timestamp),
-    ('vercel', 'Vercel', 'not_configured', '{"phase":"4","scope":"state_only","note":"No deploy execution is implemented; Launch Gate evidence is local/truthful."}', null, null, current_timestamp);

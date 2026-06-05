@@ -8,8 +8,11 @@ export function createInitialNoteBridgeState(): NoteBridgeUiState {
 }
 
 function bridgeError(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (typeof error === "string") return error;
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  if (/invoke|__TAURI|Tauri/i.test(message)) {
+    return "Native notes backend is only available inside the Tauri desktop app. Browser preview keeps Markdown notes unavailable instead of simulating records.";
+  }
+  if (message) return message;
   return "unknown native note bridge error";
 }
 

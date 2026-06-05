@@ -101,6 +101,20 @@ import {
   buildWorkspaceRegistryView,
   type WorkspaceRegistryView,
 } from "./workspaceRegistry";
+import {
+  blockedVerificationRecords,
+  omnisocialsActionCopy,
+  parsePlatforms,
+  pieceScheduleGateSummary,
+  type ContentPieceRecord,
+  type ContentPlanRecord,
+  type ContentReviewGateRecord,
+  type ContentScheduleRecord,
+  type ContentVerificationRecord,
+  type ContentWorkspaceState,
+  type MediaAssetRecord,
+  type OmniSocialsStatusRecord,
+} from "./contentWorkspace";
 
 const integrationStates: IntegrationState[] = defaultIntegrationStates;
 
@@ -439,6 +453,9 @@ const fileInvoke: FileBridgeInvoke = (command, args) => invoke(command, args);
 
 function bridgeErrorReason(label: string, error: unknown) {
   const detail = error instanceof Error ? error.message : typeof error === "string" ? error : "unknown native bridge error";
+  if (/invoke|__TAURI|Tauri/i.test(detail)) {
+    return `${label} backend is only available inside the Tauri desktop app. Browser preview is UI-only and does not simulate records.`;
+  }
   return `${label} bridge is unavailable (${detail}). No browser preview or fallback records are simulated.`;
 }
 
@@ -666,6 +683,107 @@ function CodeWorkspace({ state, onRefresh }: { state: CodeWorkspaceState; onRefr
   );
 }
 
+type ContentWorkspaceActions = {
+  createDraft: () => void;
+  updateDraft: (pieceId: string) => void;
+  createReviewGate: (pieceId: string) => void;
+  approveReviewGate: (gateId: string) => void;
+  rejectReviewGate: (gateId: string) => void;
+  attemptScheduleIntent: (pieceId: string, platform: string) => void;
+  cancelSchedule: (scheduleId: string) => void;
+  recordFailClosedUpload: (pieceId: string, platform: string) => void;
+  recordFailClosedSchedule: (pieceId: string, platform: string, scheduleId?: string | null) => void;
+  recordFailClosedPublish: (pieceId: string, platform: string, scheduleId?: string | null) => void;
+};
+
+function ContentWorkspace({ state, onRefresh, actions }: { state: ContentWorkspaceState; onRefresh: () => void; actions: ContentWorkspaceActions }) {
+  if (state.mode === "loading") {
+    return <EmptyState icon="C">Loading content plans, draft gates, schedules, and OmniSocials status…</EmptyState>;
+  }
+  if (state.mode === "error") {
+    return (
+      <InfoCard className="large-card">
+        <p className="eyebrow">Content workspace</p>
+        <h3>Native Phase 5 bridge unavailable</h3>
+        <BlockerState>{state.error}</BlockerState>
+        <button className="secondary-action" onClick={onRefresh} type="button">Retry native load</button>
+      </InfoCard>
+    );
+  }
+  const blockedRecords = blockedVerificationRecords(state.verifications);
+  const selectedPiece = state.pieces.find((piece) => piece.id === state.selectedPieceId) ?? state.pieces[0] ?? null;
+  const selectedGates = selectedPiece ? state.reviewGates.filter((gate) => gate.piece_id === selectedPiece.id) : [];
+  const selectedAssets = selectedPiece ? state.mediaAssets.filter((asset) => asset.piece_id === selectedPiece.id) : [];
+  const selectedSchedules = selectedPiece ? state.schedules.filter((schedule) => schedule.piece_id === selectedPiece.id) : [];
+  const firstPlatform = selectedPiece ? parsePlatforms(selectedPiece.platforms_json)[0] ?? "linkedin" : "linkedin";
+  return (
+    <section className="dashboard-grid">
+      <InfoCard className="large-card">
+        <div className="card-header">
+          <div><p className="eyebrow">Content / draft-first</p><h3>Plans and pieces</h3></div>
+          <StatusBadge tone="ready">Phase 5</StatusBadge>
+        </div>
+        <p className="muted-copy">Content stays local and draft-first. Scheduling requires review and human confirmation before any external write.</p>
+        {state.actionStatus ? <p className="muted-copy">Last action: {state.actionStatus}</p> : null}
+        <button className="primary-action" type="button" onClick={actions.createDraft}>Create local sample draft</button>
+        {state.pieces.length > 0 ? (
+          <ul className="compact-list">
+            {state.pieces.map((piece) => {
+              const platforms = parsePlatforms(piece.platforms_json);
+              return (
+                <li key={piece.id}>
+                  <div><strong>{piece.title}</strong><span>{piece.status} · {piece.required_gate}</span></div>
+                  <p>{platforms.join(", ") || "No platforms"}</p>
+                  <p className="muted-copy">{pieceScheduleGateSummary(piece, state.reviewGates, state.schedules)}</p>
+                </li>
+              );
+            })}
+          </ul>
+        ) : <EmptyState icon="✎">No content pieces yet. Use the local sample action to create a plan and draft through native commands.</EmptyState>}
+        <button className="secondary-action" type="button" onClick={onRefresh}>Refresh content state</button>
+      </InfoCard>
+      <InfoCard>
+        <p className="eyebrow">Selected draft workflow</p>
+        <h3>{selectedPiece?.title ?? "No draft selected"}</h3>
+        {selectedPiece ? (
+          <>
+            <p className="muted-copy">Review gates: {selectedGates.length}. Media refs: {selectedAssets.length}. Schedule intents: {selectedSchedules.length}.</p>
+            <button className="secondary-action" type="button" onClick={() => actions.updateDraft(selectedPiece.id)}>Move draft to review-ready</button>
+            <button className="secondary-action" type="button" onClick={() => actions.createReviewGate(selectedPiece.id)}>Create review gate</button>
+            {selectedGates.filter((gate) => gate.status !== "approved").map((gate) => (
+              <div key={gate.id} className="content-inline-actions">
+                <button className="secondary-action" type="button" onClick={() => actions.approveReviewGate(gate.id)}>Approve {gate.gate_type}</button>
+                <button className="secondary-action" type="button" onClick={() => actions.rejectReviewGate(gate.id)}>Reject {gate.gate_type}</button>
+              </div>
+            ))}
+            <button className="secondary-action" type="button" onClick={() => actions.attemptScheduleIntent(selectedPiece.id, firstPlatform)}>Attempt schedule intent</button>
+            <button className="secondary-action" type="button" onClick={() => actions.recordFailClosedUpload(selectedPiece.id, firstPlatform)}>Record fail-closed upload check</button>
+            <button className="secondary-action" type="button" onClick={() => actions.recordFailClosedSchedule(selectedPiece.id, firstPlatform, selectedSchedules[0]?.id)}>Record fail-closed schedule check</button>
+            <button className="secondary-action" type="button" onClick={() => actions.recordFailClosedPublish(selectedPiece.id, firstPlatform, selectedSchedules[0]?.id)}>Record fail-closed publish check</button>
+          </>
+        ) : <p className="muted-copy">Create or load a draft to run review and fail-closed checks.</p>}
+      </InfoCard>
+      <InfoCard>
+        <p className="eyebrow">OmniSocials</p>
+        <h3>Fails closed</h3>
+        <p>{state.omnisocials.status_note}</p>
+        <div className={`registry-meta ${state.omnisocials.state === "connected" ? "ready" : "blocked"}`}><span>Status</span><span>{state.omnisocials.state}</span></div>
+        <p className="muted-copy">{omnisocialsActionCopy(state.omnisocials)}</p>
+      </InfoCard>
+      <InfoCard>
+        <p className="eyebrow">Schedules</p>
+        <h3>Intent queue</h3>
+        {state.schedules.length > 0 ? <ul className="compact-list">{state.schedules.map((schedule) => <li key={schedule.id}><div><strong>{schedule.platform}</strong><span>{schedule.status}</span></div><p>{schedule.scheduled_for}</p><button className="secondary-action" type="button" onClick={() => actions.cancelSchedule(schedule.id)}>Cancel local intent</button></li>)}</ul> : <p className="muted-copy">No schedule intents yet.</p>}
+      </InfoCard>
+      <InfoCard>
+        <p className="eyebrow">Verification</p>
+        <h3>Failure reports</h3>
+        {blockedRecords.length > 0 ? <ul className="compact-list">{blockedRecords.map((record) => <li key={record.id}><div><strong>{record.action_type}</strong><span>{record.outcome}</span></div><p>{record.failure_report || record.provider_status || "Blocked by local policy"}</p></li>)}</ul> : <p className="muted-copy">No blocked/failed verification records.</p>}
+      </InfoCard>
+    </section>
+  );
+}
+
 function App() {
   const [activeWorkspace, setActiveWorkspace] = useState("today");
   const [status, setStatus] = useState<FoundationStatus | null>(null);
@@ -682,6 +800,7 @@ function App() {
   const [runControls, setRunControls] = useState<RunControlsState>(() => createInitialRunControlsState({ taskId: null, profileId: "default", cwd: "" }));
   const [manualReview, setManualReview] = useState<ManualReviewState>(() => createInitialManualReviewState(null, null));
   const [codeWorkspace, setCodeWorkspace] = useState<CodeWorkspaceState>({ mode: "loading" });
+  const [contentWorkspace, setContentWorkspace] = useState<ContentWorkspaceState>({ mode: "loading" });
 
   useEffect(() => {
     invoke<FoundationStatus>("get_foundation_status")
@@ -705,9 +824,34 @@ function App() {
     }
   }, []);
 
+
+  const loadContentWorkspace = useCallback(async () => {
+    setContentWorkspace({ mode: "loading" });
+    try {
+      const [plans, pieces, schedules, verifications, omnisocials] = await Promise.all([
+        invoke<ContentPlanRecord[]>("list_content_plans_command", { request: { limit: 50 } }),
+        invoke<ContentPieceRecord[]>("list_content_pieces_command", { request: { limit: 50 } }),
+        invoke<ContentScheduleRecord[]>("list_content_schedules_command", { pieceId: null }),
+        invoke<ContentVerificationRecord[]>("list_content_verification_records_command", { request: { limit: 50 } }),
+        invoke<OmniSocialsStatusRecord>("get_omnisocials_status_command"),
+      ]);
+      const selectedPieceId = pieces[0]?.id ?? null;
+      const [mediaAssets, reviewGates] = selectedPieceId
+        ? await Promise.all([
+            invoke<MediaAssetRecord[]>("list_media_asset_references_command", { pieceId: selectedPieceId }),
+            invoke<ContentReviewGateRecord[]>("list_content_review_gates_command", { pieceId: selectedPieceId }),
+          ])
+        : [[], []];
+      setContentWorkspace({ mode: "ready", plans, pieces, mediaAssets, reviewGates, schedules, verifications, omnisocials, selectedPieceId });
+    } catch (error) {
+      setContentWorkspace({ mode: "error", error: bridgeErrorReason("Native Content workspace", error) });
+    }
+  }, []);
+
   useEffect(() => {
     void loadCodeWorkspace();
-  }, [loadCodeWorkspace]);
+    void loadContentWorkspace();
+  }, [loadCodeWorkspace, loadContentWorkspace]);
 
   const applyTaskState = useCallback((state: TaskBridgeUiState["state"]) => {
     setTaskBridgeUi((current) => ({ ...current, state }));
@@ -790,7 +934,7 @@ function App() {
       formErrors: {},
       state: current.state.mode === "ready"
         ? { ...current.state, selectedTaskId: null }
-        : { mode: "loading", selectedTaskId: null },
+        : { ...current.state, selectedTaskId: null },
     }));
     setTaskLinkedPanels({ mode: "idle", taskId: null });
     setCleanSessions({});
@@ -926,6 +1070,146 @@ function App() {
   }, [fileBridgeUi.state, loadFileLinkedPanels]);
   const handleFileActionDraftChange = useCallback((actionDraft: FileActionDraft) => setFileBridgeUi((current) => ({ ...current, actionDraft, actionErrors: [] })), []);
   const handlePerformFileActionClick = useCallback(async () => setFileBridgeUi(await performFileActionThroughBridge(fileInvoke, fileBridgeUi)), [fileBridgeUi]);
+
+  const refreshContentWithStatus = useCallback(async (actionStatus: string) => {
+    await loadContentWorkspace();
+    setContentWorkspace((current) => current.mode === "ready" ? { ...current, actionStatus } : current);
+  }, [loadContentWorkspace]);
+
+  const handleCreateContentDraft = useCallback(async () => {
+    try {
+      const plan = await invoke<ContentPlanRecord>("create_content_plan_command", {
+        request: { title: "Phase 5 local content plan", pillar: "operations", ownerActorType: "human", metadataJson: "{}" },
+      });
+      const piece = await invoke<ContentPieceRecord>("create_content_piece_command", {
+        request: {
+          planId: plan.id,
+          title: "Draft-first OmniSocials post",
+          bodyMarkdown: "Draft content created locally. External publishing remains fail-closed.",
+          platforms: ["linkedin", "instagram"],
+          requiredGate: "specialist_review",
+          metadataJson: "{}",
+        },
+      });
+      await invoke<MediaAssetRecord>("add_media_asset_reference_command", {
+        request: {
+          pieceId: piece.id,
+          assetKind: "image",
+          storageRef: "assets/content/phase-5-placeholder.png",
+          mimeType: "image/png",
+          byteSize: 1024,
+          width: 1080,
+          height: 1080,
+          durationSeconds: null,
+          altText: "Placeholder content asset",
+          metadataJson: "{}",
+        },
+      });
+      await refreshContentWithStatus("Created local plan, draft, and media reference.");
+    } catch (error) {
+      setContentWorkspace((current) => current.mode === "ready" ? { ...current, actionStatus: bridgeErrorReason("Content draft create", error) } : { mode: "error", error: bridgeErrorReason("Content draft create", error) });
+    }
+  }, [refreshContentWithStatus]);
+
+  const handleUpdateContentDraft = useCallback(async (pieceId: string) => {
+    try {
+      await invoke<ContentPieceRecord>("update_content_piece_draft_command", {
+        pieceId,
+        request: { bodyMarkdown: "Draft moved to review-ready locally. External publishing remains fail-closed.", status: "review_ready", metadataJson: "{}" },
+      });
+      await refreshContentWithStatus("Updated draft to review-ready.");
+    } catch (error) {
+      setContentWorkspace((current) => current.mode === "ready" ? { ...current, actionStatus: bridgeErrorReason("Content draft update", error) } : current);
+    }
+  }, [refreshContentWithStatus]);
+
+  const handleCreateContentReviewGate = useCallback(async (pieceId: string) => {
+    try {
+      await invoke<ContentReviewGateRecord>("create_content_review_gate_command", {
+        request: { pieceId, gateType: "specialist_review", reviewerActorType: "reviewer", reviewerActorId: null, evidenceSummary: "Awaiting specialist review.", metadataJson: "{}" },
+      });
+      await refreshContentWithStatus("Created specialist review gate.");
+    } catch (error) {
+      setContentWorkspace((current) => current.mode === "ready" ? { ...current, actionStatus: bridgeErrorReason("Review gate create", error) } : current);
+    }
+  }, [refreshContentWithStatus]);
+
+  const handleApproveContentReviewGate = useCallback(async (gateId: string) => {
+    try {
+      await invoke<ContentReviewGateRecord>("approve_content_review_gate_command", {
+        gateId,
+        request: { evidenceSummary: "Approved locally for schedule-intent testing.", reviewerActorType: "reviewer", reviewerActorId: "local-user", metadataJson: "{}" },
+      });
+      await refreshContentWithStatus("Approved specialist review gate.");
+    } catch (error) {
+      setContentWorkspace((current) => current.mode === "ready" ? { ...current, actionStatus: bridgeErrorReason("Review gate approve", error) } : current);
+    }
+  }, [refreshContentWithStatus]);
+
+  const handleRejectContentReviewGate = useCallback(async (gateId: string) => {
+    try {
+      await invoke<ContentReviewGateRecord>("reject_content_review_gate_command", {
+        gateId,
+        request: { evidenceSummary: "Rejected locally for schedule-gate testing.", reviewerActorType: "reviewer", reviewerActorId: "local-user", metadataJson: "{}" },
+      });
+      await refreshContentWithStatus("Rejected specialist review gate.");
+    } catch (error) {
+      setContentWorkspace((current) => current.mode === "ready" ? { ...current, actionStatus: bridgeErrorReason("Review gate reject", error) } : current);
+    }
+  }, [refreshContentWithStatus]);
+
+  const handleAttemptContentScheduleIntent = useCallback(async (pieceId: string, platform: string) => {
+    try {
+      await invoke<ContentScheduleRecord>("create_content_schedule_command", {
+        request: {
+          pieceId,
+          platform,
+          scheduledFor: "2026-06-06T09:00:00Z",
+          confirmationId: null,
+          metadataJson: "{}",
+        },
+      });
+      await refreshContentWithStatus("Created local schedule intent.");
+    } catch (error) {
+      await refreshContentWithStatus(bridgeErrorReason("Schedule intent", error));
+    }
+  }, [refreshContentWithStatus]);
+
+  const handleCancelContentSchedule = useCallback(async (scheduleId: string) => {
+    try {
+      await invoke<ContentScheduleRecord>("cancel_content_schedule_command", { scheduleId });
+      await refreshContentWithStatus("Cancelled local schedule intent.");
+    } catch (error) {
+      setContentWorkspace((current) => current.mode === "ready" ? { ...current, actionStatus: bridgeErrorReason("Schedule cancel", error) } : current);
+    }
+  }, [refreshContentWithStatus]);
+
+  const handleRecordFailClosedUpload = useCallback(async (pieceId: string, platform: string) => {
+    try {
+      await invoke<ContentVerificationRecord>("omnisocials_upload_media_command", { request: { pieceId, platform, scheduleId: null } });
+      await refreshContentWithStatus("Recorded fail-closed upload verification.");
+    } catch (error) {
+      setContentWorkspace((current) => current.mode === "ready" ? { ...current, actionStatus: bridgeErrorReason("Fail-closed upload check", error) } : current);
+    }
+  }, [refreshContentWithStatus]);
+
+  const handleRecordFailClosedSchedule = useCallback(async (pieceId: string, platform: string, scheduleId?: string | null) => {
+    try {
+      await invoke<ContentVerificationRecord>("omnisocials_schedule_content_command", { request: { pieceId, platform, scheduleId: scheduleId ?? null } });
+      await refreshContentWithStatus("Recorded fail-closed schedule verification.");
+    } catch (error) {
+      setContentWorkspace((current) => current.mode === "ready" ? { ...current, actionStatus: bridgeErrorReason("Fail-closed schedule check", error) } : current);
+    }
+  }, [refreshContentWithStatus]);
+
+  const handleRecordFailClosedPublish = useCallback(async (pieceId: string, platform: string, scheduleId?: string | null) => {
+    try {
+      await invoke<ContentVerificationRecord>("omnisocials_publish_content_command", { request: { pieceId, platform, scheduleId: scheduleId ?? null } });
+      await refreshContentWithStatus("Recorded fail-closed publish verification.");
+    } catch (error) {
+      setContentWorkspace((current) => current.mode === "ready" ? { ...current, actionStatus: bridgeErrorReason("Fail-closed publish check", error) } : current);
+    }
+  }, [refreshContentWithStatus]);
 
   const workspaceRegistry = useMemo(() => buildWorkspaceRegistryView(status, statusError), [status, statusError]);
   const workspaces = workspaceRegistry.workspaces;
@@ -1077,6 +1361,23 @@ function App() {
               />
             ) : active?.id === "code" ? (
               <CodeWorkspace state={codeWorkspace} onRefresh={loadCodeWorkspace} />
+            ) : active?.id === "content" ? (
+              <ContentWorkspace
+                state={contentWorkspace}
+                onRefresh={loadContentWorkspace}
+                actions={{
+                  createDraft: handleCreateContentDraft,
+                  updateDraft: handleUpdateContentDraft,
+                  createReviewGate: handleCreateContentReviewGate,
+                  approveReviewGate: handleApproveContentReviewGate,
+                  rejectReviewGate: handleRejectContentReviewGate,
+                  attemptScheduleIntent: handleAttemptContentScheduleIntent,
+                  cancelSchedule: handleCancelContentSchedule,
+                  recordFailClosedUpload: handleRecordFailClosedUpload,
+                  recordFailClosedSchedule: handleRecordFailClosedSchedule,
+                  recordFailClosedPublish: handleRecordFailClosedPublish,
+                }}
+              />
             ) : active?.id === "notes" ? (
               <NoteWorkspace
                 form={noteBridgeUi.form}
