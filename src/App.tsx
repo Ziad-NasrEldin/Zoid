@@ -118,6 +118,31 @@ import {
   type MediaAssetRecord,
   type OmniSocialsStatusRecord,
 } from "./contentWorkspace";
+import {
+  allowedAttachmentTargets,
+  attachCaptureThroughBridge,
+  createCaptureThroughBridge,
+  createInitialBrowserWorkspaceState,
+  loadBrowserWorkspaceFromBridge,
+  moveWidget,
+  resetWidgetsThroughBridge,
+  resizeWidget,
+  saveWorkUrlThroughBridge,
+  toggleWidget,
+  updateBrowserDraft,
+  updateWidgetThroughBridge,
+  type BrowserBridgeInvoke,
+  type BrowserCaptureTarget,
+  type BrowserWorkspaceDraft,
+  type BrowserWorkspaceState,
+  type WidgetConfigRecord,
+  type WidgetSize,
+} from "./browserWorkspace";
+import {
+  dryRunLogCleanup,
+  loadReleaseHardeningState,
+  type ReleaseHardeningState,
+} from "./releaseAbout";
 
 const integrationStates: IntegrationState[] = defaultIntegrationStates;
 
@@ -330,6 +355,74 @@ function SettingsStatusShell({ view }: SettingsStatusShellProps) {
   );
 }
 
+type ReleaseHardeningPanelProps = {
+  state: ReleaseHardeningState;
+  onRefresh: () => void;
+  onDryRunCleanup: () => void;
+};
+
+function ReleaseHardeningPanel({ state, onRefresh, onDryRunCleanup }: ReleaseHardeningPanelProps) {
+  if (state.mode === "loading") {
+    return <InspectorCard><p className="eyebrow">Release hardening</p><EmptyState icon="…">Loading release readiness and log retention state.</EmptyState></InspectorCard>;
+  }
+  if (state.mode === "error") {
+    return (
+      <InspectorCard>
+        <p className="eyebrow">Release hardening</p>
+        <h3>Native release state unavailable</h3>
+        <BlockerState>{bridgeErrorReason("Release hardening", state.error)}</BlockerState>
+        <button className="secondary-action" onClick={onRefresh} type="button">Retry release state</button>
+      </InspectorCard>
+    );
+  }
+  return (
+    <InspectorCard className="settings-status-shell">
+      <div className="card-header compact">
+        <div>
+          <p className="eyebrow">Release hardening</p>
+          <h3>{state.about.appName} {state.about.version}</h3>
+        </div>
+        <StatusBadge tone="ready">Ready</StatusBadge>
+      </div>
+      <dl className="settings-status-list" aria-label="Release package status">
+        <div><dt>Build</dt><dd>{state.about.build}</dd></div>
+        <div><dt>Packaging</dt><dd>{state.about.packaging}</dd></div>
+        <div><dt>Signing</dt><dd>{state.about.signing}</dd></div>
+        <div><dt>Notarization</dt><dd>{state.about.notarization}</dd></div>
+      </dl>
+      <section className="settings-status-section" aria-label="Log retention settings">
+        <div className="card-header compact">
+          <div>
+            <p className="eyebrow">Log retention</p>
+            <h4>Dry-run before cleanup</h4>
+          </div>
+          <button className="secondary-action" onClick={onDryRunCleanup} type="button">Dry-run cleanup</button>
+        </div>
+        <ul className="compact-list">
+          {state.retention.map((setting) => (
+            <li key={setting.scope}>
+              <div><strong>{setting.scope}</strong><StatusBadge tone={setting.enabled ? "ready" : "pending"}>{setting.enabled ? "Enabled" : "Disabled"}</StatusBadge></div>
+              <p>{setting.summary}</p>
+            </li>
+          ))}
+        </ul>
+        {state.cleanupResult ? <p className="muted-copy">Last dry-run: {state.cleanupResult.files_considered} considered, {state.cleanupResult.files_deleted} deleted.</p> : null}
+      </section>
+      <section className="settings-status-section" aria-label="Migration failure guidance">
+        <p className="eyebrow">Migration recovery</p>
+        <h4>{state.migrationGuidance.title}</h4>
+        <p>{state.migrationGuidance.message}</p>
+        <ul className="compact-list">
+          {state.migrationGuidance.actions.map((action) => <li key={action}><p>{action}</p></li>)}
+        </ul>
+      </section>
+      <ul className="compact-list">
+        {state.about.safeDiagnostics.map((line) => <li key={line}><p>{line}</p></li>)}
+      </ul>
+    </InspectorCard>
+  );
+}
+
 type ConfirmationPolicyPanelProps = {
   view: ConfirmationPolicyView;
 };
@@ -454,6 +547,8 @@ const taskInvoke: TaskBridgeInvoke = (command, args) => invoke(command, args);
 const noteInvoke: NoteBridgeInvoke = (command, args) => invoke(command, args);
 const fileInvoke: FileBridgeInvoke = (command, args) => invoke(command, args);
 const phase6Invoke = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
+const browserInvoke: BrowserBridgeInvoke = (command, args) => invoke(command, args);
+const releaseInvoke = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
 
 function appFormString(form: FormData, key: string) {
   const value = String(form.get(key) ?? "").trim();
@@ -899,6 +994,122 @@ function ContentWorkspace({ state, onRefresh, actions }: { state: ContentWorkspa
   );
 }
 
+type BrowserWorkspaceActions = {
+  refresh: () => void;
+  updateDraft: (patch: Partial<BrowserWorkspaceDraft>) => void;
+  saveUrl: () => void;
+  createCapture: () => void;
+  attachCapture: () => void;
+  selectCapture: (captureId: string) => void;
+  persistWidget: (widget: WidgetConfigRecord) => void;
+  resetWidgets: () => void;
+};
+
+function formatWidgetLabel(widgetKey: string) {
+  return widgetKey.replace(/_/g, " ");
+}
+
+function BrowserWorkspace({ state, actions }: { state: BrowserWorkspaceState; actions: BrowserWorkspaceActions }) {
+  if (state.mode === "loading") {
+    return <EmptyState icon="◌">Loading Browser workspace tabs, captures, and widget preferences from the native bridge…</EmptyState>;
+  }
+  if (state.mode === "error") {
+    return (
+      <InfoCard className="large-card">
+        <p className="eyebrow">Browser workspace</p>
+        <h3>Native Phase 7 bridge unavailable</h3>
+        <BlockerState>{bridgeErrorReason("Native Browser workspace", state.error)}</BlockerState>
+        <button className="secondary-action" onClick={actions.refresh} type="button">Retry native load</button>
+      </InfoCard>
+    );
+  }
+
+  const selectedCapture = state.captures.find((capture) => capture.id === state.selectedCaptureId) ?? state.captures[0] ?? null;
+
+  return (
+    <section aria-label="Browser workspace" className="dashboard-grid">
+      <InfoCard className="large-card">
+        <div className="card-header">
+          <div>
+            <p className="eyebrow">Work webview/capture workspace</p>
+            <h3>Open work URL</h3>
+          </div>
+          <StatusBadge tone="ready">Native data</StatusBadge>
+        </div>
+        <label className="field-label" htmlFor="browser-url-input">URL</label>
+        <input id="browser-url-input" aria-label="Work URL" onChange={(event) => actions.updateDraft({ url: event.target.value })} placeholder="https://example.com/work" value={state.draft.url} />
+        <label className="field-label" htmlFor="browser-title-input">Title</label>
+        <input id="browser-title-input" aria-label="Work URL title" onChange={(event) => actions.updateDraft({ title: event.target.value })} placeholder="Evidence title" value={state.draft.title} />
+        <label className="field-label" htmlFor="browser-note-input">Manual note</label>
+        <textarea id="browser-note-input" aria-label="Browser manual note" onChange={(event) => actions.updateDraft({ manualNote: event.target.value })} placeholder="Optional non-secret note" value={state.draft.manualNote} />
+        <p className="muted-copy">This workspace saves work URLs and metadata fallback captures. It does not claim personal browser sync, extensions, cookies, auth headers, or password management.</p>
+        <button className="secondary-action" onClick={actions.saveUrl} type="button" aria-label="Save work URL metadata fallback">Save URL metadata</button>
+        <button className="secondary-action" onClick={actions.createCapture} type="button" aria-label="Create metadata fallback capture">Capture metadata fallback</button>
+        {state.message ? <p className="muted-copy">{state.message}</p> : null}
+        {state.errorMessage ? <BlockerState>{state.errorMessage}</BlockerState> : null}
+      </InfoCard>
+
+      <InfoCard>
+        <p className="eyebrow">Tabs / saved pages</p>
+        <h3>Real native rows</h3>
+        {state.tabs.length > 0 ? (
+          <ul className="compact-list">
+            {state.tabs.map((tab) => (
+              <li key={tab.id}>
+                <div><strong>{tab.title || tab.url}</strong><span>{tab.state}</span></div>
+                <p>{tab.url}</p>
+              </li>
+            ))}
+          </ul>
+        ) : <EmptyState icon="∅">No saved work URLs returned by the native browser bridge.</EmptyState>}
+      </InfoCard>
+
+      <InfoCard>
+        <p className="eyebrow">Captures</p>
+        <h3>Metadata fallback evidence</h3>
+        <EmptyState icon="◌">Tauri screenshot capture is unsupported here; capture stores URL, title, timestamp, optional HTTP status, manual note, and entity links.</EmptyState>
+        {state.captures.length > 0 ? (
+          <ul className="compact-list">
+            {state.captures.map((capture) => (
+              <li key={capture.id}>
+                <div><strong>{capture.title || capture.url}</strong><span>{capture.capture_mode}</span></div>
+                <p>{capture.url}</p>
+                <button className="secondary-action" onClick={() => actions.selectCapture(capture.id)} type="button" aria-label={`Select capture ${capture.id}`}>Select capture</button>
+              </li>
+            ))}
+          </ul>
+        ) : <p className="muted-copy">No capture records returned yet.</p>}
+        {selectedCapture ? <p className="muted-copy">Selected capture: {selectedCapture.id}; screenshot supported: {selectedCapture.screenshot_supported ? "yes" : "no"}</p> : null}
+        <label className="field-label" htmlFor="browser-attach-target">Attachment target</label>
+        <select id="browser-attach-target" aria-label="Attachment target picker" onChange={(event) => actions.updateDraft({ entityType: event.target.value as BrowserCaptureTarget })} value={state.draft.entityType}>
+          {allowedAttachmentTargets.map((target) => <option key={target} value={target}>{target.replace(/_/g, " ")}</option>)}
+        </select>
+        <label className="field-label" htmlFor="browser-attach-entity">Entity id</label>
+        <input id="browser-attach-entity" aria-label="Attachment entity id" onChange={(event) => actions.updateDraft({ entityId: event.target.value })} placeholder="task-123 / launch-gate id" value={state.draft.entityId} />
+        <button className="secondary-action" onClick={actions.attachCapture} type="button" aria-label="Attach browser capture evidence">Attach capture evidence</button>
+      </InfoCard>
+
+      <InfoCard>
+        <p className="eyebrow">Widget customization</p>
+        <h3>Persisted layout controls</h3>
+        {state.widgets.length > 0 ? (
+          <ul className="compact-list">
+            {state.widgets.map((widget) => (
+              <li key={widget.widget_key}>
+                <div><strong>{formatWidgetLabel(widget.widget_key)}</strong><span>{widget.visible ? "visible" : "hidden"} · {widget.size}</span></div>
+                <button type="button" aria-label={`Toggle ${widget.widget_key}`} onClick={() => actions.persistWidget(toggleWidget(widget))}>Show/hide</button>
+                <button type="button" aria-label={`Move ${widget.widget_key} up`} onClick={() => actions.persistWidget(moveWidget(state.widgets, widget.widget_key, "up").find((item) => item.widget_key === widget.widget_key) ?? widget)}>Move up</button>
+                <button type="button" aria-label={`Resize ${widget.widget_key}`} onClick={() => actions.persistWidget(resizeWidget(widget, widget.size === "large" ? "small" : (widget.size === "small" ? "medium" : "large") as WidgetSize))}>Resize</button>
+              </li>
+            ))}
+          </ul>
+        ) : <p className="muted-copy">No widget configs returned yet.</p>}
+        <button type="button" aria-label="Reset widgets" onClick={actions.resetWidgets}>Reset widgets</button>
+      </InfoCard>
+    </section>
+  );
+}
+
 function App() {
   const [activeWorkspace, setActiveWorkspace] = useState("today");
   const [status, setStatus] = useState<FoundationStatus | null>(null);
@@ -917,6 +1128,8 @@ function App() {
   const [codeWorkspace, setCodeWorkspace] = useState<CodeWorkspaceState>({ mode: "loading" });
   const [phase6State, setPhase6State] = useState<Phase6State>({ mode: "loading" });
   const [contentWorkspace, setContentWorkspace] = useState<ContentWorkspaceState>({ mode: "loading" });
+  const [browserWorkspace, setBrowserWorkspace] = useState<BrowserWorkspaceState>(() => createInitialBrowserWorkspaceState());
+  const [releaseHardening, setReleaseHardening] = useState<ReleaseHardeningState>({ mode: "loading" });
 
   useEffect(() => {
     invoke<FoundationStatus>("get_foundation_status")
@@ -972,10 +1185,24 @@ function App() {
     }
   }, []);
 
+  const loadBrowserWorkspace = useCallback(() => {
+    setBrowserWorkspace((current) => {
+      void loadBrowserWorkspaceFromBridge(browserInvoke, current.draft).then(setBrowserWorkspace);
+      return { mode: "loading", draft: current.draft };
+    });
+  }, []);
+
+  const loadReleaseHardening = useCallback(() => {
+    setReleaseHardening({ mode: "loading" });
+    void loadReleaseHardeningState(releaseInvoke).then(setReleaseHardening);
+  }, []);
+
   useEffect(() => {
     void loadCodeWorkspace();
     void loadContentWorkspace();
-  }, [loadCodeWorkspace, loadContentWorkspace]);
+    loadBrowserWorkspace();
+    loadReleaseHardening();
+  }, [loadCodeWorkspace, loadContentWorkspace, loadBrowserWorkspace, loadReleaseHardening]);
 
   const applyTaskState = useCallback((state: TaskBridgeUiState["state"]) => {
     setTaskBridgeUi((current) => ({ ...current, state }));
@@ -1237,6 +1464,7 @@ function App() {
           platforms: ["linkedin", "instagram"],
           required_gate: "specialist_review",
           metadata_json: "{}",
+
         },
       });
       await invoke<MediaAssetRecord>("add_media_asset_reference_command", {
@@ -1251,6 +1479,7 @@ function App() {
           duration_seconds: null,
           alt_text: "Placeholder content asset",
           metadata_json: "{}",
+
         },
       });
       await refreshContentWithStatus("Created local plan, draft, and media reference.");
@@ -1268,6 +1497,7 @@ function App() {
           status: "review_ready",
           metadata_json: "{}",
         },
+
       });
       await refreshContentWithStatus("Updated draft to review-ready.");
     } catch (error) {
@@ -1286,6 +1516,7 @@ function App() {
           evidence_summary: "Awaiting specialist review.",
           metadata_json: "{}",
         },
+
       });
       await refreshContentWithStatus("Created specialist review gate.");
     } catch (error) {
@@ -1298,6 +1529,7 @@ function App() {
       await invoke<ContentReviewGateRecord>("approve_content_review_gate_command", {
         gateId,
         request: { evidence_summary: "Approved locally for schedule-intent testing.", reviewer_actor_type: "reviewer", reviewer_actor_id: "local-user", metadata_json: "{}" },
+
       });
       await refreshContentWithStatus("Approved specialist review gate.");
     } catch (error) {
@@ -1310,6 +1542,7 @@ function App() {
       await invoke<ContentReviewGateRecord>("reject_content_review_gate_command", {
         gateId,
         request: { evidence_summary: "Rejected locally for schedule-gate testing.", reviewer_actor_type: "reviewer", reviewer_actor_id: "local-user", metadata_json: "{}" },
+
       });
       await refreshContentWithStatus("Rejected specialist review gate.");
     } catch (error) {
@@ -1326,6 +1559,7 @@ function App() {
           scheduled_for: "2026-06-06T09:00:00Z",
           confirmation_id: null,
           metadata_json: "{}",
+
         },
       });
       await refreshContentWithStatus("Created local schedule intent.");
@@ -1346,6 +1580,7 @@ function App() {
   const handleRecordFailClosedUpload = useCallback(async (pieceId: string, platform: string) => {
     try {
       await invoke<ContentVerificationRecord>("omnisocials_upload_media_command", { request: { piece_id: pieceId, platform, schedule_id: null } });
+
       await refreshContentWithStatus("Recorded fail-closed upload verification.");
     } catch (error) {
       setContentWorkspace((current) => current.mode === "ready" ? { ...current, actionStatus: bridgeErrorReason("Fail-closed upload check", error) } : current);
@@ -1355,6 +1590,7 @@ function App() {
   const handleRecordFailClosedSchedule = useCallback(async (pieceId: string, platform: string, scheduleId?: string | null) => {
     try {
       await invoke<ContentVerificationRecord>("omnisocials_schedule_content_command", { request: { piece_id: pieceId, platform, schedule_id: scheduleId ?? null } });
+
       await refreshContentWithStatus("Recorded fail-closed schedule verification.");
     } catch (error) {
       setContentWorkspace((current) => current.mode === "ready" ? { ...current, actionStatus: bridgeErrorReason("Fail-closed schedule check", error) } : current);
@@ -1364,11 +1600,13 @@ function App() {
   const handleRecordFailClosedPublish = useCallback(async (pieceId: string, platform: string, scheduleId?: string | null) => {
     try {
       await invoke<ContentVerificationRecord>("omnisocials_publish_content_command", { request: { piece_id: pieceId, platform, schedule_id: scheduleId ?? null } });
+
       await refreshContentWithStatus("Recorded fail-closed publish verification.");
     } catch (error) {
       setContentWorkspace((current) => current.mode === "ready" ? { ...current, actionStatus: bridgeErrorReason("Fail-closed publish check", error) } : current);
     }
   }, [refreshContentWithStatus]);
+
 
 
   const refreshCodeWithStatus = useCallback(async (actionStatus: string, extras: Partial<Extract<CodeWorkspaceState, { mode: "ready" }>> = {}) => {
@@ -1458,8 +1696,35 @@ function App() {
       setCodeWorkspace((current) => current.mode === "ready" ? { ...current, actionStatus: bridgeErrorReason("Launch gate evaluate", error) } : current);
     }
   }, [refreshCodeWithStatus]);
+  const handleBrowserDraftChange = useCallback((patch: Partial<BrowserWorkspaceDraft>) => {
+    setBrowserWorkspace((current) => updateBrowserDraft(current, patch));
+  }, []);
+  const handleSaveBrowserUrl = useCallback(async () => {
+    setBrowserWorkspace(await saveWorkUrlThroughBridge(browserInvoke, browserWorkspace));
+  }, [browserWorkspace]);
+  const handleCreateBrowserCapture = useCallback(async () => {
+    setBrowserWorkspace(await createCaptureThroughBridge(browserInvoke, browserWorkspace));
+  }, [browserWorkspace]);
+  const handleAttachBrowserCapture = useCallback(async () => {
+    setBrowserWorkspace(await attachCaptureThroughBridge(browserInvoke, browserWorkspace));
+  }, [browserWorkspace]);
+  const handleSelectBrowserCapture = useCallback((captureId: string) => {
+    setBrowserWorkspace((current) => current.mode === "ready" ? { ...current, selectedCaptureId: captureId, errorMessage: null } : current);
+  }, []);
+  const handlePersistBrowserWidget = useCallback(async (widget: WidgetConfigRecord) => {
+    setBrowserWorkspace(await updateWidgetThroughBridge(browserInvoke, browserWorkspace, widget));
+  }, [browserWorkspace]);
+  const handleResetBrowserWidgets = useCallback(async () => {
+    setBrowserWorkspace(await resetWidgetsThroughBridge(browserInvoke, browserWorkspace));
+  }, [browserWorkspace]);
+
 
   const workspaceRegistry = useMemo(() => buildWorkspaceRegistryView(status, statusError), [status, statusError]);
+  const handleDryRunLogCleanup = useCallback(async () => {
+    const result = await dryRunLogCleanup(releaseInvoke, "default");
+    setReleaseHardening((current) => current.mode === "ready" ? { ...current, cleanupResult: result } : current);
+  }, []);
+
   const workspaces = workspaceRegistry.workspaces;
   const workspaceChrome = useMemo(
     () => buildWorkspaceChromeView(workspaceRegistry, activeWorkspace),
@@ -1620,6 +1885,7 @@ function App() {
                   createLaunchGate: handleCreateLaunchGate,
                   addLaunchGateEvidence: handleAddLaunchGateEvidence,
                   evaluateLaunchGate: handleEvaluateLaunchGate,
+
                 }}
               />
             ) : active?.id === "content" ? (
@@ -1652,6 +1918,20 @@ function App() {
                 onTrashNote={handleTrashNote}
                 linkedPanels={<ContentLinkedPanels state={noteLinkedPanels} onRefresh={loadNoteLinkedPanels} />}
                 state={noteBridgeUi.state}
+              />
+            ) : active?.id === "browser" ? (
+              <BrowserWorkspace
+                state={browserWorkspace}
+                actions={{
+                  refresh: loadBrowserWorkspace,
+                  updateDraft: handleBrowserDraftChange,
+                  saveUrl: handleSaveBrowserUrl,
+                  createCapture: handleCreateBrowserCapture,
+                  attachCapture: handleAttachBrowserCapture,
+                  selectCapture: handleSelectBrowserCapture,
+                  persistWidget: handlePersistBrowserWidget,
+                  resetWidgets: handleResetBrowserWidgets,
+                }}
               />
             ) : ["inbox", "calendar", "business", "products"].includes(active?.id ?? "") ? (
               <Phase6Workspace workspaceId={active?.id ?? "inbox"} state={phase6State} onRefresh={loadPhase6Workspace} invoke={phase6Invoke} />
@@ -1761,6 +2041,8 @@ function App() {
             <ConfirmationPolicyPanel view={confirmationPolicyView} />
 
             <SettingsStatusShell view={settingsStatusView} />
+
+            <ReleaseHardeningPanel state={releaseHardening} onRefresh={loadReleaseHardening} onDryRunCleanup={handleDryRunLogCleanup} />
           </InspectorPanel>
         </div>
       </section>

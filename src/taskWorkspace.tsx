@@ -203,6 +203,7 @@ export function TaskWorkspace({
                   <button className="secondary-action danger-action" type="button" onClick={() => onDeleteTask?.(selectedTask.id)}>Delete task</button>
                 </div>
                 <p className="muted-copy">Status, archive, and delete call {taskBridgeCommands.updateStatus}, {taskBridgeCommands.archive}, and {taskBridgeCommands.delete}; they are not browser-only state changes.</p>
+
                 <h4>Metadata</h4>
                 <pre>{view.detail.metadataPreview}</pre>
               </>
