@@ -76,6 +76,8 @@ import type { TaskFormDraft } from "./taskViewModel";
 import { TaskWorkspace } from "./taskWorkspace";
 import { loadTaskLinkedPanelsFromBridge, type TaskLinkedPanelsState } from "./taskLinkedPanels";
 import { TaskLinkedPanels } from "./taskLinkedPanelsView";
+import { loadPhase6OverviewFromBridge, type Phase6State } from "./phase6Workspace";
+import { Phase6Workspace } from "./phase6WorkspaceView";
 import type { InboxDataState, InboxNotificationRecord } from "./inboxViewModel";
 import {
   buildTaskScopedInboxState,
@@ -436,6 +438,7 @@ const ACTIVE_RUNS_BRIDGE_GAP =
 const taskInvoke: TaskBridgeInvoke = (command, args) => invoke(command, args);
 const noteInvoke: NoteBridgeInvoke = (command, args) => invoke(command, args);
 const fileInvoke: FileBridgeInvoke = (command, args) => invoke(command, args);
+const phase6Invoke = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
 
 function bridgeErrorReason(label: string, error: unknown) {
   const detail = error instanceof Error ? error.message : typeof error === "string" ? error : "unknown native bridge error";
@@ -682,6 +685,7 @@ function App() {
   const [runControls, setRunControls] = useState<RunControlsState>(() => createInitialRunControlsState({ taskId: null, profileId: "default", cwd: "" }));
   const [manualReview, setManualReview] = useState<ManualReviewState>(() => createInitialManualReviewState(null, null));
   const [codeWorkspace, setCodeWorkspace] = useState<CodeWorkspaceState>({ mode: "loading" });
+  const [phase6State, setPhase6State] = useState<Phase6State>({ mode: "loading" });
 
   useEffect(() => {
     invoke<FoundationStatus>("get_foundation_status")
@@ -731,6 +735,11 @@ function App() {
     });
     setCleanSessions((current) => ({ ...current, [runId]: appendCleanSessionChunk(previousState, next) }));
   }, [cleanSessions, status?.logs_dir]);
+
+  const loadPhase6Workspace = useCallback(async () => {
+    setPhase6State({ mode: "loading" });
+    setPhase6State(await loadPhase6OverviewFromBridge(phase6Invoke));
+  }, []);
 
   const loadLinkedPanels = useCallback(async (taskId: string) => {
     setTaskLinkedPanels({ mode: "loading", taskId });
@@ -888,6 +897,11 @@ function App() {
       setFileBridgeUi((current) => ({ ...current, state: { mode: "loading", rootKey: current.rootKey, relativePath: current.relativePath, selectedPath: current.state.selectedPath } }));
       browseFilesFromBridge(fileInvoke, { rootKey: fileBridgeUi.rootKey, relativePath: fileBridgeUi.relativePath, selectedPath: fileBridgeUi.state.selectedPath }).then((state) => {
         if (!cancelled) setFileBridgeUi((current) => ({ ...current, state }));
+      });
+    }
+    if (["inbox", "calendar", "business", "products"].includes(activeWorkspace)) {
+      loadPhase6OverviewFromBridge(phase6Invoke).then((state) => {
+        if (!cancelled) setPhase6State(state);
       });
     }
     return () => { cancelled = true; };
@@ -1091,6 +1105,8 @@ function App() {
                 linkedPanels={<ContentLinkedPanels state={noteLinkedPanels} onRefresh={loadNoteLinkedPanels} />}
                 state={noteBridgeUi.state}
               />
+            ) : ["inbox", "calendar", "business", "products"].includes(active?.id ?? "") ? (
+              <Phase6Workspace workspaceId={active?.id ?? "inbox"} state={phase6State} onRefresh={loadPhase6Workspace} invoke={phase6Invoke} />
             ) : active?.id === "files" ? (
               <FileWorkspace
                 actionDraft={fileBridgeUi.actionDraft}

@@ -3078,7 +3078,6 @@ fn integration_status_service_rejects_secret_config_invalid_json_and_raw_credent
     assert_eq!(db_count, 0);
 }
 
-
 #[test]
 fn p401_phase4_schema_has_lightweight_repo_and_launch_gate_tables() {
     let connection = migrated_in_memory_connection();
@@ -3086,53 +3085,108 @@ fn p401_phase4_schema_has_lightweight_repo_and_launch_gate_tables() {
     assert_table_has_columns(
         &connection,
         "repo_profiles",
-        &["id", "display_name", "root_path", "profile_type", "default_branch", "package_manager", "linked_product_id", "status", "metadata_json"],
+        &[
+            "id",
+            "display_name",
+            "root_path",
+            "profile_type",
+            "default_branch",
+            "package_manager",
+            "linked_product_id",
+            "status",
+            "metadata_json",
+        ],
     );
     assert_table_has_columns(
         &connection,
         "launch_gates",
-        &["id", "repo_id", "product_id", "task_id", "state", "final_verdict", "metadata_json"],
+        &[
+            "id",
+            "repo_id",
+            "product_id",
+            "task_id",
+            "state",
+            "final_verdict",
+            "metadata_json",
+        ],
     );
     assert_table_has_columns(
         &connection,
         "launch_gate_evidence",
-        &["id", "launch_gate_id", "evidence_type", "label", "url", "status_code", "manual_note", "metadata_json"],
+        &[
+            "id",
+            "launch_gate_id",
+            "evidence_type",
+            "label",
+            "url",
+            "status_code",
+            "manual_note",
+            "metadata_json",
+        ],
     );
 }
 
 #[test]
 fn p403_repo_registry_adds_lists_and_links_without_git_status_diff_surface() {
     let connection = migrated_in_memory_connection();
-    let repo = add_repo_profile(&connection, RepoProfileInput {
-        display_name: "Zoid app".to_string(),
-        root_path: "/Users/ziadnasreldin/Zoid".to_string(),
-        profile_type: "product_app".to_string(),
-        default_branch: Some("main".to_string()),
-        package_manager: Some("npm".to_string()),
-        linked_product_id: Some("zoid".to_string()),
-        metadata_json: "{}".to_string(),
-    }).expect("add repo profile");
+    let repo = add_repo_profile(
+        &connection,
+        RepoProfileInput {
+            display_name: "Zoid app".to_string(),
+            root_path: "/Users/ziadnasreldin/Zoid".to_string(),
+            profile_type: "product_app".to_string(),
+            default_branch: Some("main".to_string()),
+            package_manager: Some("npm".to_string()),
+            linked_product_id: Some("zoid".to_string()),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect("add repo profile");
     assert_eq!(repo.status, "active");
-    assert_eq!(read_repo_profile(&connection, &repo.id).expect("read repo").expect("repo exists").id, repo.id);
-    assert_eq!(list_repo_profiles(&connection).expect("list repos").len(), 1);
-    let link = link_repo_entity(&connection, RepoEntityLinkInput {
-        repo_id: repo.id.clone(),
-        target_type: "product".to_string(),
-        target_id: "zoid".to_string(),
-        relation_type: "source_repo".to_string(),
-        metadata_json: "{}".to_string(),
-    }).expect("link repo to product");
+    assert_eq!(
+        read_repo_profile(&connection, &repo.id)
+            .expect("read repo")
+            .expect("repo exists")
+            .id,
+        repo.id
+    );
+    assert_eq!(
+        list_repo_profiles(&connection).expect("list repos").len(),
+        1
+    );
+    let link = link_repo_entity(
+        &connection,
+        RepoEntityLinkInput {
+            repo_id: repo.id.clone(),
+            target_type: "product".to_string(),
+            target_id: "zoid".to_string(),
+            relation_type: "source_repo".to_string(),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect("link repo to product");
     assert_eq!(link.source_type, "repo");
     assert_eq!(link.target_type, "product");
-    assert!(!TAURI_BRIDGE_COMMAND_NAMES.iter().any(|name| name.contains("git_status") || name.contains("git_diff") || name.contains("commit_command") || name.contains("push_command")));
+    assert!(!TAURI_BRIDGE_COMMAND_NAMES
+        .iter()
+        .any(|name| name.contains("git_status")
+            || name.contains("git_diff")
+            || name.contains("commit_command")
+            || name.contains("push_command")));
 }
 
 #[test]
 fn p404_repo_integration_states_are_truthful_not_connected() {
     let connection = migrated_in_memory_connection();
     let states = list_phase4_repo_integration_states(&connection).expect("integration states");
-    let github = states.iter().find(|state| state.integration_key == "github").expect("github state");
-    let vercel = states.iter().find(|state| state.integration_key == "vercel").expect("vercel state");
+    let github = states
+        .iter()
+        .find(|state| state.integration_key == "github")
+        .expect("github state");
+    let vercel = states
+        .iter()
+        .find(|state| state.integration_key == "vercel")
+        .expect("vercel state");
     assert_eq!(github.status, IntegrationStatus::NotConfigured);
     assert_eq!(vercel.status, IntegrationStatus::NotConfigured);
     assert!(github.credential_ref.is_none());
@@ -3141,47 +3195,75 @@ fn p404_repo_integration_states_are_truthful_not_connected() {
 
 #[test]
 fn p405_commit_push_merge_deploy_are_policy_previews_not_executions() {
-    assert_eq!(normalize_launch_action_policy_category("commit").expect("commit category"), "commit_push_merge");
-    assert_eq!(normalize_launch_action_policy_category("push").expect("push category"), "commit_push_merge");
-    assert_eq!(normalize_launch_action_policy_category("deploy").expect("deploy category"), "deploy_redeploy_rollback");
-    let policy = preview_launch_action_policy_command("deploy".to_string()).expect("policy preview");
+    assert_eq!(
+        normalize_launch_action_policy_category("commit").expect("commit category"),
+        "commit_push_merge"
+    );
+    assert_eq!(
+        normalize_launch_action_policy_category("push").expect("push category"),
+        "commit_push_merge"
+    );
+    assert_eq!(
+        normalize_launch_action_policy_category("deploy").expect("deploy category"),
+        "deploy_redeploy_rollback"
+    );
+    let policy =
+        preview_launch_action_policy_command("deploy".to_string()).expect("policy preview");
     assert_eq!(policy.category, "deploy_redeploy_rollback");
 }
 
 #[test]
 fn p408_launch_gate_fails_closed_until_real_evidence_exists() {
     let connection = migrated_in_memory_connection();
-    let repo = add_repo_profile(&connection, RepoProfileInput {
-        display_name: "Launch repo".to_string(),
-        root_path: "/tmp/launch-repo".to_string(),
-        profile_type: "product_app".to_string(),
-        default_branch: Some("main".to_string()),
-        package_manager: None,
-        linked_product_id: Some("zoid".to_string()),
-        metadata_json: "{}".to_string(),
-    }).expect("add repo");
-    let gate = create_launch_gate(&connection, LaunchGateCreateInput {
-        repo_id: repo.id,
-        product_id: Some("zoid".to_string()),
-        task_id: None,
-        metadata_json: "{}".to_string(),
-    }).expect("create gate");
+    let repo = add_repo_profile(
+        &connection,
+        RepoProfileInput {
+            display_name: "Launch repo".to_string(),
+            root_path: "/tmp/launch-repo".to_string(),
+            profile_type: "product_app".to_string(),
+            default_branch: Some("main".to_string()),
+            package_manager: None,
+            linked_product_id: Some("zoid".to_string()),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect("add repo");
+    let gate = create_launch_gate(
+        &connection,
+        LaunchGateCreateInput {
+            repo_id: repo.id,
+            product_id: Some("zoid".to_string()),
+            task_id: None,
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect("create gate");
     assert_eq!(gate.state, LaunchGateState::VerificationBlocked);
-    assert_eq!(gate.final_verdict.as_deref(), Some("blocked_missing_evidence"));
+    assert_eq!(
+        gate.final_verdict.as_deref(),
+        Some("blocked_missing_evidence")
+    );
     let blocked = evaluate_launch_gate(&connection, &gate.id).expect("evaluate empty gate");
     assert_eq!(blocked.state, LaunchGateState::VerificationBlocked);
-    add_launch_gate_evidence(&connection, LaunchGateEvidenceInput {
-        launch_gate_id: gate.id.clone(),
-        evidence_type: "test_output".to_string(),
-        label: "cargo test focused pass".to_string(),
-        url: None,
-        status_code: None,
-        manual_note: Some("Focused Phase 4 test output captured locally.".to_string()),
-        metadata_json: "{}".to_string(),
-    }).expect("add evidence");
+    add_launch_gate_evidence(
+        &connection,
+        LaunchGateEvidenceInput {
+            launch_gate_id: gate.id.clone(),
+            evidence_type: "test_output".to_string(),
+            label: "cargo test focused pass".to_string(),
+            url: None,
+            status_code: None,
+            manual_note: Some("Focused Phase 4 test output captured locally.".to_string()),
+            metadata_json: "{}".to_string(),
+        },
+    )
+    .expect("add evidence");
     let verified = evaluate_launch_gate(&connection, &gate.id).expect("evaluate with evidence");
     assert_eq!(verified.state, LaunchGateState::Verified);
-    assert_eq!(verified.final_verdict.as_deref(), Some("verified_with_evidence"));
+    assert_eq!(
+        verified.final_verdict.as_deref(),
+        Some("verified_with_evidence")
+    );
 }
 
 #[test]
@@ -3241,7 +3323,7 @@ fn tauri_bridge_command_surface_lists_registered_p116_commands() {
 
 #[test]
 fn p310_tauri_bridge_command_surface_registers_notes_and_files_commands() {
-    assert_eq!(TAURI_BRIDGE_COMMAND_NAMES.len(), 57);
+    assert_eq!(TAURI_BRIDGE_COMMAND_NAMES.len(), 75);
     for command_name in [
         "list_content_entity_links_by_source_command",
         "add_repo_profile_command",
@@ -4469,7 +4551,7 @@ fn entity_link_list_filter_rejects_invalid_or_empty_filter_fields() {
         (
             "entity_type",
             EntityLinkListFilter {
-                entity_type: "calendar_event",
+                entity_type: "unsupported_entity",
                 entity_id: "task-001",
                 relation_type: None,
                 counterpart_type: None,
@@ -4499,7 +4581,7 @@ fn entity_link_list_filter_rejects_invalid_or_empty_filter_fields() {
                 entity_type: "task",
                 entity_id: "task-001",
                 relation_type: None,
-                counterpart_type: Some("calendar_event"),
+                counterpart_type: Some("unsupported_entity"),
             },
         ),
     ] {
@@ -10361,4 +10443,430 @@ fn p232_native_app_support_flow_creates_run_review_notification_history_and_pers
     println!("notification_id={}", notification.id);
     println!("log_path={}", outcome.log_path);
     println!("database_path={}", display_path(&app_paths.database_path));
+}
+
+#[test]
+fn p618_p619_calendar_and_email_writes_require_approved_confirmation() {
+    let connection = migrated_in_memory_connection();
+
+    let secret_calendar = create_calendar_event(
+        &connection,
+        CalendarEventInput {
+            title: "bearer sk-live-secret".to_string(),
+            starts_at: "2026-06-05T09:00:00Z".to_string(),
+            ends_at: "2026-06-05T10:00:00Z".to_string(),
+            location: None,
+            notes: None,
+            confirmation_id: None,
+            metadata_json: None,
+        },
+    )
+    .expect_err("calendar title must reject secret-like material before persistence");
+    assert!(matches!(
+        secret_calendar,
+        RepositoryError::SecretRejected { field: "title", .. }
+    ));
+
+    let secret_email = create_email_draft(
+        &connection,
+        EmailDraftInput {
+            subject: "client_secret=raw".to_string(),
+            recipients_json: Some("[]".to_string()),
+            snippet: None,
+            thread_id: None,
+            metadata_json: None,
+        },
+    )
+    .expect_err("email subject must reject secret-like material before persistence");
+    assert!(matches!(
+        secret_email,
+        RepositoryError::SecretRejected {
+            field: "subject",
+            ..
+        }
+    ));
+
+    let calendar_blocked = create_calendar_event(
+        &connection,
+        CalendarEventInput {
+            title: "Phase 6 launch review".to_string(),
+            starts_at: "2026-06-05T09:00:00Z".to_string(),
+            ends_at: "2026-06-05T10:00:00Z".to_string(),
+            location: None,
+            notes: None,
+            confirmation_id: None,
+            metadata_json: None,
+        },
+    )
+    .expect_err("calendar create must fail closed without confirmation");
+    assert!(
+        matches!(calendar_blocked, RepositoryError::Constraint { entity, .. } if entity == "calendar_refs")
+    );
+
+    let create_confirmation = create_confirmation_decision(
+        &connection,
+        ConfirmationDecisionRequest {
+            action_category: "create_calendar_event",
+            decision: ConfirmationDecisionState::Approved,
+            actor: ConfirmationActor::human(Some("p6-test")),
+            summary: "Approve local calendar creation",
+            event_id: None,
+            metadata_json: "{}",
+        },
+    )
+    .expect("create approved calendar confirmation");
+    let event = create_calendar_event(
+        &connection,
+        CalendarEventInput {
+            title: "Phase 6 launch review".to_string(),
+            starts_at: "2026-06-05T09:00:00Z".to_string(),
+            ends_at: "2026-06-05T10:00:00Z".to_string(),
+            location: Some("Zoid".to_string()),
+            notes: Some("confirmed local write".to_string()),
+            confirmation_id: Some(create_confirmation.id),
+            metadata_json: None,
+        },
+    )
+    .expect("approved calendar create succeeds");
+    assert_eq!(event.state, "created");
+
+    let edit_confirmation = create_confirmation_decision(
+        &connection,
+        ConfirmationDecisionRequest {
+            action_category: "edit_delete_calendar_event",
+            decision: ConfirmationDecisionState::Approved,
+            actor: ConfirmationActor::human(Some("p6-test")),
+            summary: "Approve local calendar edit/delete",
+            event_id: None,
+            metadata_json: "{}",
+        },
+    )
+    .expect("create approved calendar edit confirmation");
+    let deleted = delete_calendar_event(&connection, &event.id, Some(&edit_confirmation.id))
+        .expect("approved calendar delete succeeds");
+    assert_eq!(deleted.state, "deleted");
+
+    let draft = create_email_draft(
+        &connection,
+        EmailDraftInput {
+            subject: "Proposal follow-up".to_string(),
+            recipients_json: Some("[\"ziad@example.com\"]".to_string()),
+            snippet: Some("Draft only until confirmed".to_string()),
+            thread_id: None,
+            metadata_json: None,
+        },
+    )
+    .expect("create local draft");
+    let send_blocked = send_email_draft(
+        &connection,
+        &draft.id,
+        EmailSendInput {
+            confirmation_id: None,
+        },
+    )
+    .expect_err("email send must fail closed without confirmation");
+    assert!(
+        matches!(send_blocked, RepositoryError::Constraint { entity, .. } if entity == "email_refs")
+    );
+    let send_confirmation = create_confirmation_decision(
+        &connection,
+        ConfirmationDecisionRequest {
+            action_category: "send_email",
+            decision: ConfirmationDecisionState::Approved,
+            actor: ConfirmationActor::human(Some("p6-test")),
+            summary: "Approve draft send state transition",
+            event_id: None,
+            metadata_json: "{}",
+        },
+    )
+    .expect("create approved send confirmation");
+    let sent = send_email_draft(
+        &connection,
+        &draft.id,
+        EmailSendInput {
+            confirmation_id: Some(send_confirmation.id.clone()),
+        },
+    )
+    .expect("approved email send state transition succeeds");
+    assert_eq!(sent.state, "sent");
+    let repeat_send = send_email_draft(
+        &connection,
+        &draft.id,
+        EmailSendInput {
+            confirmation_id: Some(send_confirmation.id),
+        },
+    )
+    .expect_err("already-sent drafts must not report success on repeat send");
+    assert!(
+        matches!(repeat_send, RepositoryError::Constraint { entity, .. } if entity == "email_refs")
+    );
+
+    let update_confirmation = create_confirmation_decision(
+        &connection,
+        ConfirmationDecisionRequest {
+            action_category: "edit_delete_calendar_event",
+            decision: ConfirmationDecisionState::Approved,
+            actor: ConfirmationActor::human(Some("p6-test")),
+            summary: "Approve local calendar update validation",
+            event_id: None,
+            metadata_json: "{}",
+        },
+    )
+    .expect("create approved calendar update confirmation");
+    let invalid_update = update_calendar_event(
+        &connection,
+        &event.id,
+        CalendarEventInput {
+            title: " ".to_string(),
+            starts_at: "2026-06-05T11:00:00Z".to_string(),
+            ends_at: "2026-06-05T12:00:00Z".to_string(),
+            location: None,
+            notes: None,
+            confirmation_id: Some(update_confirmation.id.clone()),
+            metadata_json: None,
+        },
+    )
+    .expect_err("calendar update must validate required fields");
+    assert!(
+        matches!(invalid_update, RepositoryError::Constraint { entity, .. } if entity == "calendar_refs")
+    );
+    let deleted_update = update_calendar_event(
+        &connection,
+        &event.id,
+        CalendarEventInput {
+            title: "Cannot revive deleted".to_string(),
+            starts_at: "2026-06-05T11:00:00Z".to_string(),
+            ends_at: "2026-06-05T12:00:00Z".to_string(),
+            location: None,
+            notes: None,
+            confirmation_id: Some(update_confirmation.id),
+            metadata_json: None,
+        },
+    )
+    .expect_err("calendar update must fail closed after delete");
+    assert!(
+        matches!(deleted_update, RepositoryError::Constraint { entity, .. } if entity == "calendar_refs")
+    );
+}
+
+#[test]
+fn p621_business_product_cross_links_and_overview_persist() {
+    let (connection, database_path) = migrated_file_connection("p621-phase6-persistence");
+
+    let company = create_company(
+        &connection,
+        CompanyInput {
+            name: "MaVoid".to_string(),
+            domain: Some("mavoid.com".to_string()),
+            notes: None,
+            metadata_json: None,
+        },
+    )
+    .expect("create company");
+    let contact = create_contact(
+        &connection,
+        ContactInput {
+            company_id: Some(company.id.clone()),
+            full_name: "Ziad Salah".to_string(),
+            email: Some("ziad@example.com".to_string()),
+            phone: None,
+            role: Some("Founder".to_string()),
+            notes: None,
+            metadata_json: None,
+        },
+    )
+    .expect("create contact");
+    let product = create_product(
+        &connection,
+        ProductInput {
+            name: "Zoid".to_string(),
+            status: Some("active".to_string()),
+            summary: Some("Native AI workspace".to_string()),
+            owner_contact_id: Some(contact.id.clone()),
+            metadata_json: None,
+        },
+    )
+    .expect("create product");
+    let follow_up = create_follow_up(
+        &connection,
+        FollowUpInput {
+            subject: "Review Phase 6".to_string(),
+            due_at: Some("2026-06-06".to_string()),
+            priority: Some("high".to_string()),
+            contact_id: Some(contact.id),
+            company_id: Some(company.id),
+            product_id: Some(product.id.clone()),
+            task_id: None,
+            note_id: None,
+            email_ref_id: None,
+            calendar_event_id: None,
+            metadata_json: None,
+        },
+    )
+    .expect("create follow-up");
+    let link = link_product_entity(
+        &connection,
+        ProductLinkInput {
+            product_id: product.id.clone(),
+            target_type: "follow_up".to_string(),
+            target_id: follow_up.id.clone(),
+            relation_type: Some("drives".to_string()),
+            metadata_json: None,
+        },
+    )
+    .expect("link product to follow-up");
+    assert_eq!(link.source_type, "product");
+    assert!(
+        count_rows(
+            &connection,
+            "select count(*) from events where source='phase6_service'"
+        ) >= 5
+    );
+    let secret_product = create_product(
+        &connection,
+        ProductInput {
+            name: "Unsafe".to_string(),
+            status: Some("active".to_string()),
+            summary: Some("bearer sk-live-raw-secret".to_string()),
+            owner_contact_id: None,
+            metadata_json: None,
+        },
+    )
+    .expect_err("phase6 freeform fields must reject secret-like material");
+    assert!(matches!(
+        secret_product,
+        RepositoryError::SecretRejected {
+            field: "summary",
+            ..
+        }
+    ));
+    let secret_follow_up = create_follow_up(
+        &connection,
+        FollowUpInput {
+            subject: "refresh_token=raw".to_string(),
+            due_at: None,
+            priority: None,
+            contact_id: None,
+            company_id: None,
+            product_id: None,
+            task_id: None,
+            note_id: None,
+            email_ref_id: None,
+            calendar_event_id: None,
+            metadata_json: None,
+        },
+    )
+    .expect_err("follow-up subject must reject secret-like material before persistence");
+    assert!(matches!(
+        secret_follow_up,
+        RepositoryError::SecretRejected {
+            field: "subject",
+            ..
+        }
+    ));
+    let secret_priority = create_follow_up(
+        &connection,
+        FollowUpInput {
+            subject: "Unsafe priority".to_string(),
+            due_at: None,
+            priority: Some("api_key=raw".to_string()),
+            contact_id: None,
+            company_id: None,
+            product_id: None,
+            task_id: None,
+            note_id: None,
+            email_ref_id: None,
+            calendar_event_id: None,
+            metadata_json: None,
+        },
+    )
+    .expect_err("follow-up priority must reject secret-like material before persistence");
+    assert!(matches!(
+        secret_priority,
+        RepositoryError::SecretRejected {
+            field: "priority",
+            ..
+        }
+    ));
+    let secret_relation = link_product_entity(
+        &connection,
+        ProductLinkInput {
+            product_id: product.id.clone(),
+            target_type: "follow_up".to_string(),
+            target_id: follow_up.id.clone(),
+            relation_type: Some("client_secret=raw".to_string()),
+            metadata_json: None,
+        },
+    )
+    .expect_err("product-link relation must reject secret-like material before persistence");
+    assert!(matches!(
+        secret_relation,
+        RepositoryError::SecretRejected {
+            field: "relation_type",
+            ..
+        }
+    ));
+    let secret_company = create_company(
+        &connection,
+        CompanyInput {
+            name: "Unsafe metadata".to_string(),
+            domain: None,
+            notes: None,
+            metadata_json: Some("{\"client_secret\":\"raw\"}".to_string()),
+        },
+    )
+    .expect_err("phase6 metadata must reject secret-like material");
+    assert!(matches!(
+        secret_company,
+        RepositoryError::SecretRejected {
+            field: "metadata_json",
+            ..
+        }
+    ));
+
+    drop(connection);
+    let reopened = Connection::open(database_path).expect("reopen phase6 sqlite");
+    reopened
+        .pragma_update(None, "foreign_keys", "ON")
+        .expect("enable foreign keys");
+    run_migrations(&reopened).expect("rerun migrations");
+    let overview = list_phase6_overview(&reopened).expect("load phase6 overview after reopen");
+    assert_eq!(overview.companies.len(), 1);
+    assert_eq!(overview.contacts.len(), 1);
+    assert_eq!(overview.follow_ups.len(), 1);
+    assert_eq!(overview.products.len(), 1);
+    assert_eq!(overview.product_links.len(), 1);
+    assert!(overview
+        .inbox
+        .iter()
+        .any(|item| item.id == follow_up.id && item.item_type == "follow_up"));
+}
+
+#[test]
+fn p620_phase6_integration_states_are_safe_and_provider_secret_free() {
+    let states = phase6_integration_states();
+    assert!(states
+        .iter()
+        .any(|state| state.key == "eventkit" && state.state == "needs_permission"));
+    assert!(states
+        .iter()
+        .any(|state| state.key == "gmail" && state.state == "not_configured"));
+    let joined = states
+        .iter()
+        .map(|state| state.safe_copy.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    for forbidden in [
+        "oauth token",
+        "client_secret",
+        "refresh_token",
+        "api key",
+        "bearer ",
+    ] {
+        assert!(
+            !joined.contains(forbidden),
+            "integration safe copy leaked {forbidden}"
+        );
+    }
 }
