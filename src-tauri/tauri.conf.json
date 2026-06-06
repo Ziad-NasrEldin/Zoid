@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Zoid",
-  "version": "0.1.0",
-  "identifier": "com.mavoid.zoid",
+  "productName": "Zoid 25",
+  "version": "0.25.0",
+  "identifier": "com.mavoid.zoid25",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://127.0.0.1:1420",
@@ -12,11 +12,11 @@
   "app": {
     "windows": [
       {
-        "title": "Zoid",
-        "width": 1180,
-        "height": 760,
-        "minWidth": 980,
-        "minHeight": 640
+        "title": "Zoid 25",
+        "width": 1080,
+        "height": 720,
+        "minWidth": 860,
+        "minHeight": 560
       }
     ],
     "security": {
@@ -25,11 +25,14 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg"],
+    "targets": [
+      "app",
+      "dmg"
+    ],
     "category": "Productivity",
-    "shortDescription": "Local-first AI workbench",
-    "longDescription": "Zoid is a local-first macOS workbench for tasks, notes, files, browser captures, agent runs, and review evidence.",
-    "copyright": "Copyright © 2026 Zoid contributors",
+    "shortDescription": "Clean macOS desktop scaffold for Zoid 25",
+    "longDescription": "Zoid 25 is a clean macOS desktop scaffold with only the navigation sidebar and an empty workspace canvas.",
+    "copyright": "Copyright \u00a9 2026 Zoid contributors",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -1,0 +1,367 @@
+.code-flow {
+  display: grid;
+  gap: var(--space-12);
+  margin-bottom: var(--space-13);
+}
+
+.code-flow-hero,
+.code-flow-screen,
+.code-flow-panel,
+.code-flow-notice {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-2xl);
+  background: var(--material-card);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(20px) saturate(1.1);
+  -webkit-backdrop-filter: blur(20px) saturate(1.1);
+}
+
+.code-flow-hero.compact {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 0.32fr);
+  gap: var(--space-13);
+  align-items: center;
+  padding: var(--space-16);
+}
+
+.code-flow-hero h3 {
+  max-width: 760px;
+  margin: var(--space-4) 0 var(--space-7);
+  font-size: clamp(28px, 3vw, 44px);
+  line-height: 1.02;
+  letter-spacing: -0.04em;
+}
+
+.code-flow-hero p,
+.code-flow-screen p,
+.code-flow-panel small,
+.code-flow-notice {
+  color: var(--color-text-soft);
+  line-height: 1.45;
+}
+
+.code-flow-hero aside {
+  display: grid;
+  gap: var(--space-6);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  padding: var(--space-12);
+  background: var(--material-subtle);
+}
+
+.code-flow-hero aside strong {
+  font-size: 20px;
+}
+
+.code-flow-notice {
+  padding: var(--space-9) var(--space-12);
+  font-size: 13px;
+}
+
+.code-flow-steps {
+  display: grid;
+  grid-template-columns: repeat(9, minmax(96px, 1fr));
+  gap: var(--space-6);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.code-flow-steps li button {
+  display: grid;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 96px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  padding: var(--space-8);
+  color: var(--color-text-secondary);
+  background: var(--material-control);
+  cursor: pointer;
+  text-align: left;
+}
+
+.code-flow-steps li.active button {
+  border-color: color-mix(in srgb, var(--color-accent) 48%, var(--border-strong));
+  background: color-mix(in srgb, var(--color-accent) 12%, var(--material-card));
+}
+
+.code-flow-steps span {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  color: var(--color-text-inverse);
+  background: var(--color-accent);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.code-flow-steps strong {
+  font-size: 14px;
+}
+
+.code-flow-steps small {
+  color: var(--color-text-muted);
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.code-flow-guided-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.42fr);
+  gap: var(--space-13);
+  align-items: start;
+}
+
+.code-flow-screen,
+.code-flow-panel {
+  padding: var(--space-15);
+}
+
+.code-flow-screen-header.simplified {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-12);
+  align-items: start;
+}
+
+.code-flow-screen h4 {
+  margin: var(--space-3) 0 var(--space-6);
+  font-size: 30px;
+  line-height: 1.05;
+  letter-spacing: -0.035em;
+}
+
+.code-flow-verdict {
+  width: fit-content;
+  border-radius: var(--radius-pill);
+  padding: var(--space-5) var(--space-9);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.code-flow-verdict.ready {
+  color: var(--state-ready-text);
+  background: var(--state-ready-bg-strong);
+}
+
+.code-flow-verdict.blocked {
+  color: var(--state-blocked-text);
+  background: var(--state-blocked-bg);
+}
+
+.code-flow-next-action {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-12);
+  align-items: center;
+  margin: var(--space-14) 0 var(--space-11);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 32%, var(--border-soft));
+  border-radius: var(--radius-2xl);
+  padding: var(--space-13);
+  background: color-mix(in srgb, var(--color-accent) 8%, var(--material-subtle));
+}
+
+.code-flow-next-action span,
+.code-flow-event span,
+.code-flow-panel-heading .eyebrow {
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.code-flow-next-action strong {
+  display: block;
+  margin: var(--space-3) 0;
+  font-size: 22px;
+}
+
+.code-flow-next-action small {
+  color: var(--color-text-soft);
+}
+
+.code-flow-action-row,
+.code-flow-tool-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-7);
+}
+
+.code-flow-button,
+.code-flow-tool-grid button,
+.code-flow-checklist li button,
+.code-flow-attention-list button {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-8) var(--space-10);
+  color: var(--color-text-secondary);
+  background: var(--material-control);
+  cursor: pointer;
+  font-weight: 760;
+  text-align: left;
+}
+
+.code-flow-button.primary {
+  border-color: color-mix(in srgb, var(--color-accent) 44%, var(--border-strong));
+  color: var(--color-text-inverse);
+  background: var(--color-accent);
+}
+
+.code-flow-button.danger {
+  color: var(--state-blocked-text);
+  background: var(--state-blocked-bg);
+}
+
+.code-flow-button:hover,
+.code-flow-tool-grid button:hover,
+.code-flow-checklist li button:hover,
+.code-flow-attention-list button:hover,
+.code-flow-steps button:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+
+.code-flow-summary-list {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-7);
+  margin: var(--space-13) 0;
+}
+
+.code-flow-summary-list div {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-9);
+  background: var(--material-subtle);
+}
+
+.code-flow-summary-list dt {
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.code-flow-summary-list dd {
+  margin: var(--space-3) 0 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.code-flow-event {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--space-10);
+}
+
+.code-flow-event p {
+  margin: var(--space-4) 0 0;
+  color: var(--color-text-secondary);
+}
+
+.code-flow-side {
+  display: grid;
+  gap: var(--space-10);
+}
+
+.code-flow-panel-heading {
+  display: grid;
+  gap: var(--space-4);
+  margin-bottom: var(--space-9);
+}
+
+.code-flow-panel-heading strong {
+  font-size: 19px;
+  line-height: 1.1;
+}
+
+.code-flow-checklist ul,
+.code-flow-attention-list {
+  display: grid;
+  gap: var(--space-7);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.code-flow-checklist li {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  gap: var(--space-8);
+  align-items: center;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  padding: var(--space-8);
+  background: var(--material-subtle);
+}
+
+.code-flow-checklist li > span {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 50%;
+  color: var(--state-ready-text);
+  background: var(--material-control);
+  font-weight: 900;
+}
+
+.code-flow-checklist li.done {
+  border-color: color-mix(in srgb, var(--state-ready-text) 24%, var(--border-soft));
+}
+
+.code-flow-checklist li.done > span {
+  background: var(--state-ready-bg-strong);
+}
+
+.code-flow-checklist li strong,
+.code-flow-attention-list strong {
+  display: block;
+  font-size: 14px;
+}
+
+.code-flow-checklist li small,
+.code-flow-attention-list span {
+  display: block;
+  margin-top: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.code-flow-attention-list button {
+  width: 100%;
+}
+
+.code-flow-tool-grid button {
+  flex: 1 1 140px;
+  font-size: 13px;
+}
+
+@media (max-width: 1280px) {
+  .code-flow-steps {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .code-flow-guided-layout,
+  .code-flow-hero.compact {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .code-flow-summary-list,
+  .code-flow-steps {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .code-flow-next-action,
+  .code-flow-screen-header.simplified,
+  .code-flow-checklist li {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

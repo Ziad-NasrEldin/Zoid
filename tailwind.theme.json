@@ -1,0 +1,125 @@
+{
+  "theme": {
+    "extend": {
+      "colors": {
+        "primary": "#3558a2",
+        "secondary": "#000000",
+        "tertiary": "#fde863",
+        "neutral": "#ffffff",
+        "ink": "#000000",
+        "paper": "#ffffff",
+        "blue": "#3558a2",
+        "blue-deep": "#294984",
+        "blue-soft": "#e7edfa",
+        "blue-wash": "#b8c8ea",
+        "line": "#000000",
+        "muted": "#555555",
+        "inverse": "#ffffff",
+        "danger": "#dd4949",
+        "success": "#81ca7a",
+        "warning": "#efac39",
+        "info": "#21ab88",
+        "disabled": "#abb0b2"
+      },
+      "fontFamily": {
+        "display-hero": [
+          "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+        ],
+        "display-section": [
+          "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+        ],
+        "title-row": [
+          "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+        ],
+        "body": [
+          "Marianne, system-ui, -apple-system, BlinkMacSystemFont, sans-serif"
+        ],
+        "body-strong": [
+          "Marianne, system-ui, -apple-system, BlinkMacSystemFont, sans-serif"
+        ],
+        "label": [
+          "Marianne, system-ui, -apple-system, BlinkMacSystemFont, sans-serif"
+        ],
+        "mono-label": [
+          "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+        ],
+        "nav": [
+          "Marianne, system-ui, -apple-system, BlinkMacSystemFont, sans-serif"
+        ]
+      },
+      "fontSize": {
+        "display-hero": [
+          "72px",
+          {
+            "letterSpacing": "-0.045em",
+            "fontWeight": "500"
+          }
+        ],
+        "display-section": [
+          "48px",
+          {
+            "letterSpacing": "-0.04em",
+            "fontWeight": "500"
+          }
+        ],
+        "title-row": [
+          "24px",
+          {
+            "letterSpacing": "-0.025em",
+            "fontWeight": "500"
+          }
+        ],
+        "body": [
+          "15px",
+          {
+            "letterSpacing": "0em",
+            "fontWeight": "400"
+          }
+        ],
+        "body-strong": [
+          "15px",
+          {
+            "letterSpacing": "0em",
+            "fontWeight": "700"
+          }
+        ],
+        "label": [
+          "12px",
+          {
+            "letterSpacing": "0.01em",
+            "fontWeight": "700"
+          }
+        ],
+        "mono-label": [
+          "12px",
+          {
+            "letterSpacing": "0em",
+            "fontWeight": "500"
+          }
+        ],
+        "nav": [
+          "13px",
+          {
+            "letterSpacing": "0em",
+            "fontWeight": "700"
+          }
+        ]
+      },
+      "borderRadius": {
+        "none": "0px",
+        "pill": "999px",
+        "dot": "999px"
+      },
+      "spacing": {
+        "hairline": "1px",
+        "xs": "6px",
+        "sm": "10px",
+        "md": "16px",
+        "lg": "24px",
+        "xl": "36px",
+        "xxl": "56px",
+        "rail": "72px"
+      }
+    }
+  }
+}
