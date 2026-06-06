@@ -18,12 +18,22 @@ if (!app.includes("blue-rail")) {
   throw new Error("Kujoyama-style blue rail is missing");
 }
 
-if (!app.includes('aria-current={item.label === "Agents" ? "page" : undefined}')) {
-  throw new Error("Agents navigation row must be the active page");
+if (!app.includes('useState<ActiveWorkspace>("Code")')) {
+  throw new Error("Code workspace must be the default active page after importing the new feature");
 }
 
 if (!app.includes("AgentsHermesScreen")) {
-  throw new Error("App must render the Hermes Agents screen");
+  throw new Error("App must still render the Hermes Agents screen");
+}
+
+if (!app.includes('aria-label="Code workspace"') || !app.includes("empty-code-workspace")) {
+  throw new Error("Code workspace must render as an empty page");
+}
+
+for (const removedCodeSurface of ["CodeWorkspaceFlow", "codeWorkspaceFlowView", "One guided flow", "Native local", "Browser preview"]) {
+  if (app.includes(removedCodeSurface)) {
+    throw new Error(`Code workspace page must be empty and not render old flow UI: ${removedCodeSurface}`);
+  }
 }
 
 if (!existsSync(new URL("./agents/participants.ts", import.meta.url))) {
@@ -36,6 +46,34 @@ if (!existsSync(new URL("./agents/AgentsHermesScreen.tsx", import.meta.url))) {
 
 if (!css.includes("hermes-chat-shell")) {
   throw new Error("Hermes chat shell styling is missing");
+}
+
+for (const requiredMetric of [
+  "Context used:",
+  "Compressions:",
+  "Repository:",
+  "Codex usage:",
+  "Elapsed:",
+  "Model:",
+  "Session:",
+]) {
+  if (!screen.includes(requiredMetric)) {
+    throw new Error(`Hermes stats strip is missing metric: ${requiredMetric}`);
+  }
+}
+
+for (const removedMetric of ["<span>Messages:", "<span>Bridge:", "<span>Operator:"]) {
+  if (screen.includes(removedMetric)) {
+    throw new Error(`Old Hermes stats strip metric must be replaced: ${removedMetric}`);
+  }
+}
+
+if (!client.includes("linkedRepository") || !screen.includes("sendHermesCliMessage(") || !screen.includes("linkedRepository")) {
+  throw new Error("Linked repository must be passed into the Hermes send path");
+}
+
+if (!backend.includes("linked_repository") || !backend.includes("current_dir")) {
+  throw new Error("Backend Hermes CLI command must receive and apply a linked repository workdir");
 }
 
 if (!client.includes("check_hermes_cli") || !client.includes("send_hermes_cli_message")) {

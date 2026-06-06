@@ -1,4 +1,5 @@
 import { AgentsHermesScreen } from "./agents/AgentsHermesScreen";
+import { useState } from "react";
 
 type NavigationStatus = "ready" | "idle" | "blocked";
 
@@ -7,6 +8,8 @@ type NavigationItem = {
   meta: string;
   status: NavigationStatus;
 };
+
+type ActiveWorkspace = "Agents" | "Code";
 
 const navigationItems: NavigationItem[] = [
   { label: "Today", meta: "Current work", status: "idle" },
@@ -29,6 +32,8 @@ function StatusDot({ status }: { status: NavigationItem["status"] }) {
 }
 
 export default function App() {
+  const [activeWorkspace, setActiveWorkspace] = useState<ActiveWorkspace>("Code");
+
   return (
     <main className="zoid25-shell" aria-label="Zoid 25 desktop scaffold">
       <aside className="blue-rail" aria-label="Global controls">
@@ -65,9 +70,12 @@ export default function App() {
         <nav className="nav-list" aria-label="Zoid 25 sections">
           {navigationItems.map((item) => (
             <button
-              aria-current={item.label === "Agents" ? "page" : undefined}
-              className={item.label === "Agents" ? "nav-row active" : "nav-row"}
+              aria-current={item.label === activeWorkspace ? "page" : undefined}
+              className={item.label === activeWorkspace ? "nav-row active" : "nav-row"}
               key={item.label}
+              onClick={() => {
+                if (item.label === "Agents" || item.label === "Code") setActiveWorkspace(item.label);
+              }}
               type="button"
             >
               <span className="nav-title">{item.label}</span>
@@ -81,7 +89,11 @@ export default function App() {
         </nav>
       </aside>
 
-      <AgentsHermesScreen />
+      {activeWorkspace === "Code" ? (
+        <section aria-label="Code workspace" className="empty-code-workspace" />
+      ) : (
+        <AgentsHermesScreen />
+      )}
     </main>
   );
 }

@@ -16,6 +16,7 @@ export async function getHermesCliStatus(): Promise<HermesCliStatus> {
 
 export async function sendHermesCliMessage(
   messages: HermesCliMessage[],
+  linkedRepository?: string,
 ): Promise<HermesCliResponse> {
-  return invoke<HermesCliResponse>("send_hermes_cli_message", { messages });
+  return invoke<HermesCliResponse>("send_hermes_cli_message", { messages, linkedRepository });
 }

@@ -112,6 +112,26 @@ fn strip_terminal_noise(output: &str) -> String {
         .to_string()
 }
 
+fn resolve_linked_repository_workdir(linked_repository: Option<String>) -> Result<Option<PathBuf>, String> {
+    let Some(repository) = linked_repository.map(|value| value.trim().to_string()) else {
+        return Ok(None);
+    };
+
+    if repository.is_empty() || repository == "Unlinked" {
+        return Ok(None);
+    }
+
+    let path = PathBuf::from(repository);
+    if !path.exists() {
+        return Err(format!("Linked repository does not exist: {}", path.display()));
+    }
+    if !path.is_dir() {
+        return Err(format!("Linked repository must be a directory: {}", path.display()));
+    }
+
+    Ok(Some(path))
+}
+
 mod commands {
     use super::*;
 
@@ -137,7 +157,10 @@ mod commands {
     }
 
     #[tauri::command]
-    pub async fn send_hermes_cli_message(messages: Vec<HermesCliMessage>) -> Result<HermesCliResponse, String> {
+    pub async fn send_hermes_cli_message(
+        messages: Vec<HermesCliMessage>,
+        linked_repository: Option<String>,
+    ) -> Result<HermesCliResponse, String> {
         let prompt = messages
             .iter()
             .rev()
@@ -150,7 +173,11 @@ mod commands {
             "Hermes CLI was not found. Set ZOID_HERMES_CLI or ensure hermes is on PATH.".to_string()
         })?;
         let session = hermes_session_name();
+        let repository_workdir = resolve_linked_repository_workdir(linked_repository)?;
         let mut command = Command::new(&path);
+        if let Some(workdir) = repository_workdir {
+            command.current_dir(workdir);
+        }
         command.args([
             "chat",
             "--continue",
@@ -195,6 +222,14 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_path(label: &str) -> PathBuf {
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        std::env::temp_dir().join(format!("zoid-{label}-{timestamp}"))
+    }
 
     #[test]
     fn default_session_name_is_stable() {
@@ -206,5 +241,47 @@ mod tests {
     fn terminal_noise_is_removed_from_cli_output() {
         let raw = "hello from Hermes\nSession ID: abc\nCost: $0.01";
         assert_eq!(strip_terminal_noise(raw), "hello from Hermes");
+    }
+
+    #[test]
+    fn linked_repository_workdir_requires_existing_directory() {
+        let temp_dir = std::env::temp_dir();
+        let resolved = resolve_linked_repository_workdir(Some(temp_dir.to_string_lossy().to_string())).unwrap();
+        assert_eq!(resolved, Some(temp_dir));
+        assert!(resolve_linked_repository_workdir(Some("/definitely/not/a/zoid/repo".to_string())).is_err());
+        assert_eq!(resolve_linked_repository_workdir(Some("Unlinked".to_string())).unwrap(), None);
+    }
+
+    #[test]
+    fn hermes_cli_message_runs_inside_linked_repository() {
+        let root = unique_temp_path("hermes-workdir");
+        let repo = root.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        let fake_hermes = root.join("hermes");
+        fs::write(
+            &fake_hermes,
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'hermes fake'; exit 0; fi\nprintf 'workdir:%s\\n' \"$PWD\"\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&fake_hermes).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&fake_hermes, permissions).unwrap();
+
+        let previous_cli = std::env::var("ZOID_HERMES_CLI").ok();
+        std::env::set_var("ZOID_HERMES_CLI", &fake_hermes);
+        let response = tauri::async_runtime::block_on(commands::send_hermes_cli_message(
+            vec![HermesCliMessage { role: "user".to_string(), content: "pwd".to_string() }],
+            Some(repo.to_string_lossy().to_string()),
+        ))
+        .unwrap();
+        if let Some(previous_cli) = previous_cli {
+            std::env::set_var("ZOID_HERMES_CLI", previous_cli);
+        } else {
+            std::env::remove_var("ZOID_HERMES_CLI");
+        }
+        let expected_repo = repo.canonicalize().unwrap();
+        let _ = fs::remove_dir_all(&root);
+
+        assert_eq!(response.content, format!("workdir:{}", expected_repo.display()));
     }
 }
