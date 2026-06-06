@@ -1,3 +1,5 @@
+import { AgentsHermesScreen } from "./agents/AgentsHermesScreen";
+
 type NavigationStatus = "ready" | "idle" | "blocked";
 
 type NavigationItem = {
@@ -7,9 +9,9 @@ type NavigationItem = {
 };
 
 const navigationItems: NavigationItem[] = [
-  { label: "Today", meta: "Current work", status: "ready" },
+  { label: "Today", meta: "Current work", status: "idle" },
   { label: "Projects", meta: "Build lanes", status: "idle" },
-  { label: "Agents", meta: "Sessions", status: "ready" },
+  { label: "Agents", meta: "Hermes chat", status: "ready" },
   { label: "Code", meta: "Repos", status: "idle" },
   { label: "Content", meta: "OmniSocials", status: "blocked" },
   { label: "Automations", meta: "Routines", status: "idle" },
@@ -21,7 +23,6 @@ const statusLabel = {
   idle: "empty",
   blocked: "blocked",
 } satisfies Record<NavigationStatus, string>;
-
 
 function StatusDot({ status }: { status: NavigationItem["status"] }) {
   return <span aria-hidden="true" className={`status-dot ${status}`} />;
@@ -62,10 +63,10 @@ export default function App() {
         </header>
 
         <nav className="nav-list" aria-label="Zoid 25 sections">
-          {navigationItems.map((item, index) => (
+          {navigationItems.map((item) => (
             <button
-              aria-current={index === 0 ? "page" : undefined}
-              className={index === 0 ? "nav-row active" : "nav-row"}
+              aria-current={item.label === "Agents" ? "page" : undefined}
+              className={item.label === "Agents" ? "nav-row active" : "nav-row"}
               key={item.label}
               type="button"
             >
@@ -80,21 +81,7 @@ export default function App() {
         </nav>
       </aside>
 
-      <section className="empty-canvas" aria-label="Empty work area">
-        <div className="canvas-rule" />
-        <div className="empty-copy">
-          <p className="section-kicker">EN CE MOMENT</p>
-          <h2>Blank canvas</h2>
-          <p>
-            No frontend workspace has been built yet. Zoid 25 starts from this ruled shell: blue rail,
-            editorial navigation, and an empty operational field.
-          </p>
-          <span className="outline-pill">DESIGN SYSTEM READY</span>
-        </div>
-        <div className="blue-panel" aria-hidden="true">
-          <span>Zoid 25</span>
-        </div>
-      </section>
+      <AgentsHermesScreen />
     </main>
   );
 }
