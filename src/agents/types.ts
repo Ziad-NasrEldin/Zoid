@@ -1,6 +1,6 @@
 export type AgentId = "hermes";
 export type ChatRole = "user" | "assistant" | "system";
-export type AgentConnectionState = "checking" | "online" | "offline" | "unauthorized" | "error";
+export type AgentConnectionState = "checking" | "online" | "offline" | "error";
 
 export type ChatParticipant = {
   id: "ziad" | AgentId;
@@ -21,19 +21,20 @@ export type ChatMessage = {
   error?: string;
 };
 
-export type HermesHealth = {
+export type HermesCliStatus = {
   ok: boolean;
-  status: AgentConnectionState extends infer S ? Exclude<S, "checking"> : never;
+  status: Exclude<AgentConnectionState, "checking">;
   message: string;
-  model?: string;
+  command?: string;
+  session: string;
 };
 
-export type HermesChatRequestMessage = {
+export type HermesCliMessage = {
   role: ChatRole;
   content: string;
 };
 
-export type HermesChatResponse = {
+export type HermesCliResponse = {
   content: string;
-  model?: string;
+  session: string;
 };
