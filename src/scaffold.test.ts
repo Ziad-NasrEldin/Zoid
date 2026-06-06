@@ -48,6 +48,30 @@ if (!css.includes("hermes-chat-shell")) {
   throw new Error("Hermes chat shell styling is missing");
 }
 
+if (screen.includes("AGENTS / HERMES TERMINAL") || screen.includes("<h2>Hermes Agent</h2>")) {
+  throw new Error("Hermes topbar must not render the oversized left title block beside the status controls");
+}
+
+if (!screen.includes("hermes-topbar hermes-topbar--status-only") || !css.includes("justify-content: flex-end")) {
+  throw new Error("Hermes status topbar must reclaim the removed left title space");
+}
+
+if (!css.includes("body { margin: 0; min-width: 0;") || !css.includes("width: 100vw") || !css.includes("@media (max-width: 820px)")) {
+  throw new Error("Desktop shell must be responsive and not force a fixed minimum width that hides the right side");
+}
+
+if (css.includes("min-width: 940px") || css.includes("grid-template-columns: 72px 336px minmax(0, 1fr)")) {
+  throw new Error("Fixed desktop sizing must not remain because it can push the right side offscreen");
+}
+
+if (!css.includes(".chat-stats-strip { grid-template-columns: minmax(0, 1fr); }")) {
+  throw new Error("Hermes stats strip must collapse on narrow desktop windows");
+}
+
+if (!css.includes(".blue-rail { display: none; }") || !css.includes(".nav-list { flex-direction: row;")) {
+  throw new Error("Narrow desktop layout must reclaim sidebar width for the main workspace");
+}
+
 for (const requiredMetric of [
   "Context used:",
   "Compressions:",

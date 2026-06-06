@@ -155,11 +155,7 @@ export function AgentsHermesScreen() {
 
   return (
     <section aria-label="Hermes chat" className="hermes-chat-shell">
-      <header className="hermes-topbar">
-        <div>
-          <p className="section-kicker">AGENTS / HERMES TERMINAL</p>
-          <h2>Hermes Agent</h2>
-        </div>
+      <header className="hermes-topbar hermes-topbar--status-only">
         <div className="topbar-status-stack">
           <div className="connection-panel" aria-live="polite">
             <span className={`status-dot ${statusTone(connectionState)}`} aria-hidden="true" />
