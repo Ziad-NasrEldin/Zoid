@@ -1,0 +1,57 @@
+{
+  "source": {
+    "url": "https://gen-m.jp",
+    "title": "書家／墨象作家 宮村弦",
+    "captured_at": "2026-06-08",
+    "stylesheet": "https://gen-m.jp/assets/css/style.min.css",
+    "scripts_observed": [
+      "https://gen-m.jp/assets/js/locomotive-scroll.min.js",
+      "https://gen-m.jp/assets/js/swiper-bundle.min.js",
+      "https://gen-m.jp/assets/js/gsap.min.js",
+      "https://gen-m.jp/assets/js/script.min.js"
+    ]
+  },
+  "observed_tokens": {
+    "colors": {
+      "ink_black": "#0D0A0A",
+      "pure_black": "#000000",
+      "paper_white": "#FFFFFF",
+      "soft_paper": "#FAFAFA",
+      "mist_gray": "#F5F5F5",
+      "line_gray": "#EDEDED",
+      "pale_rule": "#E0E0E0",
+      "muted_ink": "#545554"
+    },
+    "fonts": [
+      "trajan-pro-3, serif",
+      "source-han-serif-japanese, serif",
+      "trajan-pro-3, source-han-serif-japanese, serif"
+    ],
+    "motion": {
+      "link_transition": "all 0.125s cubic-bezier(0.215, 0.61, 0.355, 1)",
+      "reveal_transition": "opacity 1s linear, transform 1s cubic-bezier(0.215, 0.61, 0.355, 1)",
+      "reveal_offsets": ["translate(0, 5vw)", "translate(5vw, 0)", "translate(-5vw, 0)"],
+      "image_hover": "scale(1.1) + filter contrast(1.25)",
+      "scroll_engine": "LocomotiveScroll smooth desktop scroll",
+      "carousel_engine": "Swiper horizontal carousels"
+    },
+    "geometry": {
+      "desktop_nav_toggle": "4.28571vw square; ~55px at 1280px viewport",
+      "desktop_circular_links": "11.42857vw–12.85714vw; ~146–165px at 1280px viewport",
+      "desktop_header_scroll_x": "21.07143vw; ~270px at 1280px viewport",
+      "work_carousel_offset": "5vw / ~64px translated horizontal rail"
+    }
+  },
+  "impeccable_detect": {
+    "command": "npx --yes impeccable detect https://gen-m.jp",
+    "exit_code": 2,
+    "summary": "33 anti-patterns reported. Most are expected consequences of this atmospheric reference: tiny 10.5px text, wide tracking, justified Japanese copy, clipped overflow for image masks/carousels, and intentionally flush full-bleed containers. These should be adapted cautiously for Zoid product UI."
+  },
+  "adaptation_rules_for_zoid": [
+    "Use as a visual language reference, not an asset source.",
+    "Keep Zoid operational text larger than the reference where it carries decisions or state.",
+    "Translate ink gestures into abstract local masks/lines rather than copying brush assets.",
+    "Preserve Zoid's truthful status/state requirements; this reference is atmospheric and content-led.",
+    "Use monochrome high-craft surfaces sparingly inside Zoid so the existing app-wide system is not overwritten accidentally."
+  ]
+}

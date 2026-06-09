@@ -1,0 +1,267 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-06-07T19:30:09.884399Z",
+  "title": "Design System: Zoid25 Kujoyama Editorial OS",
+  "extensions": {
+    "colorMeta": {
+      "kujo-blue": {
+        "role": "primary",
+        "displayName": "Kujoyama Cobalt",
+        "canonical": "#3558A2",
+        "tonalRamp": [
+          "#111C34",
+          "#1D315B",
+          "#294984",
+          "#3558A2",
+          "#5F7ABB",
+          "#91A5D3",
+          "#B8C8EA",
+          "#E7EDFA"
+        ]
+      },
+      "kujo-ink": {
+        "role": "secondary",
+        "displayName": "Ink",
+        "canonical": "#000000",
+        "tonalRamp": [
+          "#000000",
+          "#1A1A1A",
+          "#333333",
+          "#555555",
+          "#777777",
+          "#999999",
+          "#D7D7D7",
+          "#FFFFFF"
+        ]
+      },
+      "kujo-yellow": {
+        "role": "tertiary",
+        "displayName": "Signal Yellow",
+        "canonical": "#FDE863",
+        "tonalRamp": [
+          "#3D3500",
+          "#786A12",
+          "#B9A32A",
+          "#EFAC39",
+          "#FDE863",
+          "#FFF29A",
+          "#FFF7C5",
+          "#FFFCE7"
+        ]
+      },
+      "kujo-red": {
+        "role": "danger",
+        "displayName": "Blocked Red",
+        "canonical": "#DD4949",
+        "tonalRamp": [
+          "#3D0D0D",
+          "#721B1B",
+          "#A82E2E",
+          "#DD4949",
+          "#E87979",
+          "#F2AAAA",
+          "#FFECEC",
+          "#FFF4F4"
+        ]
+      },
+      "kujo-green": {
+        "role": "success",
+        "displayName": "Ready Green",
+        "canonical": "#81CA7A",
+        "tonalRamp": [
+          "#143618",
+          "#1F5B31",
+          "#3D8344",
+          "#65AE63",
+          "#81CA7A",
+          "#ABE0BC",
+          "#D8F1DE",
+          "#F0FAF2"
+        ]
+      },
+      "kujo-paper": {
+        "role": "neutral",
+        "displayName": "Paper",
+        "canonical": "#FFFFFF",
+        "tonalRamp": [
+          "#000000",
+          "#555555",
+          "#ABB0B2",
+          "#B8C8EA",
+          "#E7EDFA",
+          "#FBFCFF",
+          "#FFFFFF",
+          "#FFFFFF"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display Mono",
+        "purpose": "Workspace headings and large module titles."
+      },
+      "title": {
+        "displayName": "Operational Mono Title",
+        "purpose": "Rows, jobs, cards, sessions, and object names."
+      },
+      "body": {
+        "displayName": "Readable Body",
+        "purpose": "Messages, instructions, settings copy, and prose."
+      },
+      "label": {
+        "displayName": "Command Label",
+        "purpose": "Controls, badges, tabs, IDs, and metadata."
+      }
+    },
+    "shadows": [
+      {
+        "name": "soft-card-offset",
+        "value": "4px 4px 0 rgba(0,0,0,0.08-0.14)",
+        "purpose": "Cards, action buttons, and changed-row feedback."
+      },
+      {
+        "name": "panel-offset",
+        "value": "6px 6px 0 rgba(0,0,0,0.08-0.10)",
+        "purpose": "Major workspace and settings panels."
+      },
+      {
+        "name": "popover-offset",
+        "value": "9px 9px 0 rgba(0,0,0,0.16)",
+        "purpose": "Composer popovers and deep panels."
+      },
+      {
+        "name": "modal-offset",
+        "value": "10px 10px 0 rgba(0,0,0,0.18-0.22)",
+        "purpose": "Command palettes and confirmation modals."
+      }
+    ],
+    "motion": [
+      {
+        "name": "micro-state",
+        "value": "140-240ms ease",
+        "purpose": "Button, hover, focus, and copied/failed feedback."
+      },
+      {
+        "name": "structural-morph",
+        "value": "320-540ms cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Sidebar and session-rail morphing only; reduced-motion must disable."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "desktop-compress",
+        "value": "1100px"
+      },
+      {
+        "name": "tablet-stack",
+        "value": "820px"
+      },
+      {
+        "name": "phone-stack",
+        "value": "560px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Cobalt primary product action with squared editorial stroke.",
+      "html": "<button class=\"ds-button-primary\">Run now</button>",
+      "css": ".ds-button-primary{border:1px solid #000;background:#3558A2;color:#fff;padding:10px 12px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px;font-weight:900;text-transform:uppercase;cursor:pointer}.ds-button-primary:hover{background:#294984}.ds-button-primary:focus-visible{outline:3px solid #FDE863;outline-offset:-3px}"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Paper control for lower-emphasis actions.",
+      "html": "<button class=\"ds-button-secondary\">Cancel</button>",
+      "css": ".ds-button-secondary{border:1px solid #000;background:#fff;color:#000;padding:9px 12px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px;font-weight:900;text-transform:uppercase;cursor:pointer}.ds-button-secondary:hover{background:#E7EDFA}.ds-button-secondary:focus-visible{outline:3px solid #FDE863;outline-offset:-3px}"
+    },
+    {
+      "name": "Editorial Dropdown",
+      "kind": "input",
+      "refersTo": "dropdown-editorial",
+      "description": "Squared mono selector with a soft-blue chevron lane and hard popover shadow.",
+      "html": "<div class=\"ds-dropdown\"><button class=\"ds-dropdown-trigger\">Default profile <span>\u2304</span></button><div class=\"ds-dropdown-menu\"><button>default</button><button class=\"is-selected\">Zoid</button></div></div>",
+      "css": ".ds-dropdown{position:relative;width:260px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}.ds-dropdown-trigger{display:grid;grid-template-columns:1fr auto;width:100%;min-height:34px;border:1px solid #000;border-radius:0;padding:7px 10px;background:linear-gradient(90deg,#fff 0 calc(100% - 30px),#E7EDFA calc(100% - 30px));font-size:11px;font-weight:900;text-align:left}.ds-dropdown-menu{margin-top:5px;border:1px solid #000;background:#fff;box-shadow:5px 5px 0 #000}.ds-dropdown-menu button{display:block;width:100%;border:0;border-bottom:1px solid #B8C8EA;padding:8px 10px;background:#fff;text-align:left;font-size:11px;font-weight:900}.ds-dropdown-menu button:hover,.ds-dropdown-menu .is-selected{background:#E7EDFA}"
+    },
+    {
+      "name": "Blue Rail Navigation",
+      "kind": "nav",
+      "refersTo": "blue-rail",
+      "description": "The committed cobalt architectural spine for the macOS shell.",
+      "html": "<nav class=\"ds-blue-rail\"><button>Z</button><button class=\"active\">\u2301</button><span>EN</span></nav>",
+      "css": ".ds-blue-rail{display:flex;flex-direction:column;align-items:center;gap:10px;width:72px;min-height:220px;padding:28px 8px 24px;background:#3558A2;color:#fff}.ds-blue-rail button{display:grid;place-items:center;width:42px;min-height:42px;border:1px solid rgba(255,255,255,.36);border-radius:0;background:transparent;color:#fff}.ds-blue-rail button.active,.ds-blue-rail button:hover{border-color:#fff;background:rgba(255,255,255,.16)}.ds-blue-rail span{margin-top:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;font-weight:800}"
+    },
+    {
+      "name": "Ruled Card",
+      "kind": "card",
+      "refersTo": "card-ruled",
+      "description": "Squared operational containment used only when rows need a bounded object surface.",
+      "html": "<article class=\"ds-card\"><p>\u81ea\u52d5\u5316</p><h3>Cron Jobs</h3><span>Native Hermes scheduler</span></article>",
+      "css": ".ds-card{display:grid;gap:8px;border:1px solid #000;background:#fff;padding:16px;box-shadow:4px 4px 0 rgba(0,0,0,.08);color:#000}.ds-card p{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:28px;line-height:1}.ds-card h3{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:24px;line-height:1.05;letter-spacing:-.045em}.ds-card span{color:#555;font-size:12px;font-weight:800}"
+    },
+    {
+      "name": "Status Badge",
+      "kind": "chip",
+      "refersTo": "status-success",
+      "description": "Text-first status badge; color reinforces but never replaces the label.",
+      "html": "<span class=\"ds-status ds-status-ok\">Ready</span> <span class=\"ds-status ds-status-warn\">Paused</span> <span class=\"ds-status ds-status-error\">Failed</span>",
+      "css": ".ds-status{display:inline-flex;border:1px solid #000;padding:5px 8px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:10px;font-weight:900;text-transform:uppercase}.ds-status-ok{background:#81CA7A;color:#000}.ds-status-warn{background:#EFAC39;color:#000}.ds-status-error{background:#DD4949;color:#fff}"
+    },
+    {
+      "name": "Command Modal",
+      "kind": "custom",
+      "refersTo": "card-ruled",
+      "description": "Centered branded command/confirmation surface replacing native browser warnings.",
+      "html": "<section class=\"ds-modal\"><header><strong>Remove job?</strong><span>Protected actions stay blocked</span></header><p>This action must confirm scope before it runs.</p><div><button>Cancel</button><button class=\"danger\">Remove</button></div></section>",
+      "css": ".ds-modal{display:grid;gap:14px;width:420px;border:1px solid #000;background:#fff;color:#000;padding:16px;box-shadow:10px 10px 0 rgba(0,0,0,.22)}.ds-modal header{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;text-transform:uppercase}.ds-modal header strong{display:block;font-size:18px}.ds-modal header span{display:block;color:#555;font-size:10px;font-weight:900}.ds-modal p{margin:0;font-weight:800}.ds-modal div{display:flex;justify-content:flex-end;gap:10px}.ds-modal button{border:1px solid #000;background:#fff;padding:9px 12px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px;font-weight:900;text-transform:uppercase}.ds-modal button.danger{background:#DD4949;color:#fff}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Editorial Command Room",
+    "overview": "Zoid 25 translates Villa Kujoyama's architectural restraint into a local-first macOS AI operating system: severe black rules, white editorial fields, one committed cobalt structural surface, mono-forward hierarchy, and sparse yellow emphasis.",
+    "keyCharacteristics": [
+      "Stark black-and-white editorial shell with cobalt-blue architecture.",
+      "Mono-forward type for navigation, labels, command surfaces, and operational titles.",
+      "Squared tactile controls with 1px black strokes and zero radius.",
+      "Status vocabulary uses both color and text.",
+      "White space is functional."
+    ],
+    "rules": [
+      {
+        "name": "The One Blue Rule",
+        "body": "Blue is architecture and state, not decoration.",
+        "section": "colors"
+      },
+      {
+        "name": "The Status Text Rule",
+        "body": "Color dots and badges must always be paired with text labels.",
+        "section": "colors"
+      },
+      {
+        "name": "The Mono-For-Structure Rule",
+        "body": "Use mono for navigation, commands, status labels, IDs, counters, tabs, and row titles.",
+        "section": "typography"
+      },
+      {
+        "name": "The Rule-First Depth Rule",
+        "body": "Add a border before adding a shadow.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do use black 1px rules and squared edges as the default visual grammar.",
+      "Do reserve cobalt blue for architecture, selection, primary action, and verified/progress surfaces.",
+      "Do mark native, preview, blocked, ready, verified, paused, and failed states with explicit text."
+    ],
+    "donts": [
+      "Don't make Zoid feel like a generic SaaS dashboard card grid.",
+      "Don't use AI-chat novelty surfaces, decorative gradients, fake metrics, or simulated records presented as truth.",
+      "Don't over-round controls into bubble UI.",
+      "Don't hide review gates, backend availability, data source, bridge requirements, or verification state."
+    ]
+  }
+}

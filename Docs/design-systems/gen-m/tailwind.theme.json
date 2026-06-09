@@ -1,0 +1,126 @@
+{
+  "theme": {
+    "extend": {
+      "colors": {
+        "primary": "#0d0a0a",
+        "secondary": "#545554",
+        "tertiary": "#e0e0e0",
+        "neutral": "#ffffff",
+        "ink-black": "#0d0a0a",
+        "pure-black": "#000000",
+        "paper-white": "#ffffff",
+        "soft-paper": "#fafafa",
+        "mist-gray": "#f5f5f5",
+        "line-gray": "#ededed",
+        "pale-rule": "#e0e0e0",
+        "muted-ink": "#545554",
+        "ink-wash": "#f7f5f4",
+        "seal-red": "#c23a2e",
+        "seal-red-deep": "#8f211a",
+        "seal-red-soft": "#f5e5e3"
+      },
+      "fontFamily": {
+        "display": [
+          "trajan-pro-3, serif"
+        ],
+        "product-display": [
+          "trajan-pro-3, Times New Roman, Baskerville, Georgia, serif"
+        ],
+        "nav-label": [
+          "trajan-pro-3, serif"
+        ],
+        "latin-small": [
+          "trajan-pro-3, serif"
+        ],
+        "jp-body": [
+          "source-han-serif-japanese, serif"
+        ],
+        "product-body": [
+          "source-han-serif-japanese, Hiragino Mincho ProN, Yu Mincho, Times New Roman, Georgia, serif"
+        ],
+        "jp-caption": [
+          "source-han-serif-japanese, serif"
+        ],
+        "vertical-marker": [
+          "trajan-pro-3, source-han-serif-japanese, serif"
+        ]
+      },
+      "fontSize": {
+        "display": [
+          "118px",
+          {
+            "letterSpacing": "-0.02em",
+            "fontWeight": "400"
+          }
+        ],
+        "product-display": [
+          "94px",
+          {
+            "letterSpacing": "-0.035em",
+            "fontWeight": "400"
+          }
+        ],
+        "nav-label": [
+          "16px",
+          {
+            "letterSpacing": "0.2em",
+            "fontWeight": "400"
+          }
+        ],
+        "latin-small": [
+          "12px",
+          {
+            "letterSpacing": "0.2em",
+            "fontWeight": "400"
+          }
+        ],
+        "jp-body": [
+          "12px",
+          {
+            "letterSpacing": "0.12em",
+            "fontWeight": "400"
+          }
+        ],
+        "product-body": [
+          "16px",
+          {
+            "letterSpacing": "0.055em",
+            "fontWeight": "400"
+          }
+        ],
+        "jp-caption": [
+          "10.5px",
+          {
+            "letterSpacing": "0.2em",
+            "fontWeight": "400"
+          }
+        ],
+        "vertical-marker": [
+          "12px",
+          {
+            "letterSpacing": "0.12em",
+            "fontWeight": "400"
+          }
+        ]
+      },
+      "borderRadius": {
+        "none": "0px",
+        "circle": "999px"
+      },
+      "spacing": {
+        "hairline": "1px",
+        "xs": "8px",
+        "sm": "16px",
+        "md": "32px",
+        "lg": "64px",
+        "xl": "96px",
+        "xxl": "160px",
+        "hero-offset": "270px",
+        "nav-toggle": "55px",
+        "product-page-padding": "56px",
+        "product-hero-min-height": "540px",
+        "brush-mark": "246px"
+      }
+    }
+  }
+}

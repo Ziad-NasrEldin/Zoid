@@ -10,14 +10,17 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
-    "test:frontend": "tsx src/scaffold.test.ts",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --lib --bins -- --test-threads=1",
+    "test:frontend": "tsx src/scaffold.test.ts && tsx src/content/contentWorkspace.test.ts && tsx src/ui/GlobalDropdown.behavior.test.tsx && tsx src/brain/BrainWorkspace.behavior.test.tsx && tsx src/automations/AutomationsWorkspace.behavior.test.tsx && tsx src/agents/ChatComposer.slash.test.tsx && tsx src/agents/ChatComposer.behavior.test.tsx && tsx src/agents/CommandPalette.behavior.test.tsx && tsx src/agents/AgentsHermesScreen.file-manager.test.tsx && tsx src/agents/ruthlessReviewerAgent.behavior.test.ts",
     "test": "npm run test:frontend && npm run test:rust"
   },
   "dependencies": {
     "@tauri-apps/api": "latest",
     "@tauri-apps/cli": "latest",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@tauri-apps/plugin-notification": "^2.3.3",
     "@vitejs/plugin-react": "latest",
+    "agentation": "^3.0.2",
     "lucide-react": "latest",
     "react": "latest",
     "react-dom": "latest",
@@ -27,6 +30,7 @@
     "@types/node": "latest",
     "@types/react": "latest",
     "@types/react-dom": "latest",
+    "happy-dom": "^20.10.2",
     "tsx": "latest",
     "typescript": "latest"
   }

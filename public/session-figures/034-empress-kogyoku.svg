@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-labelledby="title desc">
+  <title id="title">Empress Kōgyoku</title>
+  <desc id="desc">Distinct blurred archival Zoid 25 session sigil inspired by Empress Kōgyoku.</desc>
+  <defs>
+    <linearGradient id="wash" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e9dcc4"/>
+      <stop offset="0.52" stop-color="#f8f4ea"/>
+      <stop offset="1" stop-color="#c77d2f" stop-opacity="0.44"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="67%" cy="49%" r="72%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.78"/>
+      <stop offset="0.48" stop-color="#e9dcc4" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#243f73" stop-opacity="0.22"/>
+    </radialGradient>
+    <filter id="grain" x="-20%" y="-20%" width="140%" height="140%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.54" numOctaves="2" seed="34"/>
+      <feColorMatrix type="saturate" values="0"/>
+      <feComponentTransfer><feFuncA type="table" tableValues="0 .17"/></feComponentTransfer>
+    </filter>
+  </defs>
+  <path d="M0 0h96v96H0z" fill="url(#wash)"/>
+  <path d="M0 0h96v96H0z" fill="url(#halo)" opacity="0.82"/>
+  <g opacity="0.45" stroke="#2f6f73" stroke-width="1.45" fill="none">
+    <path d="M-8 14C20 76 38 25 104 59"/>
+    <path d="M-10 55C22 59 56 74 108 42"/>
+  </g>
+  <g transform="translate(48 48) rotate(-6) translate(-48 -48)">
+    <g fill="#243f73" opacity="0.88">
+      <path d="M22 34h52v8H22z"/><path d="M37 18h22v16H37z"/>
+      <ellipse cx="50.4" cy="47.1" rx="19" ry="19"/>
+      <path d="M20 96l17-35 11 16 11-16 17 35z"/>
+    </g>
+    <g fill="#e9dcc4" opacity="0.34">
+      <ellipse cx="44.3" cy="44.8" rx="3.5" ry="5.3"/>
+      <path d="M52.3 49.0c5 6 3 11-5 13" fill="none" stroke="#e9dcc4" stroke-width="2" stroke-linecap="round"/>
+    </g>
+  </g>
+  <g transform="translate(0 0) rotate(9 48 26)" fill="#c77d2f" opacity="0.59">
+    <path d="M36 17h24v7H36zm5 9h14v9H41z"/>
+  </g>
+  <g stroke="#243f73" stroke-opacity="0.22" stroke-width="1">
+    <path d="M9 10h78M9 86h78M10 9v78M86 9v78"/>
+    <path d="M18 18h60v60H18z" fill="none" opacity="0.45"/>
+  </g>
+  <path d="M0 0h96v96H0z" filter="url(#grain)" opacity="0.75"/>
+</svg>
