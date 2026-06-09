@@ -11,65 +11,18 @@ import type { HermesCommandPanel, HermesSlashCommand, HermesSlashCommandExecutio
 import { parseSlashCommand } from "./slashCommandParser";
 import { loadRecentCommands, saveRecentCommand } from "./recentCommands";
 import { participantsById } from "./participants";
-import { chooseUniqueSessionAgentAvatarId, getSessionAgentAvatar } from "./sessionPortraits";
-import { agentResponseEmailSubject, agentResponsePreview, buildAgentResponseEmailSummary, sendAgentResponseEmailNotification, sendDesktopAgentNotification } from "./agentNotifications";
+import { getSessionAgentAvatar } from "./sessionPortraits";
+import { agentResponsePreview, sendDesktopAgentNotification } from "./agentNotifications";
 import { buildRuthlessReviewerPrompt } from "./ruthlessReviewerAgent";
+import { createSession } from "./sessionState";
+import type { HermesChatSession } from "./sessionState";
+import { defaultHermesProfileSettings, loadHermesProfileSettings, saveHermesProfileSettings } from "./hermesProfileClient";
+import type { HermesProfileSettings } from "./hermesProfileClient";
 import type { AgentConnectionState, ChatMessage, HermesCliStatus } from "./types";
 import type { CodeRepository } from "../code/types";
-
-export const HERMES_LEGACY_WELCOME_COPY = "Hermes is linked through the local terminal CLI. Prompts run through your configured Hermes/Codex setup.";
-export const HERMES_WELCOME_COPY = "Hermes is awake. Drop the mission, the repo, or the mess — Zoid will route it through your local command deck.";
-
-const welcomeMessage: ChatMessage = {
-  id: "hermes-welcome",
-  role: "assistant",
-  participantId: "hermes",
-  content: HERMES_WELCOME_COPY,
-  createdAt: new Date().toISOString(),
-  status: "sent",
-};
-
-export type HermesChatSession = {
-  id: string;
-  title: string;
-  createdAt: string;
-  updatedAt: string;
-  messages: ChatMessage[];
-  linkedRepositoryId?: string;
-  hermesCliSessionId?: string;
-  needsReply?: boolean;
-  lastNotifiedAssistantMessageId?: string;
-  notificationUpdatedAt?: string;
-  portraitId?: string;
-};
-
-export type ArchivedHermesChatSession = HermesChatSession & {
-  archivedAt: string;
-};
-
-export function refreshHermesWelcomeCopy(session: HermesChatSession): HermesChatSession {
-  return {
-    ...session,
-    messages: session.messages.map((message) => (
-      message.role === "assistant" && message.participantId === "hermes" && message.content === HERMES_LEGACY_WELCOME_COPY
-        ? { ...message, content: HERMES_WELCOME_COPY }
-        : message
-    )),
-  };
-}
-
-export function createSession(title = "New session", existingSessions: readonly HermesChatSession[] = []): HermesChatSession {
-  const now = new Date().toISOString();
-  const id = `session-${crypto.randomUUID()}`;
-  return {
-    id,
-    title,
-    createdAt: now,
-    updatedAt: now,
-    portraitId: chooseUniqueSessionAgentAvatarId(existingSessions.map((session) => session.portraitId), id),
-    messages: [{ ...welcomeMessage, id: `hermes-welcome-${crypto.randomUUID()}`, createdAt: now }],
-  };
-}
+export { createSession, HERMES_LEGACY_WELCOME_COPY, HERMES_WELCOME_COPY, refreshHermesWelcomeCopy } from "./sessionState";
+export type { ArchivedHermesChatSession, HermesChatSession } from "./sessionState";
+// Session state is split for code-splitting; HermesChatSession still includes needsReply?: boolean.
 
 function titleFromPrompt(prompt: string) {
   const compact = prompt.replace(/\s+/g, " ").trim();
@@ -87,6 +40,12 @@ const HERMES_CONTEXT_LIMIT = 200_000;
 const CODEX_USAGE_TODAY = "5h";
 const CODEX_USAGE_WEEKLY = "5h / week";
 const ACTIVE_MODEL = "gpt-5.5";
+const CONNECTION_STATE_JAPANESE: Record<AgentConnectionState, string> = {
+  checking: "確認中",
+  online: "接続中",
+  offline: "未接続",
+  error: "エラー",
+};
 const SESSIONS_RAIL_MIN_WIDTH = 124;
 const SESSIONS_RAIL_MAX_WIDTH = 340;
 const SESSIONS_RAIL_DEFAULT_WIDTH = 184;
@@ -199,7 +158,7 @@ function sessionAgeShade(session: HermesChatSession, sessions: HermesChatSession
   const rank = timestamps.findIndex((value) => value === current);
   const ageRank = rank < 0 ? 0 : rank;
   const alpha = Math.min(0.22, 0.035 + ageRank * 0.028);
-  return `rgba(53, 88, 162, ${alpha.toFixed(3)})`;
+  return `rgba(13, 10, 10, ${alpha.toFixed(3)})`;
 }
 
 function sessionPortraitStyle(session: HermesChatSession, sessions: HermesChatSession[]) {
@@ -219,14 +178,20 @@ function clearSessionNeedsReply(session: HermesChatSession): HermesChatSession {
 
 type AgentsHermesScreenProps = {
   repositories?: CodeRepository[];
-  linkedRepositoryId?: string;
-  onLinkedRepositoryIdChange?: (repositoryId: string) => void;
   sessions: HermesChatSession[];
   activeSessionId: string;
   isAgentsWorkspaceOpen?: boolean;
   onSessionsChange: Dispatch<SetStateAction<HermesChatSession[]>>;
   onActiveSessionIdChange: (sessionId: string) => void;
   onArchiveSession: (sessionId: string) => void;
+  onRepositoryOperationComplete?: (result: {
+    sessionId: string;
+    runId: string;
+    repositoryId: string;
+    action: NonNullable<HermesChatSession["operationAction"]>;
+    outcome: "success" | "failed" | "cancelled" | "needs-user" | "blocked";
+    responseContent: string;
+  }) => void;
 };
 
 type PendingCommandConfirmation = {
@@ -236,8 +201,15 @@ type PendingCommandConfirmation = {
   command: string;
   linkedRepositoryPath?: string;
   hermesCliSessionId?: string;
-  optimisticMessages: ChatMessage[];
 };
+
+type ModelPanelDraft = {
+  provider: string;
+  model: string;
+  reasoning: string;
+};
+
+const REASONING_OPTIONS = ["off", "minimal", "low", "medium", "high", "xhigh"].map((level) => ({ value: level, label: level }));
 
 const COMMAND_PANEL_COPY: Record<HermesCommandPanel, { title: string; body: string }> = {
   model: { title: "Model controls", body: "Review or change the active session model and reasoning settings." },
@@ -252,7 +224,7 @@ const COMMAND_PANEL_COPY: Record<HermesCommandPanel, { title: string; body: stri
   browser: { title: "Browser tools", body: "Inspect or control browser-related Hermes commands." },
 };
 
-export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChange, sessions, activeSessionId, isAgentsWorkspaceOpen = true, onSessionsChange, onActiveSessionIdChange, onArchiveSession }: AgentsHermesScreenProps) {
+export function AgentsHermesScreen({ repositories = [], sessions, activeSessionId, isAgentsWorkspaceOpen = true, onSessionsChange, onActiveSessionIdChange, onArchiveSession, onRepositoryOperationComplete }: AgentsHermesScreenProps) {
   const [cliStatus, setCliStatus] = useState<HermesCliStatus | null>(null);
   const [connectionState, setConnectionState] = useState<AgentConnectionState>("checking");
   const [isSending, setIsSending] = useState(false);
@@ -269,7 +241,17 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
   const [recentCommands, setRecentCommands] = useState<string[]>(() => loadRecentCommands());
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingCommandConfirmation | null>(null);
   const [activeCommandPanel, setActiveCommandPanel] = useState<HermesCommandPanel | null>(null);
+  const [profileSettings, setProfileSettings] = useState<HermesProfileSettings | null>(null);
+  const [modelPanelDraft, setModelPanelDraft] = useState<ModelPanelDraft>(() => ({
+    provider: defaultHermesProfileSettings.modelProvider,
+    model: defaultHermesProfileSettings.modelName,
+    reasoning: defaultHermesProfileSettings.reasoningEffort,
+  }));
+  const [modelPanelStatus, setModelPanelStatus] = useState<string | null>(null);
+  const [modelPanelError, setModelPanelError] = useState<string | null>(null);
+  const [isUpdatingModelPanel, setIsUpdatingModelPanel] = useState(false);
   const queuedHermesPromptsRef = useRef<Array<{ sessionId: string; content: string }>>([]);
+  const claimedInitialPromptKeysRef = useRef<Set<string>>(new Set());
   const [fileManagerOpen, setFileManagerOpen] = useState(false);
   const [fileManagerWidth, setFileManagerWidth] = useState(getInitialFileManagerWidth);
   const [fileManagerRootPath, setFileManagerRootPath] = useState<string | null>(null);
@@ -279,14 +261,25 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
   const [fileManagerError, setFileManagerError] = useState<string | null>(null);
   const composerRef = useRef<ChatComposerHandle>(null);
   const messageListRef = useRef<HTMLDivElement>(null);
+  const sessionsListRef = useRef<HTMLDivElement>(null);
   const chatWorkspaceRef = useRef<HTMLDivElement>(null);
+  const activeCommandPanelRef = useRef<HTMLElement>(null);
+  const pendingConfirmationRef = useRef<HTMLElement>(null);
   const sessionsRef = useRef(sessions);
   const activeSessionIdRef = useRef(activeSessionId);
   const isAgentsWorkspaceOpenRef = useRef(isAgentsWorkspaceOpen);
   const sessionsRailMorphAnimationsRef = useRef<Animation[]>([]);
+  const pendingNewSessionActivationRef = useRef<string | null>(null);
+  const [showSessionsOverflowCue, setShowSessionsOverflowCue] = useState(false);
 
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
   useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
+  useEffect(() => {
+    const pendingSessionId = pendingNewSessionActivationRef.current;
+    if (!pendingSessionId || !sessions.some((session) => session.id === pendingSessionId)) return;
+    pendingNewSessionActivationRef.current = null;
+    onActiveSessionIdChange(pendingSessionId);
+  }, [sessions, onActiveSessionIdChange]);
   useEffect(() => {
     isAgentsWorkspaceOpenRef.current = isAgentsWorkspaceOpen;
     return () => { isAgentsWorkspaceOpenRef.current = false; };
@@ -304,6 +297,22 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
     }).catch(() => {
       if (active) setSlashCommands([]);
     });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    loadHermesProfileSettings()
+      .then((loaded) => {
+        if (!active) return;
+        setProfileSettings(loaded);
+        setModelPanelDraft({ provider: loaded.modelProvider, model: loaded.modelName, reasoning: loaded.reasoningEffort });
+        setModelPanelError(null);
+      })
+      .catch((error) => {
+        if (!active) return;
+        setModelPanelError(`Model settings unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      });
     return () => { active = false; };
   }, []);
 
@@ -338,9 +347,55 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
     return () => window.clearInterval(interval);
   }, [isSending, lastPromptStartedAt]);
 
+  useEffect(() => {
+    if (!activeCommandPanel) return;
+    window.requestAnimationFrame(() => activeCommandPanelRef.current?.focus());
+  }, [activeCommandPanel]);
+
+  useEffect(() => {
+    if (!pendingConfirmation) return;
+    window.requestAnimationFrame(() => pendingConfirmationRef.current?.focus());
+  }, [pendingConfirmation]);
+
   useEffect(() => { window.localStorage.setItem(SESSIONS_RAIL_WIDTH_STORAGE_KEY, String(sessionsRailWidth)); }, [sessionsRailWidth]);
   useEffect(() => { window.localStorage.setItem(SESSIONS_RAIL_COMPACT_STORAGE_KEY, String(isSessionsRailCompact)); }, [isSessionsRailCompact]);
   useEffect(() => { window.localStorage.setItem(FILE_MANAGER_WIDTH_STORAGE_KEY, String(fileManagerWidth)); }, [fileManagerWidth]);
+
+  function updateSessionsOverflowCue() {
+    const list = sessionsListRef.current;
+    if (!list) {
+      setShowSessionsOverflowCue(false);
+      return;
+    }
+    const hasContentBelow = list.clientHeight > 0 && list.scrollHeight > list.clientHeight + 1;
+    const isAtTop = list.scrollTop <= 4;
+    setShowSessionsOverflowCue(hasContentBelow && isAtTop);
+  }
+
+  useEffect(() => {
+    updateSessionsOverflowCue();
+    const list = sessionsListRef.current;
+    if (!list) return undefined;
+    const handleScroll = () => updateSessionsOverflowCue();
+    list.addEventListener("scroll", handleScroll, { passive: true });
+    window.addEventListener("resize", handleScroll);
+    const animationFrame = window.requestAnimationFrame(updateSessionsOverflowCue);
+    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updateSessionsOverflowCue);
+    resizeObserver?.observe(list);
+    return () => {
+      list.removeEventListener("scroll", handleScroll);
+      window.removeEventListener("resize", handleScroll);
+      window.cancelAnimationFrame(animationFrame);
+      resizeObserver?.disconnect();
+    };
+  }, [sessions.length, sessionsRailWidth, isSessionsRailCompact]);
+
+  function handleSessionsOverflowCueClick() {
+    const list = sessionsListRef.current;
+    if (!list) return;
+    list.scrollTo({ top: Math.min(list.scrollHeight, list.clientHeight * 0.7), behavior: "smooth" });
+    setShowSessionsOverflowCue(false);
+  }
 
   const activeSession = sessions.find((session) => session.id === activeSessionId) ?? sessions[0];
   const messages = activeSession?.messages ?? [];
@@ -351,6 +406,23 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
     if (!activeSessionId) return;
     updateSession(activeSessionId, clearSessionNeedsReply);
   }, [activeSessionId]);
+
+  useEffect(() => {
+    if (!activeSession || !activeSession.pendingInitialPrompt || isSending || connectionState !== "online") return;
+    const prompt = activeSession.pendingInitialPrompt;
+    const claimKey = `${activeSession.id}:${activeSession.operationRunId ?? "no-run"}:${prompt}`;
+    if (claimedInitialPromptKeysRef.current.has(claimKey)) return;
+    claimedInitialPromptKeysRef.current.add(claimKey);
+    updateSession(activeSession.id, (session) => ({ ...session, pendingInitialPrompt: undefined, updatedAt: new Date().toISOString() }));
+    window.setTimeout(() => {
+      const session = sessionsRef.current.find((candidate) => candidate.id === activeSession.id);
+      if (!session) {
+        claimedInitialPromptKeysRef.current.delete(claimKey);
+        return;
+      }
+      void sendHermesPrompt({ ...session, pendingInitialPrompt: undefined }, prompt);
+    }, 0);
+  }, [activeSession?.id, activeSession?.operationRunId, activeSession?.pendingInitialPrompt, connectionState, isSending]);
 
   const hermesWithPresence = useMemo(() => {
     const base = participantsById.hermes;
@@ -366,6 +438,55 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
     "--file-manager-width": `${fileManagerWidth}px`,
   } as CSSProperties;
   const fileManagerRootListing = fileManagerRootPath ? fileManagerListings[fileManagerRootPath] : undefined;
+  const availableModelOptions = profileSettings?.availableModels ?? defaultHermesProfileSettings.availableModels;
+  const providerOptions = Array.from(new Set([...Object.keys(availableModelOptions), modelPanelDraft.provider].filter(Boolean))).map((provider) => ({ value: provider, label: provider }));
+  const modelOptions = Array.from(new Set([...(availableModelOptions[modelPanelDraft.provider] ?? []), modelPanelDraft.model].filter(Boolean))).map((model) => ({ value: model, label: model }));
+  const activeModelLabel = profileSettings?.modelName || modelPanelDraft.model || ACTIVE_MODEL;
+  const activeReasoningLabel = profileSettings?.reasoningEffort || modelPanelDraft.reasoning;
+  const modelPanelStorageLabel = profileSettings?.storagePath ?? "Hermes profile settings";
+
+  async function updateModelPanelSettings(nextDraft: ModelPanelDraft) {
+    if (!profileSettings) {
+      setModelPanelError("Model settings are still loading; try again in a moment.");
+      return;
+    }
+    const previousDraft = modelPanelDraft;
+    setModelPanelDraft(nextDraft);
+    setModelPanelError(null);
+    setModelPanelStatus("Updating…");
+    setIsUpdatingModelPanel(true);
+    try {
+      const saved = await saveHermesProfileSettings({
+        ...profileSettings,
+        modelProvider: nextDraft.provider,
+        modelName: nextDraft.model,
+        reasoningEffort: nextDraft.reasoning,
+      });
+      setProfileSettings(saved);
+      setModelPanelDraft({ provider: saved.modelProvider, model: saved.modelName, reasoning: saved.reasoningEffort });
+      setModelPanelStatus(`Updated · ${saved.storagePath}`);
+    } catch (error) {
+      setModelPanelDraft(previousDraft);
+      setModelPanelError(`Update failed: ${error instanceof Error ? error.message : String(error)}`);
+      setModelPanelStatus(null);
+    } finally {
+      setIsUpdatingModelPanel(false);
+    }
+  }
+
+  function handleModelProviderChange(nextProvider: string) {
+    const providerModels = availableModelOptions[nextProvider] ?? [];
+    const nextModel = providerModels.includes(modelPanelDraft.model) ? modelPanelDraft.model : providerModels[0] ?? modelPanelDraft.model;
+    void updateModelPanelSettings({ ...modelPanelDraft, provider: nextProvider, model: nextModel });
+  }
+
+  function handleModelNameChange(nextModel: string) {
+    void updateModelPanelSettings({ ...modelPanelDraft, model: nextModel });
+  }
+
+  function handleReasoningChange(nextReasoning: string) {
+    void updateModelPanelSettings({ ...modelPanelDraft, reasoning: nextReasoning });
+  }
 
   useEffect(() => {
     const list = messageListRef.current;
@@ -387,12 +508,6 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
     const currentSession = sessionsRef.current.find((session) => session.id === sessionId);
     if (!currentSession || currentSession.lastNotifiedAssistantMessageId === assistantMessageId) return;
     const notificationUpdatedAt = new Date().toISOString();
-    const notifiedSession = {
-      ...currentSession,
-      needsReply: true,
-      lastNotifiedAssistantMessageId: assistantMessageId,
-      notificationUpdatedAt,
-    };
     onSessionsChange((current) => current.map((session) => session.id === sessionId ? {
       ...session,
       needsReply: true,
@@ -402,16 +517,6 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
     const sessionTitle = currentSession.title || "Hermes session";
     const responsePreview = agentResponsePreview(responseContent);
     void sendDesktopAgentNotification({ sessionTitle, responsePreview });
-    void sendAgentResponseEmailNotification({
-      to: "ziad.ahmed.25.25.25@gmail.com",
-      sessionTitle,
-      subject: agentResponseEmailSubject(sessionTitle),
-      summary: buildAgentResponseEmailSummary({
-        id: notifiedSession.id,
-        title: notifiedSession.title,
-        messages: notifiedSession.messages.map((message) => ({ role: message.role, content: message.content })),
-      }, responseContent),
-    });
   }
 
   function beginRenameSession(session: HermesChatSession) {
@@ -446,7 +551,6 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
   }
 
   function handleLinkedRepositoryChange(repositoryId: string) {
-    onLinkedRepositoryIdChange?.(repositoryId);
     if (activeSession) {
       updateSession(activeSession.id, (session) => ({ ...session, linkedRepositoryId: repositoryId === "none" ? undefined : repositoryId, updatedAt: new Date().toISOString() }));
     }
@@ -499,31 +603,46 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
     const listing = fileManagerListings[listingPath];
     if (!listing) return null;
     return (
-      <ul className="file-manager-list" role={depth === 0 ? "tree" : "group"}>
+      <ul className="file-manager-list">
         {listing.entries.map((entry) => {
           const isDirectory = entry.kind === "directory";
           const isExpanded = expandedFilePaths.has(entry.path);
+          const itemContent = (
+            <>
+              <span className="file-manager-chevron" aria-hidden="true">
+                {isDirectory ? (isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />) : null}
+              </span>
+              <span className="file-manager-icon" aria-hidden="true">
+                {isDirectory ? <Folder size={15} /> : <FileText size={15} />}
+              </span>
+              <span className="file-manager-name">{entry.name}</span>
+              <span className="file-manager-meta">
+                {isDirectory ? `${entry.childrenCount ?? 0} items` : entry.size ? `${Math.ceil(entry.size / 1024)} KB` : entry.kind}
+              </span>
+            </>
+          );
           return (
-            <li key={entry.path} className="file-manager-row" role="treeitem" aria-expanded={isDirectory ? isExpanded : undefined}>
-              <button
-                className={isDirectory ? "file-manager-item file-manager-item--folder" : "file-manager-item"}
-                disabled={!isDirectory}
-                onClick={() => handleFolderToggle(entry)}
-                style={{ "--file-manager-depth": depth } as CSSProperties}
-                title={entry.path}
-                type="button"
-              >
-                <span className="file-manager-chevron" aria-hidden="true">
-                  {isDirectory ? (isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />) : null}
-                </span>
-                <span className="file-manager-icon" aria-hidden="true">
-                  {isDirectory ? <Folder size={15} /> : <FileText size={15} />}
-                </span>
-                <span className="file-manager-name">{entry.name}</span>
-                <span className="file-manager-meta">
-                  {isDirectory ? `${entry.childrenCount ?? 0} items` : entry.size ? `${Math.ceil(entry.size / 1024)} KB` : entry.kind}
-                </span>
-              </button>
+            <li key={entry.path} className="file-manager-row">
+              {isDirectory ? (
+                <button
+                  aria-expanded={isExpanded}
+                  className="file-manager-item file-manager-item--folder"
+                  onClick={() => handleFolderToggle(entry)}
+                  style={{ "--file-manager-depth": depth } as CSSProperties}
+                  title={entry.path}
+                  type="button"
+                >
+                  {itemContent}
+                </button>
+              ) : (
+                <div
+                  className="file-manager-item"
+                  style={{ "--file-manager-depth": depth } as CSSProperties}
+                  title={entry.path}
+                >
+                  {itemContent}
+                </div>
+              )}
               {isDirectory && isExpanded ? renderFileManagerEntries(entry.path, depth + 1) : null}
             </li>
           );
@@ -532,10 +651,16 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
     );
   }
 
+  function prependNewSession() {
+    onSessionsChange((current) => {
+      const nextSession = createSession("New session", current);
+      pendingNewSessionActivationRef.current = nextSession.id;
+      return [nextSession, ...current];
+    });
+  }
+
   function handleNewSession() {
-    const nextSession = createSession("New session", sessions);
-    onSessionsChange((current) => [nextSession, ...current]);
-    onActiveSessionIdChange(nextSession.id);
+    prependNewSession();
     setLastPromptElapsedMs(null);
   }
 
@@ -580,6 +705,39 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
     event.preventDefault();
     const delta = event.shiftKey ? 40 : 16;
     setFileManagerWidth((current) => clampFileManagerWidth(current + (event.key === "ArrowLeft" ? delta : -delta)));
+  }
+
+  function handleSessionsRailResizeKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const delta = event.shiftKey ? 40 : 16;
+    setSessionsRailWidth((current) => clampSessionsRailWidth(current + (event.key === "ArrowRight" ? delta : -delta)));
+  }
+
+  function trapDialogFocus(event: ReactKeyboardEvent<HTMLElement>, closeDialog: () => void) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeDialog();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusableElements = Array.from(
+      event.currentTarget.querySelectorAll<HTMLElement>("button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])"),
+    ).filter((element) => !element.hasAttribute("disabled") && element.getAttribute("aria-hidden") !== "true");
+    if (focusableElements.length === 0) {
+      event.preventDefault();
+      event.currentTarget.focus();
+      return;
+    }
+    const firstElement = focusableElements[0];
+    const lastElement = focusableElements[focusableElements.length - 1];
+    if (event.shiftKey && document.activeElement === firstElement) {
+      event.preventDefault();
+      lastElement.focus();
+    } else if (!event.shiftKey && document.activeElement === lastElement) {
+      event.preventDefault();
+      firstElement.focus();
+    }
   }
 
   function handleSessionsRailMorphToggle() {
@@ -757,11 +915,9 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
     window.requestAnimationFrame(() => composerRef.current?.focusMessageField());
   }
 
-  function appendCommandResult(sessionId: string, command: string, result: HermesSlashCommandExecution, assistantId: string, optimisticMessages: ChatMessage[]) {
+  function appendCommandResult(sessionId: string, command: string, result: HermesSlashCommandExecution, assistantId: string) {
     if (result.kind === "new-session") {
-      const nextSession = createSession("New session", sessions);
-      onSessionsChange((current) => [nextSession, ...current]);
-      onActiveSessionIdChange(nextSession.id);
+      prependNewSession();
       setLastPromptElapsedMs(null);
       return;
     }
@@ -779,7 +935,9 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
       ...session,
       hermesCliSessionId: result.session || session.hermesCliSessionId,
       updatedAt: new Date().toISOString(),
-      messages: optimisticMessages.map((message) => message.id === assistantId ? { ...message, content, status: "sent" } : message),
+      messages: session.messages.some((message) => message.id === assistantId)
+        ? session.messages.map((message) => message.id === assistantId ? { ...message, content, status: "sent" } : message)
+        : [...session.messages, { id: assistantId, role: "assistant", participantId: "hermes", content, createdAt: new Date().toISOString(), status: "sent" }],
     } : session));
     notifyForBackgroundAgentResponse(sessionId, assistantId, content);
     if (result.session) setCliStatus((current) => current ? { ...current, session: result.session || current.session } : current);
@@ -811,14 +969,13 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
           command,
           linkedRepositoryPath: detectedRepository?.path,
           hermesCliSessionId: activeSession.hermesCliSessionId,
-          optimisticMessages,
         });
         onSessionsChange((current) => current.map((session) => session.id === sendingSessionId ? {
           ...session,
-          messages: optimisticMessages.map((message) => message.id === assistantId ? { ...message, content: result.content || "Confirmation required.", status: "sent" } : message),
+          messages: session.messages.map((message) => message.id === assistantId ? { ...message, content: result.content || "Confirmation required.", status: "sent" } : message),
         } : session));
       } else {
-        appendCommandResult(sendingSessionId, command, result, assistantId, optimisticMessages);
+        appendCommandResult(sendingSessionId, command, result, assistantId);
       }
     } catch (error) {
       const stoppedByUser = error instanceof Error && error.message.includes("stopped by the user");
@@ -849,7 +1006,7 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
     setLastPromptElapsedMs(null);
     try {
       const result = await executeHermesSlashCommand(pending.command, pending.linkedRepositoryPath, pending.hermesCliSessionId, true);
-      appendCommandResult(pending.sessionId, pending.command, result, pending.assistantId, pending.optimisticMessages);
+      appendCommandResult(pending.sessionId, pending.command, result, pending.assistantId);
     } catch (error) {
       const stoppedByUser = error instanceof Error && error.message.includes("stopped by the user");
       const preservedStopCopy = activeHermesRunRef.current?.assistantId === pending.assistantId ? activeHermesRunRef.current.stopCopy : undefined;
@@ -928,7 +1085,8 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
     const nextMessages = [...sessionForSend.messages, userMessage];
     const optimisticMessages = [...nextMessages, assistantMessage];
     const updatedAt = new Date().toISOString();
-    const currentLinkedRepository = repositories.find((repository) => repository.id === sessionForSend.linkedRepositoryId);
+    const effectiveRepositoryId = sessionForSend.linkedRepositoryId;
+    const currentLinkedRepository = repositories.find((repository) => repository.id === effectiveRepositoryId);
     const detectedRepository = currentLinkedRepository ?? detectRepositoryFromPrompt(content, repositories);
     updateSession(sendingSessionId, (session) => ({ ...session, title: session.title === "New session" ? titleFromPrompt(content) : session.title, linkedRepositoryId: detectedRepository?.id ?? session.linkedRepositoryId, updatedAt, messages: optimisticMessages }));
 
@@ -951,6 +1109,16 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
         messages: session.messages.map((message) => message.id === assistantId ? { ...message, content: responseContent, status: "sent" } : message),
       } : session));
       notifyForBackgroundAgentResponse(sendingSessionId, assistantId, responseContent);
+      if (sessionForSend.operationRunId && sessionForSend.operationRepositoryId && sessionForSend.operationAction) {
+        onRepositoryOperationComplete?.({
+          sessionId: sendingSessionId,
+          runId: sessionForSend.operationRunId,
+          repositoryId: sessionForSend.operationRepositoryId,
+          action: sessionForSend.operationAction,
+          outcome: "needs-user",
+          responseContent,
+        });
+      }
       setCliStatus((current) => current ? { ...current, session: response.session } : current);
     } catch (error) {
       const stoppedByUser = error instanceof Error && error.message.includes("stopped by the user");
@@ -969,6 +1137,16 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
           };
         }),
       } : session));
+      if (sessionForSend.operationRunId && sessionForSend.operationRepositoryId && sessionForSend.operationAction) {
+        onRepositoryOperationComplete?.({
+          sessionId: sendingSessionId,
+          runId: sessionForSend.operationRunId,
+          repositoryId: sessionForSend.operationRepositoryId,
+          action: sessionForSend.operationAction,
+          outcome: stoppedByUser ? "cancelled" : "failed",
+          responseContent: error instanceof Error ? error.message : String(error),
+        });
+      }
     } finally {
       setLastPromptElapsedMs(Date.now() - promptStartedAt);
       setLastPromptStartedAt(null);
@@ -1013,17 +1191,20 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
         <div className="topbar-status-stack">
           <div className="connection-panel" aria-live="polite">
             <span className={`status-dot ${statusTone(connectionState)}`} aria-hidden="true" />
-            <span>Hermes CLI {connectionState.toUpperCase()}</span>
+            <span className="connection-status-copy">
+              <span>Hermes CLI {connectionState.toUpperCase()}</span>
+              <span className="status-label-jp">{CONNECTION_STATE_JAPANESE[connectionState]}</span>
+            </span>
           </div>
           <div className="repository-link-control repository-link-control--topbar">
-            <label htmlFor="linked-repository-select">Link repository</label>
+            <label htmlFor="linked-repository-select"><span>Repository</span><span className="control-label-jp">接続</span></label>
             <GlobalDropdown
               disabled={repositories.length === 0}
               id="linked-repository-select"
               label="Link repository"
               onChange={handleLinkedRepositoryChange}
               options={[
-                { value: "none", label: "Unlinked" },
+                { value: "none", label: "Unlinked / 未接続" },
                 ...repositories.map((repository) => ({
                   value: repository.id,
                   label: repository.name,
@@ -1037,6 +1218,7 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
           <button aria-label={fileManagerOpen ? "Close file manager sidebar" : "Open file manager sidebar"} aria-pressed={fileManagerOpen} className="file-manager-toggle-button" onClick={handleFileManagerToggle} title="Open file manager" type="button">
             <FolderTree size={15} strokeWidth={2.4} aria-hidden="true" />
             <span>Files</span>
+            <span className="button-label-jp" aria-hidden="true">書類</span>
           </button>
         </div>
       </header>
@@ -1050,7 +1232,7 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
               {isSessionsRailCompact ? <Maximize2 size={13} strokeWidth={2.4} /> : <Minimize2 size={13} strokeWidth={2.4} />}
             </button>
           </div>
-          <div className="sessions-list" role="list">
+          <div className="sessions-list" onScroll={updateSessionsOverflowCue} ref={sessionsListRef} role="list">
             <div className="session-tab-row session-tab-row--new" role="listitem">
               <button aria-label="New session" className="session-tab session-new-button" data-session-rail-morph-item="new-session" onClick={handleNewSession} title={isSessionsRailCompact ? "New session" : undefined} type="button">
                 <span className="session-tab-icon session-new-icon" aria-hidden="true"><Plus size={16} strokeWidth={2.6} /></span>
@@ -1113,7 +1295,32 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
               );
             })}
           </div>
-          {!isSessionsRailCompact ? <button aria-label="Drag to resize Sessions rail" className="sessions-rail-resize-handle" onPointerDown={handleSessionsRailResizeStart} type="button" /> : null}
+          {showSessionsOverflowCue ? (
+            <button
+              aria-label="More sessions below"
+              className="sessions-overflow-cue"
+              onClick={handleSessionsOverflowCueClick}
+              title="More sessions below"
+              type="button"
+            >
+              <ChevronDown size={16} strokeWidth={2.8} aria-hidden="true" />
+            </button>
+          ) : null}
+          {!isSessionsRailCompact ? (
+            <button
+              aria-label="Drag to resize Sessions rail"
+              aria-orientation="vertical"
+              aria-valuemax={SESSIONS_RAIL_MAX_WIDTH}
+              aria-valuemin={SESSIONS_RAIL_MIN_WIDTH}
+              aria-valuenow={sessionsRailWidth}
+              className="sessions-rail-resize-handle"
+              onKeyDown={handleSessionsRailResizeKeyDown}
+              onPointerDown={handleSessionsRailResizeStart}
+              role="separator"
+              title="Drag to resize Sessions rail"
+              type="button"
+            />
+          ) : null}
         </aside>
 
         <div className="chat-main-pane">
@@ -1165,14 +1372,26 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
             </div>
           </aside>
         ) : null}
-        <ChatComposer ref={composerRef} disabled={connectionState !== "online"} disabledReason={disabledReason} isSending={isSending} contextUsedPercent={contextUsedPercent} modelLabel={ACTIVE_MODEL} slashCommands={slashCommands} onSend={handleSend} onStop={handleStopHermesRun} />
+        <ChatComposer ref={composerRef} disabled={connectionState !== "online"} disabledReason={disabledReason} isSending={isSending} contextUsedPercent={contextUsedPercent} modelLabel={activeModelLabel} slashCommands={slashCommands} onSend={handleSend} onStop={handleStopHermesRun} />
       </div>
 
       <footer className="chat-stats-strip" aria-label="Hermes session stats">
-        <span>Context used: {contextUsedPercent}% · Compressions: {compressionCount}</span>
-        <span>Elapsed: {formatElapsed(promptElapsed)}</span>
-        <span>Codex usage: {CODEX_USAGE_TODAY} today / {CODEX_USAGE_WEEKLY} · Model: {ACTIVE_MODEL}</span>
-        <span>Session: {cliStatus?.session ?? activeSession?.id ?? "most-recent-hermes-cli-session"}</span>
+        <span><b>Context</b> {contextUsedPercent}% · {compressionCount} compressions</span>
+        <span><b>Time</b> {formatElapsed(promptElapsed)}</span>
+        <span className="chat-stats-model-section">
+          <span className="chat-stats-model-copy"><b>Model</b> {activeModelLabel} · Reasoning {activeReasoningLabel} · Codex {CODEX_USAGE_TODAY} / {CODEX_USAGE_WEEKLY}</span>
+          <button
+            aria-label="Change model and reasoning"
+            aria-haspopup="dialog"
+            className="chat-stats-model-button"
+            onClick={() => setActiveCommandPanel("model")}
+            title={`Change model and reasoning · ${modelPanelDraft.provider} · reasoning ${activeReasoningLabel}`}
+            type="button"
+          >
+            Tune
+          </button>
+        </span>
+        <span><b>Session</b> {cliStatus?.session ?? activeSession?.id ?? "most-recent-hermes-cli-session"}</span>
       </footer>
 
       <CommandPalette
@@ -1192,12 +1411,37 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
 
       {activeCommandPanel ? (
         <div className="command-palette-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setActiveCommandPanel(null); }}>
-          <section aria-label={`${COMMAND_PANEL_COPY[activeCommandPanel].title} command panel`} className="zoid-native-command-panel" role="dialog" aria-modal="true">
+          <section aria-label={`${COMMAND_PANEL_COPY[activeCommandPanel].title} command panel`} className="zoid-native-command-panel" role="dialog" aria-modal="true" onKeyDown={(event) => trapDialogFocus(event, () => setActiveCommandPanel(null))} ref={activeCommandPanelRef} tabIndex={-1}>
             <header>
               <div><strong>{COMMAND_PANEL_COPY[activeCommandPanel].title}</strong><span>Native Zoid command surface</span></div>
               <button onClick={() => setActiveCommandPanel(null)} type="button">Close</button>
             </header>
             <p>{COMMAND_PANEL_COPY[activeCommandPanel].body}</p>
+            {activeCommandPanel === "model" ? (
+              <div className="model-command-panel">
+                <div className="model-command-summary">
+                  <span>Active profile source</span>
+                  <strong title={modelPanelStorageLabel}>{modelPanelStorageLabel}</strong>
+                  <small>Selections are saved immediately to Hermes profile settings. Existing CLI sessions may require a new Zoid-launched session before the runtime model changes.</small>
+                </div>
+                <div className="model-command-grid" aria-busy={isUpdatingModelPanel}>
+                  <label className="model-command-field">
+                    <span>Provider</span>
+                    <GlobalDropdown disabled={!profileSettings || isUpdatingModelPanel} label="Model provider" onChange={handleModelProviderChange} options={providerOptions} size="compact" value={modelPanelDraft.provider} />
+                  </label>
+                  <label className="model-command-field">
+                    <span>Model</span>
+                    <GlobalDropdown disabled={!profileSettings || isUpdatingModelPanel || modelOptions.length === 0} label="Model" onChange={handleModelNameChange} options={modelOptions} size="compact" value={modelPanelDraft.model} />
+                  </label>
+                  <label className="model-command-field">
+                    <span>Reasoning</span>
+                    <GlobalDropdown disabled={!profileSettings || isUpdatingModelPanel} label="Reasoning effort" onChange={handleReasoningChange} options={REASONING_OPTIONS} size="compact" value={modelPanelDraft.reasoning} />
+                  </label>
+                </div>
+                {modelPanelStatus ? <p className="model-command-status" role="status">{modelPanelStatus}</p> : null}
+                {modelPanelError ? <p className="model-command-error" role="alert">{modelPanelError}</p> : null}
+              </div>
+            ) : null}
             {activeCommandPanel === "agents" ? (
               <div className="ruthless-reviewer-card">
                 <div>
@@ -1222,7 +1466,7 @@ export function AgentsHermesScreen({ repositories = [], onLinkedRepositoryIdChan
 
       {pendingConfirmation ? (
         <div className="zoid-command-confirm-backdrop" role="presentation">
-          <section aria-label="Confirm command" className="zoid-command-confirm" role="dialog" aria-modal="true">
+          <section aria-label="Confirm command" className="zoid-command-confirm" role="dialog" aria-modal="true" onKeyDown={(event) => trapDialogFocus(event, () => setPendingConfirmation(null))} ref={pendingConfirmationRef} tabIndex={-1}>
             <header>
               <strong>Confirm command</strong>
               <span>{pendingConfirmation.result.scope === "global-hermes" ? "Global runtime action" : "Current session action"}</span>

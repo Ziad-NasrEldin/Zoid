@@ -370,7 +370,8 @@ export function CodeWorkspace({
             <h3>Repository list</h3>
             <div className={isRepositorySearchOpen ? "repository-search-morph repository-search-morph--open" : "repository-search-morph"}>
               {isRepositorySearchOpen ? (
-                <label className="repository-search-field" htmlFor="repository-search-input">
+                <div className="repository-search-field">
+                  <label className="sr-only" htmlFor="repository-search-input">Search repositories</label>
                   <Search aria-hidden="true" size={16} strokeWidth={2.4} />
                   <input
                     autoFocus
@@ -391,7 +392,7 @@ export function CodeWorkspace({
                   >
                     <X aria-hidden="true" size={15} strokeWidth={2.6} />
                   </button>
-                </label>
+                </div>
               ) : (
                 <button
                   aria-label="Search repositories"
@@ -408,7 +409,7 @@ export function CodeWorkspace({
         </div>
 
         {repositoryScanFeedback ? (
-          <div className={`repo-scan-feedback repo-scan-feedback--${repositoryScanFeedback.tone}`} role="status" aria-live="polite">
+          <div className={`repo-scan-feedback repo-scan-feedback--${repositoryScanFeedback.tone}`}>
             <span>{repositoryScanFeedback.label}</span>
             <p>{repositoryScanFeedback.message}</p>
           </div>

@@ -11,6 +11,7 @@ const slashCommandParser = readFileSync(new URL("./agents/slashCommandParser.ts"
 const commandPalette = readFileSync(new URL("./agents/CommandPalette.tsx", import.meta.url), "utf8");
 const recentCommands = readFileSync(new URL("./agents/recentCommands.ts", import.meta.url), "utf8");
 const screen = readFileSync(new URL("./agents/AgentsHermesScreen.tsx", import.meta.url), "utf8");
+const sessionState = readFileSync(new URL("./agents/sessionState.ts", import.meta.url), "utf8");
 const sessionPortraits = readFileSync(new URL("./agents/sessionPortraits.ts", import.meta.url), "utf8");
 const chatComposer = readFileSync(new URL("./agents/ChatComposer.tsx", import.meta.url), "utf8");
 const messageBubble = readFileSync(new URL("./agents/MessageBubble.tsx", import.meta.url), "utf8");
@@ -25,11 +26,19 @@ const providerClient = readFileSync(new URL("./providers/providerClient.ts", imp
 const globalDropdown = readFileSync(new URL("./ui/GlobalDropdown.tsx", import.meta.url), "utf8");
 const codeWorkspace = readFileSync(new URL("./code/CodeWorkspace.tsx", import.meta.url), "utf8");
 const repositoryClient = readFileSync(new URL("./code/repositoryClient.ts", import.meta.url), "utf8");
+const repositoryOperations = readFileSync(new URL("./code/repositoryOperations.ts", import.meta.url), "utf8");
 const agentNotifications = existsSync(new URL("./agents/agentNotifications.ts", import.meta.url)) ? readFileSync(new URL("./agents/agentNotifications.ts", import.meta.url), "utf8") : "";
 const ruthlessReviewerAgent = existsSync(new URL("./agents/ruthlessReviewerAgent.ts", import.meta.url)) ? readFileSync(new URL("./agents/ruthlessReviewerAgent.ts", import.meta.url), "utf8") : "";
 const brainWorkspace = existsSync(new URL("./brain/BrainWorkspace.tsx", import.meta.url)) ? readFileSync(new URL("./brain/BrainWorkspace.tsx", import.meta.url), "utf8") : "";
 const brainClient = existsSync(new URL("./brain/brainClient.ts", import.meta.url)) ? readFileSync(new URL("./brain/brainClient.ts", import.meta.url), "utf8") : "";
 const brainTypes = existsSync(new URL("./brain/types.ts", import.meta.url)) ? readFileSync(new URL("./brain/types.ts", import.meta.url), "utf8") : "";
+if (!/<LazyAgentsHermesScreen[\s\S]{0,520}repositories=\{repositories\}[\s\S]{0,160}sessions=\{hermesSessions\}/.test(app)) {
+  throw new Error("Agents screen must receive repository catalog plus chat sessions, not a global linked repository selection");
+}
+if (/<LazyAgentsHermesScreen[\s\S]{0,520}(linkedRepositoryId=|onLinkedRepositoryIdChange=)/.test(app)) {
+  throw new Error("Global Code repository link must not be passed into Agents chat sessions");
+}
+
 for (const requiredBrainShell of ["Brain", "Notes sync", "BrainWorkspace", "Apple Notes Brain", "Create Zoid Brain folder"]) {
   if (!app.includes(requiredBrainShell) && !brainWorkspace.includes(requiredBrainShell)) {
     throw new Error(`Apple Notes Brain workspace shell is missing: ${requiredBrainShell}`);
@@ -86,8 +95,23 @@ if (!app.includes('ZOID<span className="brand-number">25</span>') || !css.includ
   throw new Error("Sidebar brand mark must keep 25 beside ZOID with a small inline gap");
 }
 
-if (!css.includes(".kana-line { margin: 0 0 -4px; color: var(--kujo-blue);") || !css.includes(".zoid25-shell .kana-line { color: var(--kujo-blue); }") || !css.includes(".settings-archive-header p.kana-line { color: var(--kujo-blue); }") || !css.includes(".brain-sumi-e .brain-hero p.kana-line")) {
-  throw new Error("All page kana subheadings must render in Kujo blue, including Settings and Brain headers");
+if (!css.includes(".kana-line { margin: 0 0 -4px; color: var(--shell-seal);") || !css.includes(".zoid25-shell .kana-line { color: var(--shell-seal); }") || !css.includes(".settings-archive-header p.kana-line { color: var(--kujo-blue); }") || !css.includes(".brain-sumi-e .brain-hero p.kana-line")) {
+  throw new Error("Global shell kana subheadings must use the sumi-e seal accent while scoped page overrides remain explicit");
+}
+
+for (const requiredSumiESidebar of [
+  "--shell-ink-black: var(--brain-ink-black, #0d0a0a);",
+  "--shell-seal: var(--brain-seal, #c23a2e);",
+  "--shell-serif-body: var(--brain-serif-body",
+  ".ink-rail::before",
+  "linear-gradient(180deg, var(--shell-ink-black), #191515 64%, var(--shell-seal-deep))",
+  ".editorial-sidebar::before",
+  ".nav-row::before",
+  ".nav-list::-webkit-scrollbar-thumb",
+]) {
+  if (!css.includes(requiredSumiESidebar)) {
+    throw new Error(`Global sidebar chrome must inherit the sumi-e design system: ${requiredSumiESidebar}`);
+  }
 }
 
 for (const requiredAgentsSumiE of [
@@ -110,8 +134,14 @@ if (!app.includes('aria-label="Primary navigation"')) {
   throw new Error("Primary navigation sidebar scaffold is missing");
 }
 
-if (!app.includes("blue-rail")) {
-  throw new Error("Kujoyama-style blue rail is missing");
+if (!app.includes("ink-rail")) {
+  throw new Error("Sumi-e ink rail is missing");
+}
+
+for (const forbiddenGlobalSumiELeak of ["settings-control-room", "blue-rail", "#3558a2", "rgba(53, 88, 162", "rgba(53,88,162", "#e7edfa", "#fde863"]) {
+  if (app.includes(forbiddenGlobalSumiELeak) || css.includes(forbiddenGlobalSumiELeak)) {
+    throw new Error(`Global sumi-e chrome must not retain old Kujoyama/control-room styling: ${forbiddenGlobalSumiELeak}`);
+  }
 }
 
 for (const requiredSidebarControl of [
@@ -137,9 +167,47 @@ if (!app.includes("data-sidebar-morph-item={isSidebarCollapsed ? item.label : un
   throw new Error("Sidebar morph items must be scoped to the visible source/destination set so duplicate keys do not target hidden rows");
 }
 
-for (const requiredIcon of ["CalendarDays", "FolderKanban", "Bot", "Code2", "Megaphone", "Repeat2", "Settings"]) {
+for (const requiredInkSidebarControl of [
+  'className={isSidebarCollapsed ? "rail-menu rail-menu--open" : "rail-menu rail-menu--close"}',
+  ".rail-menu--close span:nth-child(1) { transform: translateY(7px) rotate(45deg); }",
+  ".rail-menu--close span:nth-child(2) { opacity: 0; }",
+  ".rail-menu--open span:nth-child(2) { opacity: 1; }",
+]) {
+  if (!app.includes(requiredInkSidebarControl) && !css.includes(requiredInkSidebarControl)) {
+    throw new Error(`Expanded sidebar must show an X close affordance and collapse back to hamburger: ${requiredInkSidebarControl}`);
+  }
+}
+
+if (css.includes(".brand-block::after")) {
+  throw new Error("Sidebar brand block must not render the black brush divider under ZOID25");
+}
+
+for (const requiredIcon of ["InkSigil", "variant=\"brain\"", "variant=\"today\"", "variant=\"projects\"", "variant=\"agents\"", "variant=\"code\"", "variant=\"content\"", "variant=\"automations\"", "variant=\"settings\""]) {
   if (!app.includes(requiredIcon)) {
-    throw new Error(`Collapsed sidebar needs unique branded nav icon: ${requiredIcon}`);
+    throw new Error(`Collapsed sidebar needs custom sumi-e nav sigil: ${requiredIcon}`);
+  }
+}
+
+for (const requiredSigilCss of [".nav-sigil path", ".nav-sigil-seal { fill: var(--shell-seal); stroke: none; }"]) {
+  if (!css.includes(requiredSigilCss)) {
+    throw new Error(`Primary sidebar icons must use custom ink/seal styling: ${requiredSigilCss}`);
+  }
+}
+
+if (/import \{[^}]*\b(?:Bot|CalendarDays|FolderKanban|Code2|Megaphone|Repeat2|Settings)\b/.test(app)) {
+  throw new Error("Primary sidebar icons must not use the rejected generic lucide navigation icon set");
+}
+
+for (const requiredModelQuickSwitch of [
+  "chat-stats-model-section",
+  "chat-stats-model-button",
+  "Reasoning {activeReasoningLabel}",
+  "aria-haspopup=\"dialog\"",
+  "onClick={() => setActiveCommandPanel(\"model\")}",
+  "grid-template-columns: minmax(0, 1fr) auto",
+]) {
+  if (!screen.includes(requiredModelQuickSwitch) && !css.includes(requiredModelQuickSwitch)) {
+    throw new Error(`Hermes footer needs a compact model/reasoning quick-switch button: ${requiredModelQuickSwitch}`);
   }
 }
 
@@ -230,8 +298,8 @@ if (!app.includes("CodeWorkspace") || app.includes("empty-code-workspace")) {
   throw new Error("Code workspace must render the GitHub repositories integration, not the old empty page");
 }
 
-for (const requiredCodeSurface of ["Scan folder", "Clone repo", "Repository list", "Use for Agents", "Search repositories", "repository-search-input", "filteredRepositories", "repositoryScanFeedback", "repo-action-feedback", "repo-scan-feedback", "repository-card--just-added"]) {
-  if (!codeWorkspace.includes(requiredCodeSurface)) {
+for (const requiredCodeSurface of ["Scan folder", "Clone repo", "Repository list", "Use for Agents", "Search repositories", "repository-search-input", "filteredRepositories", "repositoryScanFeedback", "repo-action-feedback", "repo-scan-feedback", "repository-card--just-added", "Run localhost", "Deploy staging", "Deploy production", "repository-operation-strip"]) {
+  if (!codeWorkspace.includes(requiredCodeSurface) && !repositoryOperations.includes(requiredCodeSurface)) {
     throw new Error(`Code workspace is missing repository management surface: ${requiredCodeSurface}`);
   }
 }
@@ -285,8 +353,8 @@ for (const requiredDefaultBranchEditVisibility of [
   "default-branch-cancel-button",
   ".repo-meta-grid-item--default-branch.repo-meta-grid-item--editing",
   ".repo-meta-grid dd.repo-meta-action-row--editing { display: block; overflow: visible; white-space: normal; text-overflow: clip; }",
-  "grid-template-columns: clamp(230px, 28vw, 360px) auto auto",
-  ".default-branch-dropdown { min-width: 0; width: clamp(230px, 28vw, 360px); max-width: 100%; }",
+  "grid-template-columns: minmax(0, 1fr) auto auto",
+  ".default-branch-dropdown { min-width: 0; width: 100%; max-width: 100%; }",
   ".default-branch-dropdown .zoid-dropdown-menu { z-index: 120; right: auto; width: 100%;",
   ".default-branch-dropdown .zoid-dropdown-option { width: 100%; min-height: 32px; background: var(--code-paper); color: var(--code-ink-black); }",
   ".repository-card button:not(.zoid-dropdown-trigger):not(.zoid-dropdown-option)",
@@ -298,6 +366,21 @@ for (const requiredDefaultBranchEditVisibility of [
 
 if (codeWorkspace.includes("window.prompt")) {
   throw new Error("Default branch editing must not rely on window.prompt because it is invisible/no-op in the desktop flow");
+}
+
+for (const requiredRepositoryListPriority of [
+  "code-repository-layout",
+  "repo-action-panel--scan",
+  "repo-action-panel--clone",
+  "grid-template-columns: minmax(0, 1fr) minmax(260px, 320px)",
+  "grid-template-rows: auto minmax(0, 1fr)",
+  "height: min(680px, calc(100vh - 230px))",
+  "overflow-y: auto",
+  ".repository-card-list::-webkit-scrollbar",
+]) {
+  if (!codeWorkspace.includes(requiredRepositoryListPriority) && !css.includes(requiredRepositoryListPriority)) {
+    throw new Error(`Code workspace must prioritize a large scrollable repository list over scan/clone controls: ${requiredRepositoryListPriority}`);
+  }
 }
 
 if (!repositoryClient.includes("@tauri-apps/plugin-dialog") || !repositoryClient.includes("directory: true") || !codeWorkspace.includes("handleChooseScanFolder") || !codeWorkspace.includes("handleChooseCloneDestination")) {
@@ -398,8 +481,16 @@ if (new Set(assignedAgentAvatarIds).size !== SESSION_AGENT_AVATARS.length) {
   throw new Error("New Hermes sessions must receive unique agent avatar images before the pool is reused");
 }
 
-if (!screen.includes("createSession(\"New session\", sessions)")) {
-  throw new Error("Slash-command-created Hermes sessions must also avoid reused agent avatars");
+if (!screen.includes("function prependNewSession()") || !screen.includes("createSession(\"New session\", current)") || !screen.includes("pendingNewSessionActivationRef")) {
+  throw new Error("New Hermes sessions must be created inside the functional session updater so rapid additions avoid reused agent avatars");
+}
+
+if (!screen.includes("prependNewSession();") || screen.includes("createSession(\"New session\", sessions)")) {
+  throw new Error("Slash-command-created Hermes sessions must use the same current-state unique avatar assignment path as the rail button");
+}
+
+if (!app.includes("hasValidUnusedPortrait") || !app.includes("!usedPortraitIds.includes(session.portraitId)")) {
+  throw new Error("Hermes session hydration must repair duplicate-but-valid legacy agent avatar ids before pool exhaustion");
 }
 
 if (!app.includes("portraitId: archivedSession.portraitId")) {
@@ -475,7 +566,6 @@ if (archivedSessionsWriterCount !== 1) {
 }
 
 for (const requiredCompleteProfileSurface of [
-  "Profile, Memory & Soul",
   "Identity & preferences",
   "Hermes memory & soul",
   "Models & reasoning",
@@ -635,6 +725,50 @@ for (const requiredSettingsSumiE of [
   }
 }
 
+for (const requiredSettingsSafetyImplementation of [
+  "handleSettingsTabsKeyDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "Home",
+  "End",
+  "tabIndex={activeSettingsSection === section.id ? 0 : -1}",
+  "setSelectedArchivedSessionIds((current) => current.filter((sessionId) => archivedSessionIds.has(sessionId)))",
+  "requestArchiveDelete(sessionIds: string[], label: string, deleteAll = false)",
+  "currentSessionIds.length === 0",
+  "pendingCoversEveryCurrentArchive",
+  "currentArchivedSessionIds.every((sessionId) => pendingSessionIds.has(sessionId))",
+  "aria-describedby=\"settings-confirm-description\"",
+  "id=\"settings-confirm-description\"",
+  "setAttribute(\"inert\", \"\")",
+  "removeAttribute(\"inert\")",
+]) {
+  if (!app.includes(requiredSettingsSafetyImplementation)) {
+    throw new Error(`Settings archive/tabs safety implementation is missing: ${requiredSettingsSafetyImplementation}`);
+  }
+}
+
+for (const forbiddenSettingsSafetyRegression of [
+  "pendingArchiveDelete.sessionIds.length === archivedSessions.length",
+  ".settings-sumi-e .settings-archive-shell .zoid-dropdown-trigger",
+  ".settings-sumi-e .settings-archive-shell .zoid-dropdown-option",
+  "Settings sumi-e compact control-room correction",
+  "Settings sumi-e tighter above-the-fold correction",
+]) {
+  if (app.includes(forbiddenSettingsSafetyRegression) || css.includes(forbiddenSettingsSafetyRegression)) {
+    throw new Error(`Settings redesign has a known safety/cascade regression: ${forbiddenSettingsSafetyRegression}`);
+  }
+}
+
+if (!css.includes("button:not(:disabled)::after") || !css.includes("button:disabled")) {
+  throw new Error("Settings sumi-e button styling must avoid active seal decorations on disabled buttons");
+}
+
+const settingsHeroBaseIndex = css.indexOf(".settings-sumi-e .settings-hero { position: relative");
+const settingsHeroMediaIndex = css.indexOf("@media (max-width: 1180px) { .settings-sumi-e .settings-hero");
+if (settingsHeroBaseIndex < 0 || settingsHeroMediaIndex < 0 || settingsHeroMediaIndex < settingsHeroBaseIndex) {
+  throw new Error("Settings responsive hero media queries must come after the final base hero rule");
+}
+
 if (profileClient.includes("...value,")) {
   throw new Error("Profile settings sanitizer must not broadly spread malformed fallback values over safe defaults");
 }
@@ -674,8 +808,11 @@ for (const requiredComposerPolish of [
   "createOscillator",
   "createBiquadFilter",
   "primaryOscillator.type = \"sine\"",
-  "clickOscillator.type = \"triangle\"",
-  "bandpass",
+  "clickOscillator.type = \"sine\"",
+  "lowpass",
+  "bambooWaterDropPitch",
+  "templeBellOvertonePitch",
+  "tatamiRoomDamping",
   "inputType === \"insertFromPaste\"",
   "isHermesCliCommandDraft",
   "composer-input-wrap--hermes-command",
@@ -743,6 +880,69 @@ if (!screen.includes("hermes-topbar hermes-topbar--status-only") || !css.include
   throw new Error("Hermes status topbar must keep compact connection/repository controls beside the title");
 }
 
+for (const requiredHermesFeedbackPolish of [
+  "display: grid;",
+  "position: relative;",
+  "z-index: 70;",
+  "overflow: visible;",
+  "grid-column: 1 / -1;",
+  "grid-row: 2;",
+  "grid-template-columns: minmax(220px, 0.72fr) minmax(320px, 1fr) minmax(148px, max-content);",
+  "width: 100%;",
+  "gap: 14px;",
+  ".agents-sumi-e .repository-link-control--topbar .zoid-dropdown-trigger { min-height: 44px; padding-block: 0; }",
+  ".agents-sumi-e .repository-link-control--topbar .zoid-dropdown {",
+  "z-index: 90;",
+  ".agents-sumi-e .repository-link-control--topbar .zoid-dropdown-menu {",
+  "z-index: 220;",
+  "max-height: min(360px, calc(100vh - 255px));",
+  "overscroll-behavior: contain;",
+  ".agents-sumi-e .hermes-topbar:has(.zoid-dropdown-menu)::after",
+  "opacity: 0;",
+  ".agents-sumi-e .chat-workspace {",
+  ".agents-sumi-e .connection-panel {",
+  "connection-status-copy",
+  "status-label-jp",
+  "CONNECTION_STATE_JAPANESE",
+  "Repository",
+  "代理",
+  "接続",
+  "Unlinked / 未接続",
+  "<span>Files</span>",
+  "min-width: 148px;",
+  ".agents-sumi-e .file-manager-toggle-button span { display: inline; }",
+  "button-label-jp",
+  "書類",
+  "Context</b>",
+  "Time</b>",
+  "Model</b>",
+  "Session</b>",
+  ".agents-sumi-e .chat-stats-strip b",
+  "font-family: var(--agents-serif-latin);",
+  ".agents-sumi-e .file-manager-toggle-button::after",
+  "background: linear-gradient(90deg, transparent, currentColor 18%, currentColor 74%, transparent);",
+  ".agents-sumi-e .chat-stats-strip > span:last-child { background: transparent; color: var(--agents-ink-soft); }",
+  ".agents-sumi-e .sessions-overflow-cue {\n  border-color: var(--agents-ink-black);\n  border-radius: 0;",
+  "box-shadow: none;",
+  ".agents-sumi-e .sessions-overflow-cue::before { display: none; }",
+  ".agents-sumi-e .sessions-overflow-cue:focus-visible { filter: none; }",
+  "text-transform: none;",
+]) {
+  if (!css.includes(requiredHermesFeedbackPolish) && !screen.includes(requiredHermesFeedbackPolish)) {
+    throw new Error(`Hermes page feedback polish is missing sumi-e controls/stat strip: ${requiredHermesFeedbackPolish}`);
+  }
+}
+
+for (const forbiddenHermesNeutralStatColor of [
+  ".agents-sumi-e .chat-stats-strip { color: #56514b",
+  ".agents-sumi-e .chat-stats-strip span { color: #56514b",
+  "border-color: #e8e4dd",
+]) {
+  if (css.includes(forbiddenHermesNeutralStatColor)) {
+    throw new Error(`Hermes stats strip must not keep the old neutral palette: ${forbiddenHermesNeutralStatColor}`);
+  }
+}
+
 for (const restoredSessionRailSurface of [
   "sessions-rail",
   "Opened Hermes sessions",
@@ -760,7 +960,7 @@ for (const restoredSessionRailSurface of [
   "onContextMenu={(event) => { event.preventDefault(); beginRenameSession(session); }}",
   "session-rename-input",
   "repositoryLabel(sessionRepository)",
-  "linkedRepositoryId?: string",
+  "activeSession?.linkedRepositoryId",
 ]) {
   if (!screen.includes(restoredSessionRailSurface) && !css.includes(restoredSessionRailSurface)) {
     throw new Error(`Hermes desktop sessions rail/list UI must be restored: ${restoredSessionRailSurface}`);
@@ -827,7 +1027,7 @@ if (!css.includes("padding: 8px 14px") || !css.includes("line-height: 1.35") || 
   throw new Error("Composer textarea must align to adjacent buttons by default and expand smoothly for multiline drafts");
 }
 
-if (!screen.includes("Hermes is awake. Drop the mission") || !screen.includes("refreshHermesWelcomeCopy") || !app.includes("refreshHermesWelcomeCopy")) {
+if (!sessionState.includes("Hermes is awake. Drop the mission") || !screen.includes("refreshHermesWelcomeCopy") || !app.includes("refreshHermesWelcomeCopy")) {
   throw new Error("Hermes default message must use the cooler Zoid-local command deck copy and migrate persisted legacy welcome messages");
 }
 
@@ -932,7 +1132,7 @@ if (css.includes("min-width: 940px") || css.includes("grid-template-columns: 72p
   throw new Error("Fixed desktop sizing must not remain because it can push the right side offscreen");
 }
 
-if (!css.includes(".chat-stats-strip { display: flex;") || !css.includes(".chat-stats-strip span:nth-child(3), .chat-stats-strip span:nth-child(4)")) {
+if (!css.includes(".chat-stats-strip { display: flex;") || !css.includes(".chat-stats-strip > span:nth-child(3), .chat-stats-strip > span:nth-child(4)")) {
   throw new Error("Hermes stats strip must size sections by their content instead of uniform columns");
 }
 
@@ -957,24 +1157,27 @@ for (const removedChatPolish of [".sessions-rail::before", ".sessions-rail::afte
   }
 }
 
-if (!css.includes(".blue-rail { display: none; }") || !css.includes(".nav-list { flex-direction: row;")) {
+if (!css.includes(".ink-rail { display: none; }") || !css.includes(".nav-list { flex-direction: row;")) {
   throw new Error("Narrow desktop layout must reclaim sidebar width for the main workspace");
 }
 
 for (const requiredMetric of [
-  "Context used:",
-  "Compressions:",
-  "Codex usage:",
-  "Elapsed:",
-  "Model:",
-  "Session:",
+  "Context</b> {contextUsedPercent}%",
+  "{compressionCount} compressions",
+  "{formatElapsed(promptElapsed)}",
+  "Codex {CODEX_USAGE_TODAY} / {CODEX_USAGE_WEEKLY}",
+  "{activeModelLabel}",
+  "Change model and reasoning",
+  "model-command-panel",
+  "saveHermesProfileSettings",
+  "{cliStatus?.session ?? activeSession?.id ?? \"most-recent-hermes-cli-session\"}",
 ]) {
   if (!screen.includes(requiredMetric)) {
     throw new Error(`Hermes stats strip is missing metric: ${requiredMetric}`);
   }
 }
 
-if (!screen.includes("<span>Elapsed: {formatElapsed(promptElapsed)}</span>")) {
+if (!screen.includes("<span><b>Time</b> {formatElapsed(promptElapsed)}</span>")) {
   throw new Error("Elapsed time must occupy the second Hermes stats section");
 }
 
@@ -1057,7 +1260,7 @@ for (const requiredAgentReplyNotification of [
   "session-reply-indicator",
   "Hermes replied and needs your reply",
 ]) {
-  if (!screen.includes(requiredAgentReplyNotification)) {
+  if (!screen.includes(requiredAgentReplyNotification) && !sessionState.includes(requiredAgentReplyNotification)) {
     throw new Error(`Hermes background replies must set and render per-session needs-reply indicators: ${requiredAgentReplyNotification}`);
   }
 }
