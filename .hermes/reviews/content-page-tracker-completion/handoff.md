@@ -11,10 +11,11 @@ Files changed in this batch:
 - .hermes/plans/2026-06-09-mavoid-social-dashboard-tracker.md will be updated after critique approval.
 
 Implemented user-visible behavior:
-- Content page now renders actual design/image previews using <img> elements for every selected post media asset.
+- Content page now renders actual design/image previews using <img> elements for every selected post media asset that has a safe public HTTPS URL.
+- Local-only media assets render as metadata/fallback text; the UI does not build `file://` preview URLs.
 - Multiple media assets render as a gallery/carousel-like grid with public URL/open/validate actions.
-- Selected post detail now shows caption, date, slot, topic, schedule/retry gate, manual evidence gate, review verdict/report/required fixes, provider/platform state, provider post IDs, channel IDs, local/UTC times, read-back timestamps, reports, and event history.
-- Automation toolbar now includes refresh, provider health check, confirmed run creator, pause/resume creator, pause monitor, resume monitor, validate media, and latest report actions.
+- Selected post detail now shows caption, date, slot, topic, schedule/retry gate, manual evidence gate, review verdict/report/required fixes, provider/platform state, provider post IDs, channel IDs, local/UTC times, read-back timestamps, report metadata, and event history.
+- Automation toolbar now includes refresh, provider health check, confirmed run creator, pause/resume creator, pause monitor, resume monitor, validate media, and latest report metadata/action. Raw local report paths are not opened directly.
 - Provider/automation side panel now shows monitor job/state, HTTP status, last probe, safe credential-present booleans, cooldown, provider endpoint configured flag, and latest report path.
 - UI copy remains provider/tool agnostic: visible dashboard copy avoids Buffer framing except backend command names/tests.
 - Sumi-e visual treatment extended for tabs, media preview cards, platform cards, report/event lists.
@@ -25,12 +26,12 @@ TDD evidence:
 - GREEN after implementation: social dashboard behavior tests passed.
 
 Verification already run:
-- npx tsx src/social/socialViewModel.test.ts && npx tsx src/social/SocialDashboard.behavior.test.tsx && npm run build
-  Result: passed; Vite built dist/assets/workspace-content-Bv0w7fxm.js.
+- npx tsx src/social/SocialDashboard.behavior.test.tsx && npx tsx src/social/socialViewModel.test.ts && npm run build
+  Result: passed; Vite built dist/assets/workspace-content-Ds0EXYxU.js after ruthless fixes.
 - cargo check --manifest-path src-tauri/Cargo.toml && cargo test --manifest-path src-tauri/Cargo.toml --lib --bins -- --test-threads=1
-  Result: passed; 76 passed, 0 failed, 1 ignored.
+  Result: passed; 79 passed, 0 failed, 1 ignored, plus 0-test src/main.rs binary target passed.
 - npm run test:frontend
-  Result: exit code 0; social dashboard behavior tests passed within suite output.
+  Result: exit code 0 before ruthless fixes; focused social behavior/build were rerun after fixes and passed.
 
 Known caveats for reviewer to inspect:
 - Some tracker backend expansion items are represented as visible gated/unavailable UI rather than fully implemented backend commands, because this batch prioritized making all created content/designs viewable and exposing state/actions safely from Content page.

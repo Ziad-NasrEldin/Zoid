@@ -42,12 +42,25 @@ function formatBytes(bytes: number | null | undefined): string {
 }
 
 function openExternal(url: string | null | undefined) {
-  if (!url) return;
+  if (!url || !/^https:\/\//i.test(url)) return;
   window.open(url, "_blank", "noopener,noreferrer");
 }
 
+function canOpenExternal(url: string | null | undefined): boolean {
+  return /^https:\/\//i.test(url ?? "");
+}
+
+function neutralizeValue(value: string | null | undefined): string {
+  return neutralizeProviderCopy(value).replace(/buffer/gi, "provider");
+}
+
 function safeLabel(value: string | null | undefined, fallback = "—") {
-  return neutralizeProviderCopy(value) || fallback;
+  return neutralizeValue(value) || fallback;
+}
+
+function safePathLabel(path: string | null | undefined): string {
+  if (!path) return "—";
+  return canOpenExternal(path) ? path : "Local report path available";
 }
 
 function rhythmSteps(overview: MavoidSocialOverview | null, selectedPost: MavoidSocialPost | null): RhythmStep[] {
@@ -132,8 +145,7 @@ export function SocialDashboard() {
     }
   }
 
-  async function validateSelectedMedia() {
-    const url = selectedPost?.mediaAssets.find((asset) => asset.publicUrl)?.publicUrl;
+  async function validateMediaUrl(url: string | null | undefined) {
     if (!url) {
       setMessage("No public media URL is available to validate.");
       return;
@@ -149,6 +161,12 @@ export function SocialDashboard() {
       setBusyAction(null);
     }
   }
+
+  async function validateSelectedMedia() {
+    await validateMediaUrl(selectedPost?.mediaAssets.find((asset) => canOpenExternal(asset.publicUrl))?.publicUrl);
+  }
+
+  const selectedPostHasSafeMedia = selectedPost?.mediaAssets.some((asset) => canOpenExternal(asset.publicUrl)) ?? false;
 
   return (
     <section className="social-dashboard social-ink-command social-sumi-e" aria-label="MaVoid social operations dashboard">
@@ -197,8 +215,8 @@ export function SocialDashboard() {
         <button disabled={Boolean(busyAction)} onClick={() => automation("resume_monitor")} type="button">
           <CalendarClock aria-hidden="true" size={16} /> Resume monitor
         </button>
-        <button disabled={!selectedPost?.mediaAssets.some((asset) => asset.publicUrl) || Boolean(busyAction)} onClick={validateSelectedMedia} type="button"><ShieldCheck aria-hidden="true" size={16} /> Validate media</button>
-        <button disabled={!overview?.latestReportPath} onClick={() => openExternal(overview?.latestReportPath)} type="button"><ExternalLink aria-hidden="true" size={16} /> Latest report</button>
+        <button disabled={!selectedPostHasSafeMedia || Boolean(busyAction)} onClick={validateSelectedMedia} type="button"><ShieldCheck aria-hidden="true" size={16} /> Validate media</button>
+        <button disabled={!canOpenExternal(overview?.latestReportPath)} onClick={() => openExternal(overview?.latestReportPath)} type="button"><ExternalLink aria-hidden="true" size={16} /> Latest report</button>
       </div>
 
       <div className="social-grid">
@@ -226,26 +244,26 @@ export function SocialDashboard() {
               <div className="social-action-row">
                 <button disabled={!retryState.ok} onClick={() => window.confirm("Retry provider scheduling for this approved post?") && setMessage("Schedule retry must be executed through the guarded backend action.")} type="button">Retry schedule</button>
                 <button disabled type="button" title="Evidence is mandatory before resolving a post manually.">Manual resolution requires evidence</button>
-                <button disabled={!selectedPost.review?.reportPath} onClick={() => openExternal(selectedPost.review?.reportPath)} type="button">Open review report</button>
+                <button disabled={!canOpenExternal(selectedPost.review?.reportPath)} onClick={() => openExternal(selectedPost.review?.reportPath)} type="button">Open review report</button>
               </div>
 
               <section className="social-detail-section" aria-label="Design previews">
                 <div className="social-panel-heading"><span>Design preview</span><strong>{selectedPost.mediaAssets.length}</strong><small>Generated visual assets, not text-only fallbacks.</small></div>
                 <div className="social-media-gallery">
                   {selectedPost.mediaAssets.map((asset, index) => {
-                    const source = asset.publicUrl ?? (asset.path.startsWith("/") ? `file://${asset.path}` : asset.path);
+                    const source = canOpenExternal(asset.publicUrl) ? asset.publicUrl : null;
                     return (
                       <article className="social-media-card" key={`${asset.path}-${asset.publicUrl ?? "local"}`}>
                         <div className="social-media-preview">
-                          {source ? <img alt={`${selectedPost.title} design ${index + 1}`} loading="lazy" src={source} /> : <div className="social-media-fallback">No visual preview URL</div>}
+                          {source ? <img alt={`${neutralizeValue(selectedPost.title)} design ${index + 1}`} loading="lazy" src={source} /> : <div className="social-media-fallback">Local-only asset metadata; preview requires a validated public HTTPS image URL.</div>}
                         </div>
                         <span>{asset.validationStatus} · {asset.provider ?? "local"}</span>
                         <strong>{asset.publicUrl ?? asset.path}</strong>
                         <small>{asset.contentType ?? "unknown type"} · {asset.width ?? "?"}×{asset.height ?? "?"} · {formatBytes(asset.bytes)} · checked {safeLabel(asset.validatedAt)}</small>
                         {asset.temporary ? <small className="social-warning">Temporary media host — replace with durable owned media before production scheduling.</small> : null}
                         <div className="social-action-row">
-                          <button disabled={!asset.publicUrl} onClick={() => openExternal(asset.publicUrl)} type="button">Open public media URL</button>
-                          <button disabled={!asset.publicUrl} onClick={validateSelectedMedia} type="button">Validate media</button>
+                          <button disabled={!source} onClick={() => openExternal(asset.publicUrl)} type="button">Open public media URL</button>
+                          <button disabled={!source} onClick={() => validateMediaUrl(asset.publicUrl)} type="button">Validate media</button>
                         </div>
                       </article>
                     );
@@ -255,7 +273,7 @@ export function SocialDashboard() {
 
               <section className="social-detail-section" aria-label="Review report">
                 <div className="social-panel-heading"><span>Review</span><strong>{selectedPost.review?.verdict ?? "missing"}</strong><small>{safeLabel(selectedPost.review?.reviewer, "No reviewer recorded")}</small></div>
-                <dl className="social-kv"><dt>Approved at</dt><dd>{safeLabel(selectedPost.review?.approvedAt)}</dd><dt>Report path</dt><dd>{safeLabel(selectedPost.review?.reportPath)}</dd><dt>Required fixes</dt><dd>{selectedPost.review?.requiredFixes.length ? selectedPost.review.requiredFixes.join(" · ") : "No open required fixes"}</dd></dl>
+                <dl className="social-kv"><dt>Approved at</dt><dd>{safeLabel(selectedPost.review?.approvedAt)}</dd><dt>Report path</dt><dd>{safePathLabel(selectedPost.review?.reportPath)}</dd><dt>Required fixes</dt><dd>{selectedPost.review?.requiredFixes.length ? selectedPost.review.requiredFixes.join(" · ") : "No open required fixes"}</dd></dl>
               </section>
 
               <section className="social-detail-section" aria-label="Provider platform state">
@@ -281,11 +299,11 @@ export function SocialDashboard() {
               <section className="social-detail-section" aria-label="Reports and event history">
                 <div className="social-panel-heading"><span>Reports + events</span><strong>{selectedPost.reports.length + selectedPost.events.length}</strong><small>Replayable audit trail with no secrets.</small></div>
                 <div className="social-report-list">
-                  {selectedPost.reports.map((report) => <button key={`${report.kind}-${report.path}`} onClick={() => openExternal(report.path)} type="button"><span>{report.kind}</span><strong>{neutralizeProviderCopy(report.label)}</strong><small>{report.createdAt ?? report.path}</small></button>)}
+                  {selectedPost.reports.map((report) => <button disabled={!canOpenExternal(report.path)} key={`${report.kind}-${report.path}`} onClick={() => openExternal(report.path)} type="button"><span>{safeLabel(report.kind)}</span><strong>{neutralizeValue(report.label)}</strong><small>{report.createdAt ?? safePathLabel(report.path)}</small></button>)}
                   {selectedPost.reports.length === 0 ? <p className="social-empty">No reports exist for this post yet.</p> : null}
                 </div>
                 <ol className="social-event-list">
-                  {selectedPost.events.map((event) => <li key={`${event.timestamp}-${event.eventType}`}><time>{event.timestamp}</time><strong>{event.eventType.replace(/_/g, " ")}</strong><span>{neutralizeProviderCopy(event.message)}</span><small>{event.actor} · {event.severity} · {safeLabel(event.evidencePath)}</small></li>)}
+                  {selectedPost.events.map((event) => <li key={`${event.timestamp}-${event.eventType}`}><time>{event.timestamp}</time><strong>{safeLabel(event.eventType.replace(/_/g, " "))}</strong><span>{neutralizeValue(event.message)}</span><small>{safeLabel(event.actor)} · {event.severity} · {safePathLabel(event.evidencePath)}</small></li>)}
                   {selectedPost.events.length === 0 ? <li>No provider events or publishing history recorded yet.</li> : null}
                 </ol>
               </section>
@@ -295,7 +313,7 @@ export function SocialDashboard() {
 
         <aside className="social-panel social-automation-panel" aria-label="Automation state">
           <div className="social-panel-heading"><span>Hermes cron</span><strong>{overview?.automation.creatorState ?? "unknown"}</strong><small>creator {overview?.automation.creatorJobId ?? "—"}</small></div>
-          <dl className="social-kv"><dt>Creator next run</dt><dd>{overview?.automation.creatorNextRunAt ?? "—"}</dd><dt>Monitor state</dt><dd>{overview?.automation.monitorState ?? "unknown"}</dd><dt>Monitor job</dt><dd>{overview?.automation.monitorJobId ?? "—"}</dd><dt>Cooldown next run</dt><dd>{overview?.automation.cooldownNextRunAt ?? "—"}</dd><dt>Provider endpoint</dt><dd>{overview?.bufferEndpoint ? "configured" : "—"}</dd><dt>HTTP status</dt><dd>{overview?.bufferHealth.httpStatus ? `HTTP ${overview.bufferHealth.httpStatus}` : "—"}</dd><dt>Last probe</dt><dd>{overview?.bufferHealth.lastCheckedAt ?? "—"}</dd><dt>Credentials</dt><dd>{overview?.bufferHealth.credentialsPresent.bufferAccessToken ? "Access token present" : "Access token missing"} · {overview?.bufferHealth.credentialsPresent.bufferOrganizationId ? "Organization present" : "Organization missing"}</dd><dt>Latest report</dt><dd>{overview?.latestReportPath ?? "No latest report"}</dd></dl>
+          <dl className="social-kv"><dt>Creator next run</dt><dd>{overview?.automation.creatorNextRunAt ?? "—"}</dd><dt>Monitor state</dt><dd>{overview?.automation.monitorState ?? "unknown"}</dd><dt>Monitor job</dt><dd>{overview?.automation.monitorJobId ?? "—"}</dd><dt>Cooldown next run</dt><dd>{overview?.automation.cooldownNextRunAt ?? "—"}</dd><dt>Provider endpoint</dt><dd>{overview?.bufferEndpoint ? "configured" : "—"}</dd><dt>HTTP status</dt><dd>{overview?.bufferHealth.httpStatus ? `HTTP ${overview.bufferHealth.httpStatus}` : "—"}</dd><dt>Last probe</dt><dd>{overview?.bufferHealth.lastCheckedAt ?? "—"}</dd><dt>Credentials</dt><dd>{overview?.bufferHealth.credentialsPresent.bufferAccessToken ? "Access token present" : "Access token missing"} · {overview?.bufferHealth.credentialsPresent.bufferOrganizationId ? "Organization present" : "Organization missing"}</dd><dt>Latest report</dt><dd>{safePathLabel(overview?.latestReportPath)}</dd></dl>
         </aside>
       </div>
     </section>

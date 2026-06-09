@@ -51,6 +51,7 @@ function post(overrides: Partial<MavoidSocialPost> = {}): MavoidSocialPost {
     status: "rate_limited",
     review: { verdict: "APPROVED", reviewer: "independent reviewer", reportPath: "/tmp/review.md", requiredFixes: ["Keep footer clear"], approvedAt: "2026-06-09T12:40:00Z" },
     mediaAssets: [
+      { path: "/tmp/local-only.png", publicUrl: "file:///tmp/local-only.png", contentType: "image/png", bytes: 12345, width: 1080, height: 1350, validatedAt: null, provider: "local", temporary: false, validationStatus: "unchecked" },
       { path: "/tmp/proof-1.png", publicUrl: "https://files.catbox.moe/9tix1y.png", contentType: "image/png", bytes: 99945, width: 1080, height: 1350, validatedAt: "2026-06-09T12:39:00Z", provider: "catbox", temporary: true, validationStatus: "valid" },
       { path: "/tmp/proof-2.png", publicUrl: "https://d.uguu.se/XiBkwaaa.png", contentType: "image/png", bytes: 99945, width: 1080, height: 1350, validatedAt: "2026-06-09T12:39:00Z", provider: "uguu", temporary: true, validationStatus: "valid" },
     ],
@@ -81,15 +82,21 @@ async function click(element: Element) {
   await act(async () => element.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event));
 }
 
-async function renderDashboard(): Promise<{ container: HTMLDivElement; root: Root; calls: string[] }> {
+async function renderDashboard(posts: MavoidSocialPost[] = [post()]): Promise<{ container: HTMLDivElement; root: Root; calls: string[]; validatedUrls: string[]; openedUrls: string[] }> {
   const calls: string[] = [];
+  const validatedUrls: string[] = [];
+  const openedUrls: string[] = [];
+  window.open = ((url?: string | URL) => { openedUrls.push(String(url)); return null; }) as typeof window.open;
   let currentOverview = overview();
-  mockIPC((cmd) => {
+  mockIPC((cmd, args) => {
     calls.push(cmd);
     if (cmd === "mavoid_social_get_overview") return currentOverview;
-    if (cmd === "mavoid_social_list_posts") return [post()];
+    if (cmd === "mavoid_social_list_posts") return posts;
     if (cmd === "mavoid_social_run_buffer_health_check") return currentOverview;
-    if (cmd === "mavoid_social_validate_media_url") return { url: "https://files.catbox.moe/9tix1y.png", ok: true, httpStatus: 200, contentType: "image/png", bytes: 99945, message: "Direct image URL is valid." };
+    if (cmd === "mavoid_social_validate_media_url") {
+      validatedUrls.push(String((args as { url?: string } | undefined)?.url));
+      return { url: (args as { url?: string } | undefined)?.url ?? "", ok: true, httpStatus: 200, contentType: "image/png", bytes: 99945, message: "Direct image URL is valid." };
+    }
     if (cmd === "mavoid_social_manage_automation") {
       currentOverview = overview({ automation: { ...currentOverview.automation, creatorEnabled: false, creatorState: "paused" } });
       return currentOverview;
@@ -101,7 +108,7 @@ async function renderDashboard(): Promise<{ container: HTMLDivElement; root: Roo
   const root = createRoot(container);
   await act(async () => root.render(<SocialDashboard />));
   await settle();
-  return { container, root, calls };
+  return { container, root, calls, validatedUrls, openedUrls };
 }
 
 async function runTests() {
@@ -117,13 +124,14 @@ async function runTests() {
   assert.ok(rendered.container.textContent?.includes("Social operations command room"), "hero should be compact and tool-agnostic");
   assert.ok(rendered.container.textContent?.includes("コンテンツ運用"), "hero eyebrow should be Japanese and tool-agnostic");
   assert.ok(!rendered.container.textContent?.includes("MaVoid · Buffer social automation"), "old English eyebrow should not render on the content page");
-  assert.ok(!rendered.container.textContent?.includes("Buffer"), "visible content page wording should be provider/tool agnostic");
+  assert.ok(!/buffer/i.test(rendered.container.textContent ?? ""), "visible content page wording should be provider/tool agnostic in any casing");
   assert.ok(rendered.container.textContent?.includes("Publishing pipeline proof"), "post titles should neutralize provider names in visible UI");
   assert.ok(rendered.container.textContent?.includes("Rate-limited · 24h cooldown"), "rate limit status should be visible");
   assert.ok(rendered.container.textContent?.includes("12fd35ec77e2"), "8:00 creator job id should be visible");
   assert.ok(rendered.container.textContent?.includes("https://files.catbox.moe/9tix1y.png"), "public direct media URL should be visible");
-  assert.equal(rendered.container.querySelectorAll(".social-media-preview img").length, 2, "post detail should render actual design/image previews for every media asset");
+  assert.equal(rendered.container.querySelectorAll(".social-media-preview img").length, 2, "post detail should render actual design/image previews for every safe public HTTPS media asset");
   assert.equal(rendered.container.querySelector(".social-media-preview img")?.getAttribute("src"), "https://files.catbox.moe/9tix1y.png", "first rendered preview should use the validated public direct media URL");
+  assert.ok([...(rendered.container.querySelectorAll(".social-media-preview img") as NodeListOf<HTMLImageElement>)].every((image) => !image.src.startsWith("file://") && !image.alt.includes("Buffer")), "preview images must not use file:// fallbacks or provider-specific accessible names");
   assert.ok(rendered.container.textContent?.includes("Review report"), "post detail should show review/report artifacts");
   assert.ok(rendered.container.textContent?.includes("APPROVED"), "post detail should show reviewer verdict");
   assert.ok(rendered.container.textContent?.includes("Keep footer clear"), "post detail should show reviewer required fixes/history");
@@ -139,6 +147,22 @@ async function runTests() {
   assert.ok(rendered.container.querySelector("button")?.textContent !== undefined, "dashboard should keep actionable controls rendered");
   assert.ok([...rendered.container.querySelectorAll("button")].some((button) => button.textContent?.includes("Pause monitor")), "monitor pause control should render");
   assert.ok([...rendered.container.querySelectorAll("button")].some((button) => button.textContent?.includes("Validate media")), "media validation action should render");
+  const toolbarValidateButton = [...rendered.container.querySelectorAll(".social-toolbar button")].find((button) => button.textContent?.includes("Validate media"));
+  assert.ok(toolbarValidateButton && !toolbarValidateButton.hasAttribute("disabled"), "toolbar validation should be enabled when at least one safe HTTPS media URL exists");
+  await click(toolbarValidateButton);
+  await settle();
+  assert.equal(rendered.validatedUrls[rendered.validatedUrls.length - 1], "https://files.catbox.moe/9tix1y.png", "toolbar validation should skip unsafe media URLs and validate the first safe HTTPS URL");
+  assert.ok([...rendered.container.querySelectorAll("button")].filter((button) => button.textContent?.includes("Open review report") || button.textContent?.includes("Latest report") || button.textContent?.includes("Manifest")).every((button) => button.hasAttribute("disabled")), "local report paths should be metadata only unless opened through a safe backend command");
+  const perAssetValidateButtons = [...rendered.container.querySelectorAll(".social-media-card button")].filter((button) => button.textContent?.includes("Validate media"));
+  assert.equal(perAssetValidateButtons.length, 3, "each media asset should render a validate affordance");
+  assert.equal(perAssetValidateButtons.filter((button) => !button.hasAttribute("disabled")).length, 2, "only safe public HTTPS media assets should be validatable from the UI");
+  const unsafeCardButtons = [...rendered.container.querySelectorAll(".social-media-card")]
+    .find((card) => card.textContent?.includes("file:///tmp/local-only.png"))
+    ?.querySelectorAll("button") as NodeListOf<HTMLButtonElement> | undefined;
+  assert.ok(unsafeCardButtons && [...unsafeCardButtons].every((button) => button.hasAttribute("disabled")), "unsafe media URLs must not be openable or validatable");
+  await click(perAssetValidateButtons[2]);
+  await settle();
+  assert.equal(rendered.validatedUrls[rendered.validatedUrls.length - 1], "https://d.uguu.se/XiBkwaaa.png", "second media card should validate its own URL, not the first asset URL");
   assert.ok(rendered.calls.includes("mavoid_social_get_overview"), "dashboard should read overview through Tauri command");
 
   const css = readFileSync("src/App.css", "utf8");
@@ -148,7 +172,10 @@ async function runTests() {
   assert.ok(socialCss.includes("height: 100vh"), "social page should own a viewport-height scroll surface inside the fixed Zoid shell");
   assert.ok(socialCss.includes("overflow-y: auto"), "social page should be vertically scrollable instead of clipping below the viewport");
   assert.ok(socialCss.includes(".social-toolbar button::before") && socialCss.includes("inset: auto 10px 6px"), "toolbar buttons should use the shared ink-rule button affordance, not generic pills");
-  assert.ok(socialCss.includes("margin-top: clamp(18px, 2.4vw, 34px)"), "provider read-back card should sit lower in the hero instead of crowding the top edge");
+  assert.ok(socialCss.includes("margin-top: clamp(14px, 1.8vw, 28px)"), "provider read-back card should stay visibly offset from the hero copy instead of crowding the top edge");
+  assert.ok(socialCss.includes(".social-toolbar { display: grid") && socialCss.includes("repeat(auto-fit, minmax(180px, 1fr))"), "dashboard actions should use a deterministic responsive grid instead of ragged flex wrapping");
+  assert.ok(socialCss.includes("minmax(360px, 1fr)"), "selected-post work surface should keep a readable center column on wider screens");
+  assert.ok(socialCss.includes("@media (max-width: 1360px)") && socialCss.includes(".social-automation-panel { grid-column: 1 / -1; }"), "automation state should move below the primary work grid before it crushes the center column");
   assert.ok(socialCss.includes(".social-automation-panel .social-kv") && socialCss.includes("grid-template-columns: 1fr"), "automation state rows should stack labels and values to prevent narrow-panel text overlap");
   assert.ok(socialCss.includes(".social-automation-panel .social-kv dd") && socialCss.includes("line-height: 1.35"), "automation state values should have readable line-height when wrapping");
   assert.ok(!socialCss.includes("rgba(255, 252, 242"), "social page must not use the rejected warm yellow card wash");
@@ -168,6 +195,17 @@ async function runTests() {
   assert.ok(rendered.calls.includes("mavoid_social_manage_automation"), "automation button should call backend manager");
 
   await act(async () => rendered.root.unmount());
+  clearMocks();
+
+  const unsafeOnly = await renderDashboard([post({
+    mediaAssets: [
+      { path: "/tmp/local-only.png", publicUrl: "file:///tmp/local-only.png", contentType: "image/png", bytes: 12345, width: 1080, height: 1350, validatedAt: null, provider: "local", temporary: false, validationStatus: "unchecked" },
+    ],
+  })]);
+  const unsafeOnlyToolbarValidate = [...unsafeOnly.container.querySelectorAll(".social-toolbar button")].find((button) => button.textContent?.includes("Validate media"));
+  assert.ok(unsafeOnlyToolbarValidate?.hasAttribute("disabled"), "toolbar media validation should stay disabled when no safe HTTPS media URL exists");
+  assert.equal(unsafeOnly.validatedUrls.length, 0, "unsafe-only render should not validate media during initial load");
+  await act(async () => unsafeOnly.root.unmount());
   clearMocks();
 
   mockIPC(() => { throw new TypeError("Cannot read properties of undefined (reading 'invoke')"); });

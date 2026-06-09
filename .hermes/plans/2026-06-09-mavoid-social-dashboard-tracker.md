@@ -18,11 +18,11 @@ Scope completed in this tracker: the Zoid 25 Content page must let Ziad view cre
 - [x] Rust backend check/tests pass.
   - `cargo check --manifest-path src-tauri/Cargo.toml`
   - `cargo test --manifest-path src-tauri/Cargo.toml --lib --bins -- --test-threads=1`
-  - Result: 76 passed, 0 failed, 1 ignored.
+  - Result: 79 passed, 0 failed, 1 ignored, plus 0-test src/main.rs target passed.
 - [x] Frontend test suite exits successfully.
   - `npm run test:frontend`
 - [x] Production bundle contains the missing surfaces.
-  - `img` found in `dist/assets/workspace-content-Bv0w7fxm.js`
+  - `img` found in `dist/assets/workspace-content-Ds0EXYxU.js`
   - `social-media-preview` found
   - `Reports + events` found
   - `Platform state` found
@@ -50,8 +50,8 @@ Scope completed in this tracker: the Zoid 25 Content page must let Ziad view cre
 - [x] Generated media/designs render as actual `<img>` previews in the Content page.
 - [x] Multiple media assets render as a visible gallery/grid.
 - [x] Public media URLs remain visible as metadata, not as the only viewing mechanism.
-- [x] Local/path fallback is present when no public URL exists.
-- [x] Open public media URL action is available.
+- [x] Local-only metadata/fallback is present when no safe public HTTPS preview URL exists.
+- [x] Open public media URL action is available only for safe HTTPS URLs.
 - [x] Media validation action is available.
 - [x] Temporary media host warning is visible.
 - [x] Tests assert preview images exist and use the validated public URL.
@@ -101,7 +101,7 @@ Scope completed in this tracker: the Zoid 25 Content page must let Ziad view cre
 - [x] Pause/resume creator actions are available.
 - [x] Pause monitor action is available.
 - [x] Resume monitor action is available.
-- [x] Latest report action/metadata is visible.
+- [x] Latest report metadata/action is visible; raw local paths are metadata-only unless routed through a safe opener.
 
 ### Provider health / secret safety
 
@@ -118,8 +118,8 @@ Scope completed in this tracker: the Zoid 25 Content page must let Ziad view cre
 
 - [x] Reports section is visible.
 - [x] Report list renders generation/review/provider report references when available.
-- [x] Review report action is visible.
-- [x] Latest report action is visible.
+- [x] Review report metadata/action is visible; raw local report paths are not opened directly.
+- [x] Latest report metadata/action is visible; unsafe local path opening is disabled.
 - [x] Event history/timeline is visible.
 - [x] Event actor, severity, message, timestamp, and evidence path are visible when available.
 - [x] Empty report/event states are clear.
