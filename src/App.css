@@ -179,8 +179,10 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   transform: translateX(-50%);
   background: linear-gradient(180deg, transparent, rgba(255,255,255,0.3), transparent);
   opacity: 0.62;
+  transition: opacity 220ms ease;
   pointer-events: none;
 }
+.sidebar-collapsed .ink-rail::before { opacity: 0; }
 .ink-rail::after {
   content: "";
   position: absolute;

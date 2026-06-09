@@ -172,6 +172,7 @@ for (const requiredInkSidebarControl of [
   ".rail-menu--close span:nth-child(1) { transform: translateY(7px) rotate(45deg); }",
   ".rail-menu--close span:nth-child(2) { opacity: 0; }",
   ".rail-menu--open span:nth-child(2) { opacity: 1; }",
+  ".sidebar-collapsed .ink-rail::before { opacity: 0; }",
 ]) {
   if (!app.includes(requiredInkSidebarControl) && !css.includes(requiredInkSidebarControl)) {
     throw new Error(`Expanded sidebar must show an X close affordance and collapse back to hamburger: ${requiredInkSidebarControl}`);
