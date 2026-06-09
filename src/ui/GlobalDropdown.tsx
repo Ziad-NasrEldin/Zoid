@@ -132,13 +132,19 @@ export function GlobalDropdown({ id, label, options, value, onChange, disabled =
   }
 
   return (
-    <div className={`zoid-dropdown zoid-dropdown--${size} ${className}`.trim()} ref={rootRef} data-global-dropdown="true">
+    <div
+      className={`zoid-dropdown zoid-dropdown--${size} ${isOpen ? "is-open" : ""} ${disabled || !canOpen ? "is-disabled" : ""} ${className}`.trim()}
+      ref={rootRef}
+      data-global-dropdown="true"
+      data-state={isOpen ? "open" : "closed"}
+    >
       <button
         aria-controls={menuId}
         aria-expanded={isOpen}
         aria-haspopup="menu"
         aria-label={label}
         className="zoid-dropdown-trigger"
+        data-state={isOpen ? "open" : "closed"}
         disabled={!canOpen}
         id={dropdownId}
         onClick={() => isOpen ? setIsOpen(false) : openMenu()}

@@ -1,309 +1,392 @@
 ---
 version: alpha
-name: Zoid25 Kujoyama Editorial OS
-description: "A Villa Kujoyama-inspired product design system for a local-first macOS AI operating system: white editorial fields, black rules, one committed cobalt rail, mono-forward hierarchy, tactile squared controls, and truthful operational states."
+name: Zoid 25 Sumi-e Command System
+description: "The accepted Zoid 25 product UI system extracted from the Agents page: white paper, black sumi ink, pale rules, red seal accents, serif English/Japanese typography, boxed operational rails, and no yellow artifacts."
 colors:
-  primary: "#3558A2"
-  secondary: "#000000"
-  tertiary: "#FDE863"
+  primary: "#0D0A0A"
+  secondary: "#545554"
+  tertiary: "#C23A2E"
   neutral: "#FFFFFF"
-  kujo-blue: "#3558A2"
-  kujo-blue-deep: "#294984"
-  kujo-blue-soft: "#E7EDFA"
-  kujo-blue-wash: "#B8C8EA"
-  kujo-ink: "#000000"
-  kujo-paper: "#FFFFFF"
-  kujo-yellow: "#FDE863"
-  kujo-red: "#DD4949"
-  kujo-green: "#81CA7A"
-  kujo-amber: "#EFAC39"
-  kujo-teal: "#21AB88"
-  kujo-muted: "#555555"
-  danger-bg: "#FFECEC"
-  cool-paper: "#FBFCFF"
+  sumi-ink: "#0D0A0A"
+  sumi-paper: "#FFFFFF"
+  sumi-soft-paper: "#FAFAFA"
+  sumi-mist: "#F5F5F5"
+  sumi-rule: "#E0E0E0"
+  sumi-pale-rule: "#EDEDED"
+  sumi-muted: "#545554"
+  sumi-wash: "#F7F5F4"
+  sumi-seal: "#C23A2E"
+  sumi-seal-deep: "#8F211A"
+  sumi-seal-wash: "#F5E5E3"
+  sumi-okay: "#2F3A2F"
+  sumi-warn: "#8F5A1A"
+  danger-field: "#FFECEC"
 typography:
   display:
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace"
-    fontSize: "68px"
-    fontWeight: 500
-    lineHeight: 0.94
-    letterSpacing: "-0.075em"
-  brand:
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace"
-    fontSize: "64px"
-    fontWeight: 800
-    lineHeight: 0.95
-    letterSpacing: "-0.075em"
-  title:
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace"
-    fontSize: "24px"
-    fontWeight: 900
-    lineHeight: 1.05
-    letterSpacing: "-0.045em"
-  body:
-    fontFamily: "Marianne, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
-    fontSize: "15px"
+    fontFamily: "trajan-pro-3, Times New Roman, Baskerville, Georgia, serif"
+    fontSize: "46px"
     fontWeight: 400
-    lineHeight: 1.5
-    letterSpacing: "0em"
-  body-strong:
-    fontFamily: "Marianne, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
-    fontSize: "13px"
-    fontWeight: 800
+    lineHeight: 0.9
+    letterSpacing: "-0.04em"
+  display-large:
+    fontFamily: "trajan-pro-3, Times New Roman, Baskerville, Georgia, serif"
+    fontSize: "94px"
+    fontWeight: 400
+    lineHeight: 0.92
+    letterSpacing: "-0.035em"
+  body:
+    fontFamily: "source-han-serif-japanese, Hiragino Mincho ProN, Yu Mincho, Times New Roman, Georgia, serif"
+    fontSize: "14px"
+    fontWeight: 400
+    lineHeight: 1.58
+    letterSpacing: "0.025em"
+  body-compact:
+    fontFamily: "source-han-serif-japanese, Hiragino Mincho ProN, Yu Mincho, Times New Roman, Georgia, serif"
+    fontSize: "12px"
+    fontWeight: 400
     lineHeight: 1.45
-    letterSpacing: "0em"
+    letterSpacing: "0.035em"
   label:
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace"
-    fontSize: "11px"
-    fontWeight: 900
-    lineHeight: 1.15
-    letterSpacing: "0em"
-  label-small:
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace"
+    fontFamily: "trajan-pro-3, Times New Roman, Baskerville, Georgia, serif"
     fontSize: "10px"
-    fontWeight: 900
+    fontWeight: 400
     lineHeight: 1.2
-    letterSpacing: "0em"
+    letterSpacing: "0.14em"
+  label-small:
+    fontFamily: "trajan-pro-3, Times New Roman, Baskerville, Georgia, serif"
+    fontSize: "9px"
+    fontWeight: 400
+    lineHeight: 1.15
+    letterSpacing: "0.16em"
 rounded:
   none: "0px"
-  compact: "5px"
-  pill: "999px"
+  portrait: "999px"
 spacing:
-  xxs: "3px"
-  xs: "6px"
+  hairline: "1px"
+  rule: "2px"
+  xs: "4px"
   sm: "8px"
-  md: "12px"
-  lg: "16px"
-  xl: "24px"
-  xxl: "34px"
-  rail-min: "52px"
-  rail-max: "72px"
-  sidebar-min: "220px"
-  sidebar-max: "336px"
+  md: "10px"
+  lg: "14px"
+  xl: "18px"
+  xxl: "24px"
+  page-x: "16px"
+  page-y: "14px"
+  sessions-rail-compact: "68px"
+  sessions-rail-default: "184px"
+  sessions-rail-min: "124px"
+  sessions-rail-max: "420px"
 components:
-  button-primary:
-    backgroundColor: "{colors.kujo-blue}"
-    textColor: "{colors.kujo-paper}"
-    typography: "{typography.label}"
-    rounded: "{rounded.none}"
-    padding: "10px 12px"
-  button-primary-hover:
-    backgroundColor: "{colors.kujo-blue-deep}"
-    textColor: "{colors.kujo-paper}"
-    typography: "{typography.label}"
-    rounded: "{rounded.none}"
-    padding: "10px 12px"
-  button-secondary:
-    backgroundColor: "{colors.kujo-paper}"
-    textColor: "{colors.kujo-ink}"
-    typography: "{typography.label}"
-    rounded: "{rounded.none}"
-    padding: "9px 12px"
-  button-danger:
-    backgroundColor: "{colors.kujo-red}"
-    textColor: "{colors.kujo-paper}"
-    typography: "{typography.label}"
-    rounded: "{rounded.none}"
-    padding: "9px 12px"
-  input-editorial:
-    backgroundColor: "{colors.kujo-paper}"
-    textColor: "{colors.kujo-ink}"
+  page-shell:
+    backgroundColor: "{colors.sumi-paper}"
+    textColor: "{colors.sumi-ink}"
     typography: "{typography.body}"
     rounded: "{rounded.none}"
-    padding: "10px 12px"
-  dropdown-editorial:
-    backgroundColor: "{colors.kujo-paper}"
-    textColor: "{colors.kujo-ink}"
+    padding: "14px 16px 20px"
+  topbar-panel:
+    backgroundColor: "{colors.sumi-paper}"
+    textColor: "{colors.sumi-ink}"
     typography: "{typography.label}"
     rounded: "{rounded.none}"
-    padding: "7px 32px 7px 10px"
-    height: "34px"
-  blue-rail:
-    backgroundColor: "{colors.kujo-blue}"
-    textColor: "{colors.kujo-paper}"
+    padding: "14px 18px 12px"
+  ink-primary-button:
+    backgroundColor: "{colors.sumi-ink}"
+    textColor: "{colors.sumi-paper}"
     typography: "{typography.label}"
-    width: "72px"
-  nav-row:
-    backgroundColor: "{colors.kujo-paper}"
-    textColor: "{colors.kujo-ink}"
-    typography: "{typography.title}"
     rounded: "{rounded.none}"
-    padding: "18px 28px 17px 36px"
-  nav-row-active:
-    backgroundColor: "{colors.kujo-blue-soft}"
-    textColor: "{colors.kujo-ink}"
-    typography: "{typography.title}"
+    padding: "0 14px"
+    height: "44px"
+  seal-primary-button-hover:
+    backgroundColor: "{colors.sumi-seal}"
+    textColor: "{colors.sumi-paper}"
+    typography: "{typography.label}"
     rounded: "{rounded.none}"
-    padding: "18px 28px 17px 36px"
-  card-ruled:
-    backgroundColor: "{colors.kujo-paper}"
-    textColor: "{colors.kujo-ink}"
-    typography: "{typography.body-strong}"
+    padding: "0 14px"
+    height: "44px"
+  quiet-control:
+    backgroundColor: "{colors.sumi-paper}"
+    textColor: "{colors.sumi-ink}"
+    typography: "{typography.label-small}"
     rounded: "{rounded.none}"
-    padding: "16px"
-  status-success:
-    backgroundColor: "{colors.kujo-green}"
-    textColor: "{colors.kujo-ink}"
+    padding: "5px 9px"
+    height: "28px"
+  dropdown-compact:
+    backgroundColor: "{colors.sumi-paper}"
+    textColor: "{colors.sumi-ink}"
+    typography: "{typography.label}"
+    rounded: "{rounded.none}"
+    padding: "4px 29px 4px 9px"
+    height: "26px"
+  session-row:
+    backgroundColor: "{colors.sumi-paper}"
+    textColor: "{colors.sumi-ink}"
+    typography: "{typography.label}"
+    rounded: "{rounded.none}"
+    padding: "12px 10px 12px 14px"
+  session-row-active:
+    backgroundColor: "{colors.sumi-soft-paper}"
+    textColor: "{colors.sumi-ink}"
+    typography: "{typography.label}"
+    rounded: "{rounded.none}"
+    padding: "12px 10px 12px 14px"
+  agent-monitor-panel:
+    backgroundColor: "{colors.sumi-paper}"
+    textColor: "{colors.sumi-ink}"
+    typography: "{typography.body-compact}"
+    rounded: "{rounded.none}"
+    padding: "10px"
+  message-assistant:
+    backgroundColor: "{colors.sumi-paper}"
+    textColor: "{colors.sumi-ink}"
+    typography: "{typography.body}"
+    rounded: "{rounded.none}"
+    padding: "14px 16px"
+  message-user:
+    backgroundColor: "{colors.sumi-ink}"
+    textColor: "{colors.sumi-paper}"
+    typography: "{typography.body}"
+    rounded: "{rounded.none}"
+    padding: "14px 16px"
+  status-ready:
+    backgroundColor: "{colors.sumi-ink}"
+    textColor: "{colors.sumi-paper}"
     typography: "{typography.label-small}"
-    rounded: "{rounded.pill}"
-    padding: "5px 8px"
-  status-warning:
-    backgroundColor: "{colors.kujo-amber}"
-    textColor: "{colors.kujo-ink}"
+    rounded: "{rounded.none}"
+    padding: "4px 7px"
+  status-attention:
+    backgroundColor: "{colors.sumi-seal}"
+    textColor: "{colors.sumi-paper}"
     typography: "{typography.label-small}"
-    rounded: "{rounded.pill}"
-    padding: "5px 8px"
-  status-danger:
-    backgroundColor: "{colors.kujo-red}"
-    textColor: "{colors.kujo-paper}"
+    rounded: "{rounded.none}"
+    padding: "4px 7px"
+  field-neutral:
+    backgroundColor: "{colors.neutral}"
+    textColor: "{colors.sumi-ink}"
+    typography: "{typography.body}"
+    rounded: "{rounded.none}"
+    padding: "10px"
+  stage-mist-field:
+    backgroundColor: "{colors.sumi-mist}"
+    textColor: "{colors.sumi-ink}"
+    typography: "{typography.body}"
+    rounded: "{rounded.none}"
+    padding: "24px"
+  ruled-divider-field:
+    backgroundColor: "{colors.sumi-rule}"
+    textColor: "{colors.sumi-ink}"
     typography: "{typography.label-small}"
-    rounded: "{rounded.pill}"
-    padding: "5px 8px"
+    rounded: "{rounded.none}"
+    padding: "1px"
+  pale-rule-field:
+    backgroundColor: "{colors.sumi-pale-rule}"
+    textColor: "{colors.sumi-ink}"
+    typography: "{typography.label-small}"
+    rounded: "{rounded.none}"
+    padding: "1px"
+  muted-meta:
+    backgroundColor: "{colors.sumi-paper}"
+    textColor: "{colors.sumi-muted}"
+    typography: "{typography.label-small}"
+    rounded: "{rounded.none}"
+    padding: "4px"
+  ink-wash-field:
+    backgroundColor: "{colors.sumi-wash}"
+    textColor: "{colors.sumi-ink}"
+    typography: "{typography.body-compact}"
+    rounded: "{rounded.none}"
+    padding: "12px"
+  seal-deep-destructive:
+    backgroundColor: "{colors.sumi-seal-deep}"
+    textColor: "{colors.sumi-paper}"
+    typography: "{typography.label}"
+    rounded: "{rounded.none}"
+    padding: "8px 10px"
+  seal-wash-notice:
+    backgroundColor: "{colors.sumi-seal-wash}"
+    textColor: "{colors.sumi-ink}"
+    typography: "{typography.body-compact}"
+    rounded: "{rounded.none}"
+    padding: "8px 10px"
+  status-okay:
+    backgroundColor: "{colors.sumi-okay}"
+    textColor: "{colors.sumi-paper}"
+    typography: "{typography.label-small}"
+    rounded: "{rounded.none}"
+    padding: "4px 7px"
+  status-warn-legacy:
+    backgroundColor: "{colors.sumi-warn}"
+    textColor: "{colors.sumi-paper}"
+    typography: "{typography.label-small}"
+    rounded: "{rounded.none}"
+    padding: "4px 7px"
+  danger-field:
+    backgroundColor: "{colors.danger-field}"
+    textColor: "{colors.sumi-seal-deep}"
+    typography: "{typography.body-compact}"
+    rounded: "{rounded.none}"
+    padding: "8px 10px"
 ---
 
-# Design System: Zoid25 Kujoyama Editorial OS
+# Design System: Zoid 25 Sumi-e Command System
 
-## 1. Overview
+## Overview
 
-**Creative North Star: "The Editorial Command Room"**
+Zoid 25 is a local-first macOS AI operating system. The accepted visual source is the current Agents page, especially `src/agents/AgentsHermesScreen.tsx` rendered with `hermes-chat-shell hermes-genm agents-sumi-e` and the `.agents-sumi-e` rules in `src/App.css`.
 
-Zoid 25 is a local-first macOS AI operating system, not a SaaS dashboard and not a marketing surface. Its visual language translates Villa Kujoyama's architectural restraint into product UI: severe black rules, white editorial fields, one committed cobalt-blue structural surface, mono-forward hierarchy, and sparse yellow emphasis. The system should feel cultural, focused, precise, and operational.
+The system is sumi-e product UI, not SaaS dashboard UI: white paper fields, black ink structure, pale gray rules, restrained red seal accents, roomy boxed operational controls, and Japanese/English serif typography. It should feel like an authored command room: tactile, quiet, sharp, and operationally truthful.
 
-The interface is allowed to be dense, but it must stay calm. Rows, rails, ruled panels, command palettes, and typed status badges carry the work. Cards are used only when an operational object needs containment; they remain squared, bordered, and visibly tied to the same rule system. The user must always be able to distinguish native data, preview data, blocked bridge state, and verified state.
+The yellow/parchment artifacts from earlier edits are explicitly rejected. Do not carry forward yellow focus rings, yellow command chips, amber strips, beige monitor cards, or orange warning-card surfaces. Command/attention states use the red seal family or written state text, not yellow.
 
-**Key Characteristics:**
-- Stark black-and-white editorial shell with cobalt-blue architecture.
-- Mono-forward type for navigation, labels, command surfaces, and operational titles.
-- Squared tactile controls: 1px black strokes, zero radius, offset shadows only where a surface needs physicality.
-- Status vocabulary uses both color and text; dots are never the only signal.
-- White space is functional: blank space means not-yet-built or intentionally empty, not missing design.
+Core characteristics:
+- White paper first; pale gray/mist for depth only.
+- Black ink for architecture, primary actions, selected rails, and user message inversion.
+- Red seal for attention, focus, active tuning, reply markers, and approval/signature moments.
+- Serif Latin/Japanese type throughout the accepted Agents surface.
+- Boxed rails, panels, stage, composer, footer, command panels, and dropdowns; zero-radius by default.
+- Motion feels like paper entering, ink rules revealing, and controls pressing by 1px.
 
-## 2. Colors
+## Colors
 
-The palette is restrained but committed: black and white do most of the work; cobalt blue carries architecture and selection; yellow is a rare operational highlight; semantic status colors appear only with labels.
+Primary structure is `sumi-ink` on `sumi-paper`. The page background may use subtle radial ink washes and red-seal wash, but the base remains white.
 
-### Primary
-- **Kujoyama Cobalt** (`kujo-blue`): the structural blue for the left rail, selected navigation, current states, primary actions, progress meters, and high-emphasis panels.
-- **Deep Cobalt** (`kujo-blue-deep`): validation, depth, and hover reinforcement for blue surfaces.
-- **Soft Blue Field** (`kujo-blue-soft`): selected rows, compact rails, hovered menus, filter tabs, status panels, and cool workspaces.
-- **Blue Wash** (`kujo-blue-wash`): separators inside dropdowns, image-wash panels, and light architectural atmosphere.
+- `sumi-ink` `#0D0A0A`: primary text, primary buttons, selected rails, user message bubbles, ink rules, focus structure.
+- `sumi-paper` `#FFFFFF`: app fields, panels, controls, dropdown menus, message surfaces, modals.
+- `sumi-soft-paper` `#FAFAFA`: hover rows, compact rail background, subtle panel relief.
+- `sumi-mist` `#F5F5F5`: stage base and large quiet work areas.
+- `sumi-rule` `#E0E0E0` and `sumi-pale-rule` `#EDEDED`: borders and separators. Prefer pale rules over black rules on the final Agents system.
+- `sumi-muted` `#545554`: metadata and secondary operational copy.
+- `sumi-wash` `#F7F5F4`: near-white ink wash; use sparingly and avoid beige/yellow drift.
+- `sumi-seal` `#C23A2E`: the only saturated accent. Use for attention, focus underline, active/tune hover, reply marker, assistant side rail, and signature marks.
+- `sumi-seal-deep` `#8F211A`: stronger destructive/blocked accent and depth for seal marks.
+- `sumi-seal-wash` `#F5E5E3`: light attention background; acceptable because it is red-derived, not yellow.
+- `sumi-okay` `#2F3A2F`: ready/online state when text also says Ready/Online.
+- `sumi-warn` `#8F5A1A`: legacy warning alias only. Avoid visible yellow/amber fills in the accepted system.
 
-### Secondary
-- **Ink** (`kujo-ink`): primary text, ruled borders, dividers, icon strokes, and the default hard edge.
-- **Muted Ink** (`kujo-muted`): secondary metadata only; never the main structure.
+No yellow rule:
+- Do not use `#FDE863`, yellow focus outlines, amber command chips, yellow input glows, orange cards, or parchment surfaces.
+- If older `kujo-yellow` or `kujo-amber` names appear in code, treat them as legacy aliases that must resolve away from yellow in the final visual system.
 
-### Tertiary
-- **Signal Yellow** (`kujo-yellow`): focus outlines, active profile/nav badges, command-mode chips, and pinned or warning context. It is rare by design.
+## Typography
 
-### Neutral
-- **Paper** (`kujo-paper`): the default app field, control background, cards, modals, and editorial sidebars.
-- **Cool Paper** (`cool-paper`): a barely-tinted field for settings/forms where pure white needs relief without becoming gray SaaS chrome.
-- **Danger Field** (`danger-bg`): error notices and destructive warnings only.
+The accepted Agents page uses serif typography, not the earlier mono-forward Kujoyama system.
 
-### Semantic State
-- **Green** (`kujo-green`): ready, online, validated, clean, copied, and successful job states.
-- **Red** (`kujo-red`): blocked, offline, failed, destructive, and removal states.
-- **Amber** (`kujo-amber`): paused, command mode, warning, dirty, or needs-attention states.
-- **Teal** (`kujo-teal`): optional info state when blue is already carrying selection.
+- Latin display/labels: `trajan-pro-3, Times New Roman, Baskerville, Georgia, serif`.
+- Japanese/body: `source-han-serif-japanese, Hiragino Mincho ProN, Yu Mincho, Times New Roman, Georgia, serif`.
+- Main page title: 32-46px on the compact Agents header, 400 weight, 0.9 line-height, about -0.04em tracking.
+- Large global title variant: up to 94px for spacious pages, 400 weight, 0.92 line-height.
+- Body/chat: 14px, 1.58 line-height, slight positive tracking around 0.025em.
+- Operational labels: 9-10px, uppercase where useful, 0.13-0.16em tracking, 400 weight.
+- Japanese micro labels: keep visible and readable, usually 12px with 0.16-0.18em tracking.
 
-**The One Blue Rule.** Blue is architecture and state, not decoration. If a surface already has a blue rail or selected blue state, do not sprinkle extra blue accents across unrelated components.
+Typography should be calm and ceremonial. Do not return to heavy mono labels except inside technical file/path/code contexts where the product needs literal machine readability.
 
-**The Status Text Rule.** Color dots and badges must always be paired with text labels such as Ready, Blocked, Paused, Verified, Preview, or Native.
+## Layout
 
-## 3. Typography
+Zoid is a fixed-shell desktop command room. The document/body are not the scroll owner; page regions own their own scroll.
 
-**Display Font:** `ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace`.
-**Body Font:** `Marianne, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif`.
-**Settings Reading Font:** `Inter, SF Pro Text, Helvetica Neue, Marianne/system fallback` for profile/settings forms where long copy needs less mono density.
+Agents page composition:
+- Page shell: full viewport, grid rows `auto minmax(0, 1fr) auto`, 14-24px top/bottom rhythm and 16-48px horizontal rhythm.
+- Header/topbar: compact two-row stack; title row first, operational status/repository/files controls second. It remains above the workspace and must not clip dropdown menus.
+- Workspace: two-column grid: sessions rail plus main stage; optional file manager adds a third column. Gap around 16px.
+- Sessions rail: default 184px, min 124px, max 420px, compact 68px. Full-height panel with hidden horizontal overflow, own vertical scroll, quiet overflow cue.
+- Main stage: dashboard grid or chat stage, min-width 0, min-height 0, no horizontal overflow.
+- Agent monitor grid: 2-up by default, 2x2 quad, focus+stack, and single-column responsive under 980px.
+- Footer stats strip: low, compact, operational, and still visible; model tuning is a quiet black control that turns red seal on hover/focus.
 
-**Character:** Zoid's type is editorial and operational. Mono gives the OS a printed-index rhythm; sans body copy keeps dense instructions, settings, and message content readable.
+Spacing is dense but not cramped. Important controls stay above the fold. Dropdown menus must layer above red rule lines and topbar decoration.
 
-### Hierarchy
-- **Display** (`display`): huge workspace headings and module titles; tight line-height, negative tracking, no decorative hero treatment.
-- **Brand** (`brand`): the ZOID / 25 sidebar mark; severe, tightly tracked, and always paired with the blue rail.
-- **Title** (`title`): row titles, job names, repository cards, session titles, and compact operational headings.
-- **Body** (`body`): chat messages, explanations, profile copy, and prose instructions.
-- **Body Strong** (`body-strong`): dense product copy that needs weight without becoming a headline.
-- **Label / Label Small** (`label`, `label-small`): uppercase controls, chips, metadata, badges, command labels, and status vocabulary.
+## Elevation & Depth
 
-**The Mono-For-Structure Rule.** Use mono for navigation, commands, status labels, IDs, counters, tabs, and row titles. Do not use expressive display type inside form labels, dense settings descriptions, or long body copy.
+Depth is mostly flat. Use pale rules, white translucency, ink washes, and restrained hard shadows.
 
-**The Fixed Product Scale Rule.** Product surfaces use fixed px/rem scales and clamp only for large screen headings. Avoid fluid typography in dense rails, tables, cards, buttons, or input controls.
+Accepted recipes:
+- Pale border: `1px solid #E0E0E0` or `#EDEDED` for most boxed surfaces.
+- Ink top rule: 5-6px gradient line from black to transparent, opacity around 0.34-0.45.
+- Hover lift: translateY(-1px) plus `4px 4px 0 rgba(13,10,10,0.14)` only when the object needs tactile feedback.
+- No ambient glassmorphism. Backdrop blur is only acceptable for modal focus isolation.
+- No chunky black shadows on the accepted Agents page except reusable motion tokens for hover/paper feedback.
 
-## 4. Elevation
+## Shapes
 
-Zoid is flat by default. Depth comes from black rules, spatial separation, blue/white tonal contrast, and occasional hard offset shadows. Shadows are not ambient blur; they are tactile editorial print offsets used sparingly for popovers, cards that need containment, composer actions, and confirmation modals.
+Zero radius is the default. Controls, panels, dropdowns, rows, cards, modals, and command surfaces are square.
 
-### Shadow Vocabulary
-- **Soft Card Offset** (`4px 4px 0 rgba(0,0,0,0.08-0.14)`): repository cards, profile tiles, message actions, and newly changed rows.
-- **Panel Offset** (`6px 6px 0 rgba(0,0,0,0.08-0.10)`): workspace headers, profile sections, and major settings panels.
-- **Popover Offset** (`9px 9px 0 rgba(0,0,0,0.16)`): composer popovers and deep panels.
-- **Modal Offset** (`10px 10px 0 rgba(0,0,0,0.18-0.22)`): command palettes, confirmations, and native command panels.
-- **Inset State Rail** (`inset 4px-6px 0 0 {colors.kujo-blue}`): selected navigation/session rows and action feedback rails.
+Allowed exceptions:
+- Presence/avatar/portrait circles because they represent people/agents.
+- Legacy hidden scroll affordances may use pill shape only where already accepted; the Agents overflow cue has been squared under `.agents-sumi-e`.
 
-**The Rule-First Depth Rule.** Add a border before adding a shadow. Add a hard offset shadow only when the surface must float above the canvas or mark recent state change.
+Do not introduce rounded SaaS cards, bubble pills, or soft app-store gradients.
 
-## 5. Components
+## Components
 
-### Shell and Navigation
-- **Blue rail:** 52-72px wide, full-height cobalt, white mono labels/icons, no rounded corners. Collapsed module icons sit in square 42-50px hit areas.
-- **Editorial sidebar:** white field, 1px black right border, large mono brand block, row navigation with black dividers.
-- **Navigation rows:** white default, soft-blue hover/active, mono title, uppercase metadata, optional selected inset rail. Avoid card-like nav pills.
-- **Responsive behavior:** desktop-first three-column shell; below tablet width, rail/sidebar collapse into horizontal/stacked navigation rather than shrinking typography into illegibility.
+Shell/header:
+- Header is a boxed/ruled paper surface visually dissolved into the page through pale borders and a red/ink reference line.
+- Keep the title compact: Japanese kicker, English title, red-left reference line.
+- Topbar controls are equal-height 44px command boxes.
 
-### Buttons
-- **Shape:** squared, 1px black border, zero radius. The compact dropdown exception may use 5px only where density demands it.
-- **Primary:** cobalt fill, white mono uppercase label, 9-12px vertical/horizontal padding, optional small icon.
-- **Secondary:** paper fill, ink text, same border and typography.
-- **Danger:** red fill, white text, used only for destructive actions and confirmations.
-- **Hover / Focus:** hover may shift by 1px with a harder offset shadow or switch to soft-blue; focus-visible uses a 3px yellow outline so keyboard state is unmistakable.
-- **Disabled:** opacity around 0.52-0.62, no shadow, not-allowed cursor.
+Buttons:
+- Primary actions use black ink fill, white paper text, serif label, zero radius.
+- Hover/active attention may move to red seal, not yellow.
+- Pressed controls move 1px using `--motion-press-offset`.
+- Disabled controls use opacity around 0.62 and no shadow.
 
-### Inputs and Dropdowns
-- **Text fields:** 1px black border, square corners, paper or cool-paper background, 10-12px padding, clear focus state with blue border/soft-blue inset.
-- **Dropdowns:** mono label treatment, 34px default height, right-side soft-blue chevron lane, paper menu, black border, hard 4-5px offset shadow, soft-blue selected/hover row.
-- **Compact dropdowns:** 26px height, 5px radius only when embedded inside dense chips or metadata editors.
+Dropdowns:
+- Trigger: 26-44px depending on context, pale border, paper body, soft-paper right chevron lane.
+- Menu: paper field, pale border, no heavy shadow on Agents; selected/hover row uses soft paper plus red/ink inset rule where useful.
+- Menus must escape header clipping and sit above decorative rules.
 
-### Cards, Panels, and Rows
-- **Rows over cards:** lists, sessions, nav, jobs, metadata, and command options should prefer rows with dividers over rounded cards.
-- **Cards:** when needed, use 1px black border, paper/soft-blue/cool-paper fill, 12-18px padding, zero radius, and optional hard offset shadow.
-- **Workspace headers:** bordered paper panels with display headings, kana/mono lead line, muted prose, and 6px offset shadow.
-- **Feedback panels:** light blue/success/danger fields with inset colored rail and explicit status copy.
+Sessions rail:
+- Rows over cards. Use dividers and pale rules, not individual rounded cards.
+- Active session uses soft-paper background and a thin black inset rail.
+- Session portraits can be local visual identity marks but must stay semantic to sessions/agents, not decorative confetti.
+- New Session is visually separated as a command row.
 
-### Badges, Chips, and Status
-- **Status badges:** bordered, uppercase mono, small padding, semantic fill. Red badges use white text; green/amber/soft-blue generally keep ink text.
-- **Status dots:** 7-12px circles with optional white border; pair every dot with copy when it represents state.
-- **Command chips:** amber fill, black border, mono uppercase, and small offset shadow.
-- **Presence/avatar:** circular avatars are allowed because they represent people/agents; preserve existing avatar semantics and do not replace them with decorative art.
+Agent monitor dashboard:
+- Control bar is compact and horizontally flexible.
+- Panels are boxy, pale-ruled, dense, and scroll-safe.
+- Focused panel uses red seal/ink outline; primary panel may use red seal kicker only.
+- Buttons are quiet by default; selected/pressed states become black or red seal.
+- Feed lines are clamped and animated as paper notices.
 
-### Modals and Command Surfaces
-- **Command palette / confirmations:** centered paper panels, 1px black border, 10px offset shadow, mono uppercase headers, no native browser confirms.
-- **Backdrops:** dark translucent black with restrained blur; backdrop is functional focus isolation, not glassmorphism decoration.
-- **Action rows:** grid layout, bordered paper rows, soft-blue hover, explicit icon/copy pairing.
+Chat stage/messages:
+- Stage is a quiet mist field with subtle ink wash and diagonal architectural line.
+- Assistant messages are white paper with a thin black-to-red side rule.
+- User messages invert to black ink with white text.
+- Message actions are hidden until hover/focus and use small square paper buttons.
 
-### Motion
-- **Default timing:** 140-240ms for hover, icon, button, and micro-feedback transitions.
-- **Structural transitions:** sidebar/session morphs can use 320-540ms cubic-bezier state transitions, but reduced-motion must collapse them.
-- **No decorative choreography:** motion communicates open/closed, selected, copied, streaming, newly added, or resizing states only.
+Composer:
+- Paper panel, pale rule, equal-height attach/send controls.
+- Send is black ink; stop/destructive is red seal.
+- Slash/command mode must not use yellow. Use seal wash or black/red state instead.
 
-## 6. Do's and Don'ts
+Footer/status:
+- Footer stats strip is compact, pale-ruled, and text-first.
+- Every state must have written copy: online/offline/checking/error, running/queued/needs reply, native/preview/blocked/verified.
 
-### Do:
-- **Do** use black 1px rules and squared edges as the default visual grammar.
-- **Do** reserve cobalt blue for architecture, selection, primary action, and verified/progress surfaces.
-- **Do** use mono labels for operational control surfaces and sans body for readable prose.
-- **Do** mark native, preview, blocked, ready, verified, paused, and failed states with explicit text.
-- **Do** keep destructive confirmations branded, centered, async-aware, and visibly tied to the Zoid design system.
-- **Do** use soft-blue hover/selected fields for row-based interaction instead of rounded pill nav.
-- **Do** keep empty/loading/error states truthful; blank canvas is acceptable when it means not-yet-built or no current data.
+Modals/command panels:
+- Centered paper panels, pale or ink border, red/ink section rules, no native confirms for branded destructive flows.
+- Trap focus, support Escape, describe consequences, and restore focus.
 
-### Don't:
-- **Don't** make Zoid feel like a generic SaaS dashboard card grid.
-- **Don't** use AI-chat novelty surfaces, decorative gradients, fake metrics, or simulated records presented as truth.
-- **Don't** use glassmorphism as decoration; a blurred backdrop is only for modal focus isolation.
-- **Don't** over-round controls into bubble UI. Zero radius is the default.
-- **Don't** use blue as confetti or sprinkle accent color across inactive elements.
-- **Don't** rely on color dots alone for state; state requires text.
-- **Don't** copy Villa Kujoyama logos, photography, or proprietary assets; translate the editorial and architectural language only.
-- **Don't** hide review gates, backend availability, data source, bridge requirements, or verification state.
-- **Don't** add heavy border-left color stripes as a generic AI-card trope; if a rail is necessary, it must communicate a specific selected/feedback state.
+Motion:
+- `80ms` instant, `120ms` micro, `160ms` controls, `220ms` rows, `380ms` panels, `540ms` structural, `760ms` page reveal.
+- Easing: editorial `cubic-bezier(0.16, 1, 0.3, 1)`, press `cubic-bezier(0.25, 1, 0.5, 1)`, rule `cubic-bezier(0.215, 0.61, 0.355, 1)`.
+- Reduced-motion must remove structural/page animation and preserve state changes without choreography.
+
+## Do's and Don'ts
+
+### Do
+
+- Do treat the Agents page as the current source of truth for Zoid 25 visual direction.
+- Do keep the palette white/black/gray/red-seal.
+- Do use serif Latin and Japanese typography for product chrome, labels, headers, and chat body.
+- Do keep panels square, boxed, and rule-based.
+- Do use text labels for every operational state.
+- Do preserve file manager, sessions rail, dashboard, composer, footer, and command panels as functional surfaces, not decorative containers.
+- Do verify dropdown layering, horizontal overflow, and scroll ownership after applying the system to another page.
+
+### Don't
+
+- Don't reintroduce yellow artifacts, amber chips, parchment cards, beige monitor panels, orange warning panels, or `#FDE863` styling.
+- Don't fall back to the old cobalt/Kujoyama design language except as legacy token aliases mapped to sumi-e values.
+- Don't use generic SaaS cards, rounded dashboard tiles, glass panels, fake metrics, or ornamental AI chat novelty.
+- Don't hide backend/runtime truth; distinguish native, preview, blocked, ready, verified, running, queued, stopped, and failed states.
+- Don't make decorative brush art carry state unless the same state is written in text.

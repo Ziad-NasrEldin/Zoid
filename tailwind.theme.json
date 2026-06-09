@@ -2,116 +2,108 @@
   "theme": {
     "extend": {
       "colors": {
-        "primary": "#3558a2",
-        "secondary": "#000000",
-        "tertiary": "#fde863",
+        "primary": "#0d0a0a",
+        "secondary": "#545554",
+        "tertiary": "#c23a2e",
         "neutral": "#ffffff",
-        "kujo-blue": "#3558a2",
-        "kujo-blue-deep": "#294984",
-        "kujo-blue-soft": "#e7edfa",
-        "kujo-blue-wash": "#b8c8ea",
-        "kujo-ink": "#000000",
-        "kujo-paper": "#ffffff",
-        "kujo-yellow": "#fde863",
-        "kujo-red": "#dd4949",
-        "kujo-green": "#81ca7a",
-        "kujo-amber": "#efac39",
-        "kujo-teal": "#21ab88",
-        "kujo-muted": "#555555",
-        "danger-bg": "#ffecec",
-        "cool-paper": "#fbfcff"
+        "sumi-ink": "#0d0a0a",
+        "sumi-paper": "#ffffff",
+        "sumi-soft-paper": "#fafafa",
+        "sumi-mist": "#f5f5f5",
+        "sumi-rule": "#e0e0e0",
+        "sumi-pale-rule": "#ededed",
+        "sumi-muted": "#545554",
+        "sumi-wash": "#f7f5f4",
+        "sumi-seal": "#c23a2e",
+        "sumi-seal-deep": "#8f211a",
+        "sumi-seal-wash": "#f5e5e3",
+        "sumi-okay": "#2f3a2f",
+        "sumi-warn": "#8f5a1a",
+        "danger-field": "#ffecec"
       },
       "fontFamily": {
         "display": [
-          "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace"
+          "trajan-pro-3, Times New Roman, Baskerville, Georgia, serif"
         ],
-        "brand": [
-          "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace"
-        ],
-        "title": [
-          "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace"
+        "display-large": [
+          "trajan-pro-3, Times New Roman, Baskerville, Georgia, serif"
         ],
         "body": [
-          "Marianne, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
+          "source-han-serif-japanese, Hiragino Mincho ProN, Yu Mincho, Times New Roman, Georgia, serif"
         ],
-        "body-strong": [
-          "Marianne, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
+        "body-compact": [
+          "source-han-serif-japanese, Hiragino Mincho ProN, Yu Mincho, Times New Roman, Georgia, serif"
         ],
         "label": [
-          "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace"
+          "trajan-pro-3, Times New Roman, Baskerville, Georgia, serif"
         ],
         "label-small": [
-          "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace"
+          "trajan-pro-3, Times New Roman, Baskerville, Georgia, serif"
         ]
       },
       "fontSize": {
         "display": [
-          "68px",
+          "46px",
           {
-            "letterSpacing": "-0.075em",
-            "fontWeight": "500"
-          }
-        ],
-        "brand": [
-          "64px",
-          {
-            "letterSpacing": "-0.075em",
-            "fontWeight": "800"
-          }
-        ],
-        "title": [
-          "24px",
-          {
-            "letterSpacing": "-0.045em",
-            "fontWeight": "900"
-          }
-        ],
-        "body": [
-          "15px",
-          {
-            "letterSpacing": "0em",
+            "letterSpacing": "-0.04em",
             "fontWeight": "400"
           }
         ],
-        "body-strong": [
-          "13px",
+        "display-large": [
+          "94px",
           {
-            "letterSpacing": "0em",
-            "fontWeight": "800"
+            "letterSpacing": "-0.035em",
+            "fontWeight": "400"
+          }
+        ],
+        "body": [
+          "14px",
+          {
+            "letterSpacing": "0.025em",
+            "fontWeight": "400"
+          }
+        ],
+        "body-compact": [
+          "12px",
+          {
+            "letterSpacing": "0.035em",
+            "fontWeight": "400"
           }
         ],
         "label": [
-          "11px",
+          "10px",
           {
-            "letterSpacing": "0em",
-            "fontWeight": "900"
+            "letterSpacing": "0.14em",
+            "fontWeight": "400"
           }
         ],
         "label-small": [
-          "10px",
+          "9px",
           {
-            "letterSpacing": "0em",
-            "fontWeight": "900"
+            "letterSpacing": "0.16em",
+            "fontWeight": "400"
           }
         ]
       },
       "borderRadius": {
         "none": "0px",
-        "compact": "5px",
-        "pill": "999px"
+        "portrait": "999px"
       },
       "spacing": {
-        "xxs": "3px",
-        "xs": "6px",
+        "hairline": "1px",
+        "rule": "2px",
+        "xs": "4px",
         "sm": "8px",
-        "md": "12px",
-        "lg": "16px",
-        "xl": "24px",
-        "xxl": "34px",
-        "rail-min": "52px",
-        "rail-max": "72px",
-        "sidebar-min": "220px",
-        "sidebar-max": "336px"
+        "md": "10px",
+        "lg": "14px",
+        "xl": "18px",
+        "xxl": "24px",
+        "page-x": "16px",
+        "page-y": "14px",
+        "sessions-rail-compact": "68px",
+        "sessions-rail-default": "184px",
+        "sessions-rail-min": "124px",
+        "sessions-rail-max": "420px"
       }
     }
   }

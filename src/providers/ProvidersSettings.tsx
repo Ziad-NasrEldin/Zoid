@@ -32,6 +32,12 @@ function mergeLiveModels(templateModels: string[], liveModels: string[] | undefi
   return Array.from(new Set([...(liveModels ?? []), ...templateModels].filter(Boolean)));
 }
 
+function formatProviderTimestamp(value: string | undefined) {
+  if (!value) return "Not tested";
+  const date = new Date(Number(value) || value);
+  return Number.isNaN(date.getTime()) ? "Not tested" : date.toLocaleString();
+}
+
 function newProviderDraft(availableModels: Record<string, string[]> = {}): ProviderInput {
   const template = providerTemplateByValue("google-gemini");
   const modelOptions = mergeLiveModels(template.models, availableModels[template.providerId]);
@@ -200,14 +206,14 @@ export function ProvidersSettings({ availableModels, onProvidersChanged, onSelec
             <article className={`provider-card provider-card--${provider.status}`} key={provider.id} role="listitem">
               <div className="provider-card-heading">
                 <ShieldCheck size={18} aria-hidden="true" />
-                <div><h4>{provider.displayName}</h4><p>{provider.providerId} · {provider.defaultModel}</p></div>
+                <div><h4 title={provider.displayName}>{provider.displayName}</h4><p title={`${provider.providerId} · ${provider.defaultModel}`}>{provider.providerId} · {provider.defaultModel}</p></div>
                 <span className="provider-status-badge">{providerStatusLabel(provider)}</span>
               </div>
               <dl className="provider-meta-grid">
-                <div><dt>API key</dt><dd>{visibleKeyProviderId === provider.id ? revealedKeys[provider.id] : `${provider.apiKeyEnv}=${blankKeyPlaceholder}`}</dd></div>
-                <div><dt>Models</dt><dd>{provider.modelOptions.slice(0, 5).join(", ")}{provider.modelOptions.length > 5 ? "…" : ""}</dd></div>
-                <div><dt>Last check</dt><dd>{provider.lastValidatedAt ? new Date(Number(provider.lastValidatedAt) || provider.lastValidatedAt).toLocaleString() : "Not tested"}</dd></div>
-                <div><dt>Last apply</dt><dd>{provider.lastAppliedAt ? new Date(Number(provider.lastAppliedAt) || provider.lastAppliedAt).toLocaleString() : "Not applied"}</dd></div>
+                <div><dt>API key</dt><dd title={visibleKeyProviderId === provider.id ? revealedKeys[provider.id] : `${provider.apiKeyEnv}=${blankKeyPlaceholder}`}>{visibleKeyProviderId === provider.id ? revealedKeys[provider.id] : `${provider.apiKeyEnv}=${blankKeyPlaceholder}`}</dd></div>
+                <div><dt>Models</dt><dd title={provider.modelOptions.join(", ")}>{provider.modelOptions.slice(0, 5).join(", ")}{provider.modelOptions.length > 5 ? "…" : ""}</dd></div>
+                <div><dt>Last check</dt><dd title={formatProviderTimestamp(provider.lastValidatedAt)}>{formatProviderTimestamp(provider.lastValidatedAt)}</dd></div>
+                <div><dt>Last apply</dt><dd title={provider.lastAppliedAt ? formatProviderTimestamp(provider.lastAppliedAt) : "Not applied"}>{provider.lastAppliedAt ? formatProviderTimestamp(provider.lastAppliedAt) : "Not applied"}</dd></div>
               </dl>
               {provider.lastError ? <p className="provider-error-note" role="alert">{provider.lastError}</p> : null}
               <div className="provider-action-row">

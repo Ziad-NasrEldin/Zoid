@@ -2,10 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Archive, BellDot, ChevronDown, ChevronRight, FileText, Folder, FolderTree, Maximize2, Minimize2, Plus, X } from "lucide-react";
 import type { CSSProperties, Dispatch, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode, SetStateAction } from "react";
 import { flushSync } from "react-dom";
+import { listen } from "@tauri-apps/api/event";
 import { ChatComposer, type ChatComposerHandle } from "./ChatComposer";
 import { MessageBubble } from "./MessageBubble";
 import { GlobalDropdown } from "../ui/GlobalDropdown";
-import { getHermesCliStatus, sendHermesCliMessage, cancelHermesCliMessage, listHermesSlashCommands, executeHermesSlashCommand, listFileManagerDirectory, type FileManagerDirectoryListing, type FileManagerEntry } from "./hermesClient";
+import { getHermesCliStatus, sendHermesCliRunMessage, cancelHermesCliRun, listHermesSlashCommands, executeHermesSlashCommand, listFileManagerDirectory, type FileManagerDirectoryListing, type FileManagerEntry } from "./hermesClient";
 import { CommandPalette } from "./CommandPalette";
 import type { HermesCommandPanel, HermesSlashCommand, HermesSlashCommandExecution } from "./hermesCommands";
 import { parseSlashCommand } from "./slashCommandParser";
@@ -16,6 +17,10 @@ import { agentResponsePreview, sendDesktopAgentNotification } from "./agentNotif
 import { buildRuthlessReviewerPrompt } from "./ruthlessReviewerAgent";
 import { createSession } from "./sessionState";
 import type { HermesChatSession } from "./sessionState";
+import { AgentMonitorPanel } from "./AgentMonitorPanel";
+import { buildContinuationBrief } from "./continuationBrief";
+import { AGENT_DASHBOARD_MAX_TILES, loadAgentDashboardState, saveAgentDashboardState, type AgentDashboardLayoutMode, type AgentDashboardStateV1 } from "./dashboardLayoutState";
+import { MAX_ACTIVE_AGENT_RUNS, listAgentRuns, useAgentRuntime, type AgentRunEvent } from "./useAgentRuntime";
 import { defaultHermesProfileSettings, loadHermesProfileSettings, saveHermesProfileSettings } from "./hermesProfileClient";
 import type { HermesProfileSettings } from "./hermesProfileClient";
 import type { AgentConnectionState, ChatMessage, HermesCliStatus } from "./types";
@@ -47,7 +52,7 @@ const CONNECTION_STATE_JAPANESE: Record<AgentConnectionState, string> = {
   error: "エラー",
 };
 const SESSIONS_RAIL_MIN_WIDTH = 124;
-const SESSIONS_RAIL_MAX_WIDTH = 340;
+const SESSIONS_RAIL_MAX_WIDTH = 420;
 const SESSIONS_RAIL_DEFAULT_WIDTH = 184;
 const SESSIONS_RAIL_COMPACT_WIDTH = 68;
 const SESSIONS_RAIL_WIDTH_STORAGE_KEY = "zoid25:hermes-sessions-rail-width";
@@ -224,11 +229,15 @@ const COMMAND_PANEL_COPY: Record<HermesCommandPanel, { title: string; body: stri
   browser: { title: "Browser tools", body: "Inspect or control browser-related Hermes commands." },
 };
 
+type QueuedHermesPrompt = { sessionId: string; content: string; kind: "prompt" | "slash" };
+
 export function AgentsHermesScreen({ repositories = [], sessions, activeSessionId, isAgentsWorkspaceOpen = true, onSessionsChange, onActiveSessionIdChange, onArchiveSession, onRepositoryOperationComplete }: AgentsHermesScreenProps) {
   const [cliStatus, setCliStatus] = useState<HermesCliStatus | null>(null);
   const [connectionState, setConnectionState] = useState<AgentConnectionState>("checking");
   const [isSending, setIsSending] = useState(false);
-  const activeHermesRunRef = useRef<{ sessionId: string; assistantId: string; stopCopy?: string } | null>(null);
+  const activeHermesRunsRef = useRef<Map<string, { sessionId: string; assistantId: string; stopCopy?: string }>>(new Map());
+  const agentRunEventSequenceRef = useRef<Map<string, number>>(new Map());
+  const terminalAgentRunEventsRef = useRef<Set<string>>(new Set());
   const [lastPromptStartedAt, setLastPromptStartedAt] = useState<number | null>(null);
   const [lastPromptElapsedMs, setLastPromptElapsedMs] = useState<number | null>(null);
   const [elapsedTick, setElapsedTick] = useState(Date.now());
@@ -250,7 +259,7 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
   const [modelPanelStatus, setModelPanelStatus] = useState<string | null>(null);
   const [modelPanelError, setModelPanelError] = useState<string | null>(null);
   const [isUpdatingModelPanel, setIsUpdatingModelPanel] = useState(false);
-  const queuedHermesPromptsRef = useRef<Array<{ sessionId: string; content: string }>>([]);
+  const queuedHermesPromptsRef = useRef<QueuedHermesPrompt[]>([]);
   const claimedInitialPromptKeysRef = useRef<Set<string>>(new Set());
   const [fileManagerOpen, setFileManagerOpen] = useState(false);
   const [fileManagerWidth, setFileManagerWidth] = useState(getInitialFileManagerWidth);
@@ -271,8 +280,15 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
   const sessionsRailMorphAnimationsRef = useRef<Animation[]>([]);
   const pendingNewSessionActivationRef = useRef<string | null>(null);
   const [showSessionsOverflowCue, setShowSessionsOverflowCue] = useState(false);
+  const [dashboardState, setDashboardState] = useState<AgentDashboardStateV1>(() => loadAgentDashboardState(sessions.map((session) => session.id)));
+  const [expandedModeSessionId, setExpandedModeSessionId] = useState<string | null>(null);
+  const runtime = useAgentRuntime();
 
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
+  useEffect(() => {
+    setDashboardState((current) => loadAgentDashboardState(sessions.map((session) => session.id), { getItem: () => JSON.stringify(current), setItem: () => undefined, removeItem: () => undefined, clear: () => undefined, key: () => null, length: 0 }));
+  }, [sessions]);
+  useEffect(() => { saveAgentDashboardState(dashboardState); }, [dashboardState]);
   useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
   useEffect(() => {
     const pendingSessionId = pendingNewSessionActivationRef.current;
@@ -332,14 +348,14 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
         setCommandPaletteOpen(true);
         return;
       }
-      if (isSending && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c" && !hasActiveTextSelection()) {
+      if (activeHermesRunsRef.current.size > 0 && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c" && !hasActiveTextSelection()) {
         event.preventDefault();
-        void handleStopHermesRun("keyboard");
+        void handleStopHermesRun("keyboard", dashboardState.focusedSessionId ?? activeSessionIdRef.current);
       }
     }
     window.addEventListener("keydown", handleGlobalKeyDown);
     return () => window.removeEventListener("keydown", handleGlobalKeyDown);
-  }, [isSending]);
+  }, [dashboardState.focusedSessionId]);
 
   useEffect(() => {
     if (!isSending || lastPromptStartedAt === null) return undefined;
@@ -408,7 +424,7 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
   }, [activeSessionId]);
 
   useEffect(() => {
-    if (!activeSession || !activeSession.pendingInitialPrompt || isSending || connectionState !== "online") return;
+    if (!activeSession || !activeSession.pendingInitialPrompt || connectionState !== "online" || !runtime.canStartSessionRun(activeSession.id)) return;
     const prompt = activeSession.pendingInitialPrompt;
     const claimKey = `${activeSession.id}:${activeSession.operationRunId ?? "no-run"}:${prompt}`;
     if (claimedInitialPromptKeysRef.current.has(claimKey)) return;
@@ -422,7 +438,7 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
       }
       void sendHermesPrompt({ ...session, pendingInitialPrompt: undefined }, prompt);
     }, 0);
-  }, [activeSession?.id, activeSession?.operationRunId, activeSession?.pendingInitialPrompt, connectionState, isSending]);
+  }, [activeSession?.id, activeSession?.operationRunId, activeSession?.pendingInitialPrompt, connectionState, runtime]);
 
   const hermesWithPresence = useMemo(() => {
     const base = participantsById.hermes;
@@ -497,6 +513,67 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
   function updateSession(sessionId: string, updater: (session: HermesChatSession) => HermesChatSession) {
     onSessionsChange((current) => current.map((session) => session.id === sessionId ? updater(session) : session));
   }
+
+  useEffect(() => {
+    let cancelled = false;
+    void listAgentRuns().then((runs) => {
+      if (cancelled) return;
+      for (const run of runs) {
+        runtime.markSessionRunStarted(run.sessionId, run.runId, run.runId, run.startedAt);
+      }
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<AgentRunEvent>("agent-run-event", (event) => {
+      const runEvent = event.payload;
+      if (!runEvent?.sessionId || !runEvent.runId) return;
+      const runKey = `${runEvent.sessionId}:${runEvent.runId}`;
+      const lastSequence = agentRunEventSequenceRef.current.get(runKey) ?? -1;
+      if (runEvent.sequence <= lastSequence) return;
+      if (terminalAgentRunEventsRef.current.has(runKey) && runEvent.type === "agent-run-output") return;
+      agentRunEventSequenceRef.current.set(runKey, runEvent.sequence);
+      const currentRun = runtime.getSessionRuntime(runEvent.sessionId).currentRun;
+      if (currentRun && currentRun.runId !== runEvent.runId) return;
+      if (runEvent.type === "agent-run-started") {
+        runtime.markSessionRunStarted(runEvent.sessionId, runEvent.runId, runEvent.runId, runEvent.timestamp);
+        return;
+      }
+      if (runEvent.type === "agent-run-output" && runEvent.chunk) {
+        updateSession(runEvent.sessionId, (session) => ({
+          ...session,
+          updatedAt: new Date().toISOString(),
+          messages: session.messages.map((message) => message.id === runEvent.runId ? { ...message, content: `${message.content}${runEvent.chunk}`, status: "streaming" } : message),
+        }));
+        return;
+      }
+      if (runEvent.type === "agent-run-completed") {
+        terminalAgentRunEventsRef.current.add(runKey);
+        runtime.markSessionRunFinished(runEvent.sessionId, "idle", undefined, runEvent.runId);
+        updateSession(runEvent.sessionId, (session) => ({
+          ...session,
+          updatedAt: new Date().toISOString(),
+          messages: session.messages.map((message) => message.id === runEvent.runId ? { ...message, status: "sent" } : message),
+        }));
+        window.setTimeout(() => runNextQueuedPrompt(runEvent.sessionId), 0);
+        return;
+      }
+      if (runEvent.type === "agent-run-error" || runEvent.type === "agent-run-stopped") {
+        terminalAgentRunEventsRef.current.add(runKey);
+        const status = runEvent.type === "agent-run-stopped" ? "interrupted" : "error";
+        runtime.markSessionRunFinished(runEvent.sessionId, status, runEvent.message, runEvent.runId);
+        updateSession(runEvent.sessionId, (session) => ({
+          ...session,
+          updatedAt: new Date().toISOString(),
+          messages: session.messages.map((message) => message.id === runEvent.runId ? { ...message, status: "error", error: runEvent.message ?? "Hermes run failed." } : message),
+        }));
+        window.setTimeout(() => runNextQueuedPrompt(runEvent.sessionId), 0);
+      }
+    }).then((dispose) => { unlisten = dispose; }).catch(() => undefined);
+    return () => { unlisten?.(); };
+  }, [runtime]);
 
   function openSession(sessionId: string) {
     onSessionsChange((current) => current.map((session) => session.id === sessionId ? clearSessionNeedsReply(session) : session));
@@ -945,22 +1022,31 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
     setRecentCommands(loadRecentCommands());
   }
 
-  async function runSlashCommand(command: string, confirmed = false) {
-    if (!activeSession) return;
-    const sendingSessionId = activeSession.id;
+  async function runSlashCommand(sessionForCommand: HermesChatSession, command: string, confirmed = false) {
+    const sendingSessionId = sessionForCommand.id;
     const assistantId = `hermes-command-${crypto.randomUUID()}`;
     const userMessage: ChatMessage = { id: `user-command-${crypto.randomUUID()}`, role: "user", participantId: "ziad", content: command, createdAt: new Date().toISOString(), status: "sent" };
     const assistantMessage: ChatMessage = { id: assistantId, role: "assistant", participantId: "hermes", content: "", createdAt: new Date().toISOString(), status: "streaming" };
-    const optimisticMessages = [...activeSession.messages, userMessage, assistantMessage];
-    const detectedRepository = selectedRepository ?? detectRepositoryFromPrompt(command, repositories);
-    updateSession(sendingSessionId, (session) => ({ ...session, updatedAt: new Date().toISOString(), messages: optimisticMessages, linkedRepositoryId: detectedRepository?.id ?? session.linkedRepositoryId }));
-    activeHermesRunRef.current = { sessionId: sendingSessionId, assistantId };
+    const sessionRepository = repositories.find((repository) => repository.id === sessionForCommand.linkedRepositoryId);
+    const detectedRepository = sessionRepository ?? detectRepositoryFromPrompt(command, repositories);
+    if (!runtime.tryStartSessionRun(sendingSessionId, assistantId)) {
+      runtime.queuePrompt(sendingSessionId, command);
+      queueHermesPrompt(sendingSessionId, command, "slash");
+      return;
+    }
+    updateSession(sendingSessionId, (session) => ({
+      ...session,
+      updatedAt: new Date().toISOString(),
+      messages: [...session.messages, userMessage, assistantMessage],
+      linkedRepositoryId: detectedRepository?.id ?? session.linkedRepositoryId,
+    }));
+    activeHermesRunsRef.current.set(sendingSessionId, { sessionId: sendingSessionId, assistantId });
     setIsSending(true);
     const promptStartedAt = Date.now();
     setLastPromptStartedAt(promptStartedAt);
     setLastPromptElapsedMs(null);
     try {
-      const result = await executeHermesSlashCommand(command, detectedRepository?.path, activeSession.hermesCliSessionId, confirmed);
+      const result = await executeHermesSlashCommand(command, detectedRepository?.path, sessionForCommand.hermesCliSessionId, confirmed);
       if (result.requiresConfirmation) {
         setPendingConfirmation({
           result,
@@ -968,7 +1054,7 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
           assistantId,
           command,
           linkedRepositoryPath: detectedRepository?.path,
-          hermesCliSessionId: activeSession.hermesCliSessionId,
+          hermesCliSessionId: sessionForCommand.hermesCliSessionId,
         });
         onSessionsChange((current) => current.map((session) => session.id === sendingSessionId ? {
           ...session,
@@ -979,7 +1065,7 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
       }
     } catch (error) {
       const stoppedByUser = error instanceof Error && error.message.includes("stopped by the user");
-      const preservedStopCopy = activeHermesRunRef.current?.assistantId === assistantId ? activeHermesRunRef.current.stopCopy : undefined;
+      const preservedStopCopy = activeHermesRunsRef.current.get(sendingSessionId)?.assistantId === assistantId ? activeHermesRunsRef.current.get(sendingSessionId)?.stopCopy : undefined;
       onSessionsChange((current) => current.map((session) => session.id === sendingSessionId ? {
         ...session,
         updatedAt: new Date().toISOString(),
@@ -992,15 +1078,21 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
     } finally {
       setLastPromptElapsedMs(Date.now() - promptStartedAt);
       setLastPromptStartedAt(null);
-      if (activeHermesRunRef.current?.assistantId === assistantId) activeHermesRunRef.current = null;
-      setIsSending(false);
-      runNextQueuedPrompt();
+      activeHermesRunsRef.current.delete(sendingSessionId);
+      runtime.markSessionRunFinished(sendingSessionId, "idle", undefined, assistantId);
+      setIsSending(activeHermesRunsRef.current.size > 0);
+      runNextQueuedPrompt(sendingSessionId);
     }
   }
 
   async function runPendingConfirmedCommand(pending: PendingCommandConfirmation) {
+    if (!runtime.tryStartSessionRun(pending.sessionId, pending.assistantId)) {
+      runtime.queuePrompt(pending.sessionId, pending.command);
+      queueHermesPrompt(pending.sessionId, pending.command, "slash");
+      return;
+    }
     setIsSending(true);
-    activeHermesRunRef.current = { sessionId: pending.sessionId, assistantId: pending.assistantId };
+    activeHermesRunsRef.current.set(pending.sessionId, { sessionId: pending.sessionId, assistantId: pending.assistantId });
     const promptStartedAt = Date.now();
     setLastPromptStartedAt(promptStartedAt);
     setLastPromptElapsedMs(null);
@@ -1009,7 +1101,7 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
       appendCommandResult(pending.sessionId, pending.command, result, pending.assistantId);
     } catch (error) {
       const stoppedByUser = error instanceof Error && error.message.includes("stopped by the user");
-      const preservedStopCopy = activeHermesRunRef.current?.assistantId === pending.assistantId ? activeHermesRunRef.current.stopCopy : undefined;
+      const preservedStopCopy = activeHermesRunsRef.current.get(pending.sessionId)?.assistantId === pending.assistantId ? activeHermesRunsRef.current.get(pending.sessionId)?.stopCopy : undefined;
       onSessionsChange((current) => current.map((session) => session.id === pending.sessionId ? {
         ...session,
         updatedAt: new Date().toISOString(),
@@ -1022,37 +1114,43 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
     } finally {
       setLastPromptElapsedMs(Date.now() - promptStartedAt);
       setLastPromptStartedAt(null);
-      if (activeHermesRunRef.current?.assistantId === pending.assistantId) activeHermesRunRef.current = null;
-      setIsSending(false);
-      runNextQueuedPrompt();
+      activeHermesRunsRef.current.delete(pending.sessionId);
+      runtime.markSessionRunFinished(pending.sessionId, "idle", undefined, pending.assistantId);
+      setIsSending(activeHermesRunsRef.current.size > 0);
+      runNextQueuedPrompt(pending.sessionId);
     }
   }
 
-  async function handleStopHermesRun(source: "button" | "keyboard" = "button") {
-    if (!isSending) return;
-    const run = activeHermesRunRef.current;
+  async function handleStopHermesRun(source: "button" | "keyboard" = "button", scopedSessionId?: string) {
+    const stopTargetSessionId = scopedSessionId ?? activeSessionId;
+    const run = runtime.getSessionRuntime(stopTargetSessionId).currentRun ?? activeHermesRunsRef.current.get(stopTargetSessionId);
     if (!run) return;
     const stopCopy = source === "keyboard" ? "Stopped Hermes with Ctrl/Cmd+C." : "Stopped Hermes run.";
+    const stopRunId = "runId" in run ? run.runId : run.assistantId;
     try {
-      const stopped = await cancelHermesCliMessage();
+      const stopped = await cancelHermesCliRun(run.sessionId, stopRunId);
       if (!stopped) return;
-      activeHermesRunRef.current = { ...run, stopCopy };
+      activeHermesRunsRef.current.set(run.sessionId, { sessionId: run.sessionId, assistantId: stopRunId, stopCopy });
+      activeHermesRunsRef.current.delete(run.sessionId);
+      runtime.markSessionRunFinished(run.sessionId, "interrupted", "User stopped the active run.", stopRunId);
+      setIsSending(activeHermesRunsRef.current.size > 0);
       updateSession(run.sessionId, (session) => ({
         ...session,
         updatedAt: new Date().toISOString(),
         messages: session.messages.map((message) => (
-          message.id === run.assistantId
+          message.id === stopRunId
             ? { ...message, content: stopCopy, status: "error", error: "User stopped the active run." }
             : message
         )),
       }));
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
+      runtime.markSessionRunFinished(run.sessionId, "error", detail);
       updateSession(run.sessionId, (session) => ({
         ...session,
         updatedAt: new Date().toISOString(),
         messages: session.messages.map((message) => (
-          message.id === run.assistantId
+          message.id === stopRunId
             ? { ...message, content: "Could not stop Hermes run.", status: "error", error: detail }
             : message
         )),
@@ -1060,19 +1158,26 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
     }
   }
 
-  function queueHermesPrompt(sessionId: string, content: string) {
-    queuedHermesPromptsRef.current = [...queuedHermesPromptsRef.current, { sessionId, content }];
+  function queueHermesPrompt(sessionId: string, content: string, kind: QueuedHermesPrompt["kind"]) {
+    queuedHermesPromptsRef.current = [...queuedHermesPromptsRef.current, { sessionId, content, kind }];
   }
 
   function runNextQueuedPrompt(preferredSessionId?: string) {
-    const nextPrompt = preferredSessionId
-      ? queuedHermesPromptsRef.current.find((prompt) => prompt.sessionId === preferredSessionId) ?? queuedHermesPromptsRef.current[0]
-      : queuedHermesPromptsRef.current[0];
+    const queuedPrompts = queuedHermesPromptsRef.current;
+    const preferredPrompt = preferredSessionId
+      ? queuedPrompts.find((prompt) => prompt.sessionId === preferredSessionId && runtime.canStartSessionRun(prompt.sessionId))
+      : undefined;
+    const nextPrompt = preferredPrompt ?? queuedPrompts.find((prompt) => runtime.canStartSessionRun(prompt.sessionId));
     if (!nextPrompt) return;
-    queuedHermesPromptsRef.current = queuedHermesPromptsRef.current.filter((prompt) => prompt !== nextPrompt);
+    queuedHermesPromptsRef.current = queuedPrompts.filter((prompt) => prompt !== nextPrompt);
+    runtime.dequeuePrompt(nextPrompt.sessionId);
     window.setTimeout(() => {
       const session = sessionsRef.current.find((candidate) => candidate.id === nextPrompt.sessionId);
       if (!session) return;
+      if (nextPrompt.kind === "slash") {
+        void runSlashCommand(session, nextPrompt.content);
+        return;
+      }
       void sendHermesPrompt(session, nextPrompt.content);
     }, 0);
   }
@@ -1083,22 +1188,43 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
     const assistantId = `hermes-${crypto.randomUUID()}`;
     const assistantMessage: ChatMessage = { id: assistantId, role: "assistant", participantId: "hermes", content: "", createdAt: new Date().toISOString(), status: "streaming" };
     const nextMessages = [...sessionForSend.messages, userMessage];
-    const optimisticMessages = [...nextMessages, assistantMessage];
     const updatedAt = new Date().toISOString();
     const effectiveRepositoryId = sessionForSend.linkedRepositoryId;
     const currentLinkedRepository = repositories.find((repository) => repository.id === effectiveRepositoryId);
     const detectedRepository = currentLinkedRepository ?? detectRepositoryFromPrompt(content, repositories);
-    updateSession(sendingSessionId, (session) => ({ ...session, title: session.title === "New session" ? titleFromPrompt(content) : session.title, linkedRepositoryId: detectedRepository?.id ?? session.linkedRepositoryId, updatedAt, messages: optimisticMessages }));
+    if (!runtime.tryStartSessionRun(sendingSessionId, assistantId)) {
+      runtime.queuePrompt(sendingSessionId, content);
+      queueHermesPrompt(sendingSessionId, content, "prompt");
+      return;
+    }
+    updateSession(sendingSessionId, (session) => ({
+      ...session,
+      title: session.title === "New session" ? titleFromPrompt(content) : session.title,
+      linkedRepositoryId: detectedRepository?.id ?? session.linkedRepositoryId,
+      updatedAt,
+      messages: [...session.messages, userMessage, assistantMessage],
+    }));
 
     const promptStartedAt = Date.now();
+    const eventRunKey = `${sendingSessionId}:${assistantId}`;
+    agentRunEventSequenceRef.current.delete(eventRunKey);
+    terminalAgentRunEventsRef.current.delete(eventRunKey);
     setLastPromptStartedAt(promptStartedAt);
     setLastPromptElapsedMs(null);
     setElapsedTick(promptStartedAt);
-    activeHermesRunRef.current = { sessionId: sendingSessionId, assistantId };
+    activeHermesRunsRef.current.set(sendingSessionId, { sessionId: sendingSessionId, assistantId });
     setIsSending(true);
+    let finalRuntimeStatus: "idle" | "error" | "interrupted" = "idle";
+    let finalRuntimeError: string | undefined;
 
     try {
-      const response = await sendHermesCliMessage(nextMessages.map((message) => ({ role: message.role, content: message.content })), detectedRepository?.path, sessionForSend.hermesCliSessionId);
+      const response = await sendHermesCliRunMessage(
+        nextMessages.map((message) => ({ role: message.role, content: message.content })),
+        detectedRepository?.path,
+        sessionForSend.hermesCliSessionId,
+        sendingSessionId,
+        assistantId,
+      );
       const responseContent = response.content || "Hermes CLI returned an empty response.";
       onSessionsChange((current) => current.map((session) => session.id === sendingSessionId ? {
         ...session,
@@ -1106,9 +1232,10 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
         linkedRepositoryId: detectedRepository?.id ?? session.linkedRepositoryId,
         hermesCliSessionId: response.session || session.hermesCliSessionId,
         updatedAt: new Date().toISOString(),
-        messages: session.messages.map((message) => message.id === assistantId ? { ...message, content: responseContent, status: "sent" } : message),
+        messages: session.messages.map((message) => message.id === assistantId ? { ...message, content: message.content.trim().length > 0 ? message.content : responseContent, status: "sent" } : message),
       } : session));
       notifyForBackgroundAgentResponse(sendingSessionId, assistantId, responseContent);
+      setCliStatus((current) => current ? { ...current, session: response.session } : current);
       if (sessionForSend.operationRunId && sessionForSend.operationRepositoryId && sessionForSend.operationAction) {
         onRepositoryOperationComplete?.({
           sessionId: sendingSessionId,
@@ -1119,10 +1246,11 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
           responseContent,
         });
       }
-      setCliStatus((current) => current ? { ...current, session: response.session } : current);
     } catch (error) {
       const stoppedByUser = error instanceof Error && error.message.includes("stopped by the user");
-      const preservedStopCopy = activeHermesRunRef.current?.assistantId === assistantId ? activeHermesRunRef.current.stopCopy : undefined;
+      finalRuntimeStatus = stoppedByUser ? "interrupted" : "error";
+      finalRuntimeError = error instanceof Error ? error.message : String(error);
+      const preservedStopCopy = activeHermesRunsRef.current.get(sendingSessionId)?.assistantId === assistantId ? activeHermesRunsRef.current.get(sendingSessionId)?.stopCopy : undefined;
       onSessionsChange((current) => current.map((session) => session.id === sendingSessionId ? {
         ...session,
         updatedAt: new Date().toISOString(),
@@ -1150,9 +1278,10 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
     } finally {
       setLastPromptElapsedMs(Date.now() - promptStartedAt);
       setLastPromptStartedAt(null);
-      if (activeHermesRunRef.current?.assistantId === assistantId) activeHermesRunRef.current = null;
-      setIsSending(false);
-      runNextQueuedPrompt();
+      activeHermesRunsRef.current.delete(sendingSessionId);
+      runtime.markSessionRunFinished(sendingSessionId, finalRuntimeStatus, finalRuntimeError, assistantId);
+      setIsSending(activeHermesRunsRef.current.size > 0);
+      runNextQueuedPrompt(sendingSessionId);
     }
   }
 
@@ -1167,16 +1296,132 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
   }
 
   async function handleSend(content: string) {
-    if (!activeSession) return;
-    if (isSending) {
-      queueHermesPrompt(activeSession.id, content);
+    const targetSession = expandedSession ?? activeSession;
+    if (!targetSession) return;
+    const parsedSlashCommand = parseSlashCommand(content, slashCommands);
+    if (activeHermesRunsRef.current.has(targetSession.id) || runtime.getSessionRuntime(targetSession.id).status === "running" || runtime.getSessionRuntime(targetSession.id).status === "needs-input") {
+      queueHermesPrompt(targetSession.id, content, parsedSlashCommand ? "slash" : "prompt");
+      runtime.queuePrompt(targetSession.id, content);
       return;
     }
-    if (parseSlashCommand(content, slashCommands)) {
-      await runSlashCommand(content);
+    if (parsedSlashCommand) {
+      await runSlashCommand(targetSession, content);
       return;
     }
-    await sendHermesPrompt(activeSession, content);
+    await sendHermesPrompt(targetSession, content);
+  }
+
+  const tiledSessions = dashboardState.tiledSessionIds.map((sessionId) => sessions.find((session) => session.id === sessionId)).filter((session): session is HermesChatSession => Boolean(session));
+  const dashboardVisibleSessions = tiledSessions;
+  const runningCount = runtime.activeRunCount;
+  const queuedCount = Object.values(runtime.runtimeBySessionId).reduce((total, state) => total + state.queuedPrompts.length, 0);
+  const needsReplyCount = sessions.filter((session) => session.needsReply || runtime.getSessionRuntime(session.id).status === "needs-input").length;
+  const expandedSession = expandedModeSessionId ? sessions.find((session) => session.id === expandedModeSessionId) : undefined;
+
+  function patchDashboard(updater: (current: AgentDashboardStateV1) => AgentDashboardStateV1) {
+    setDashboardState((current) => updater(current));
+  }
+
+  function addSessionToDashboard(sessionId: string) {
+    patchDashboard((current) => {
+      if (current.tiledSessionIds.includes(sessionId)) return { ...current, focusedSessionId: sessionId, primarySessionId: current.primarySessionId ?? sessionId };
+      const tiledSessionIds = [...current.tiledSessionIds, sessionId].slice(0, AGENT_DASHBOARD_MAX_TILES);
+      return { ...current, tiledSessionIds, focusedSessionId: sessionId, primarySessionId: current.primarySessionId ?? sessionId };
+    });
+  }
+
+  function removeSessionFromDashboard(sessionId: string) {
+    patchDashboard((current) => {
+      const tiledSessionIds = current.tiledSessionIds.filter((id) => id !== sessionId);
+      return { ...current, tiledSessionIds, primarySessionId: current.primarySessionId === sessionId ? tiledSessionIds[0] : current.primarySessionId, focusedSessionId: current.focusedSessionId === sessionId ? tiledSessionIds[0] : current.focusedSessionId };
+    });
+  }
+
+  function moveDashboardSession(sessionId: string, direction: "left" | "right") {
+    patchDashboard((current) => {
+      const index = current.tiledSessionIds.indexOf(sessionId);
+      const swapWith = direction === "left" ? index - 1 : index + 1;
+      if (index < 0 || swapWith < 0 || swapWith >= current.tiledSessionIds.length) return current;
+      const tiledSessionIds = [...current.tiledSessionIds];
+      [tiledSessionIds[index], tiledSessionIds[swapWith]] = [tiledSessionIds[swapWith], tiledSessionIds[index]];
+      return { ...current, tiledSessionIds };
+    });
+  }
+
+  function sessionDashboardPriority(session: HermesChatSession) {
+    const state = runtime.getSessionRuntime(session.id);
+    if (state.status === "needs-input" || session.needsReply) return 0;
+    if (state.status === "error") return 1;
+    if (state.status === "interrupted") return 2;
+    if (state.status === "running") return 3;
+    if (state.queuedPrompts.length) return 4;
+    return 5;
+  }
+
+  useEffect(() => {
+    if (!dashboardState.autoPrioritize || dashboardState.tiledSessionIds.length < 2) return;
+    const ordered = [...dashboardState.tiledSessionIds].sort((leftId, rightId) => {
+      const left = sessions.find((session) => session.id === leftId);
+      const right = sessions.find((session) => session.id === rightId);
+      if (!left || !right) return 0;
+      return sessionDashboardPriority(left) - sessionDashboardPriority(right) || Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
+    });
+    if (ordered.join("|") === dashboardState.tiledSessionIds.join("|")) return;
+    patchDashboard((current) => ({ ...current, tiledSessionIds: ordered, focusedSessionId: ordered[0] ?? current.focusedSessionId, primarySessionId: current.primarySessionId && ordered.includes(current.primarySessionId) ? current.primarySessionId : ordered[0] }));
+  }, [dashboardState.autoPrioritize, dashboardState.tiledSessionIds.join("|"), sessions, runtime.runtimeBySessionId]);
+
+  function showActiveAgents() {
+    const priority = (session: HermesChatSession) => {
+      const state = runtime.getSessionRuntime(session.id);
+      if (state.status === "needs-input" || session.needsReply) return 0;
+      if (state.status === "error") return 1;
+      if (state.status === "interrupted") return 2;
+      if (state.status === "running") return 3;
+      if (state.queuedPrompts.length) return 4;
+      return 5;
+    };
+    const ordered = [...sessions].sort((left, right) => priority(left) - priority(right) || Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+    patchDashboard((current) => {
+      const tiledSessionIds = [...current.tiledSessionIds];
+      for (const session of ordered) {
+        if (tiledSessionIds.length >= AGENT_DASHBOARD_MAX_TILES) break;
+        if (!tiledSessionIds.includes(session.id)) tiledSessionIds.push(session.id);
+      }
+      return { ...current, tiledSessionIds, focusedSessionId: tiledSessionIds[0], primarySessionId: current.primarySessionId ?? tiledSessionIds[0] };
+    });
+  }
+
+  async function sendToDashboardSession(sessionId: string, prompt: string) {
+    const session = sessionsRef.current.find((candidate) => candidate.id === sessionId);
+    if (!session) return;
+    const sessionRuntime = runtime.getSessionRuntime(sessionId);
+    if (sessionRuntime.status === "running" || sessionRuntime.status === "needs-input") {
+      runtime.queuePrompt(sessionId, prompt);
+      queueHermesPrompt(sessionId, prompt, parseSlashCommand(prompt, slashCommands) ? "slash" : "prompt");
+      return;
+    }
+    if (!runtime.canStartSessionRun(sessionId)) {
+      runtime.queuePrompt(sessionId, prompt);
+      queueHermesPrompt(sessionId, prompt, parseSlashCommand(prompt, slashCommands) ? "slash" : "prompt");
+      return;
+    }
+    openSession(sessionId);
+    const parsedSlashCommand = parseSlashCommand(prompt, slashCommands);
+    if (parsedSlashCommand) {
+      await runSlashCommand(session, prompt);
+      return;
+    }
+    await sendHermesPrompt(session, prompt);
+  }
+
+  async function continueDashboardSession(sessionId: string) {
+    const session = sessionsRef.current.find((candidate) => candidate.id === sessionId);
+    if (!session || runtime.getSessionRuntime(sessionId).status === "running") return;
+    await sendToDashboardSession(sessionId, buildContinuationBrief(session));
+  }
+
+  function setDashboardLayoutMode(layoutMode: AgentDashboardLayoutMode) {
+    patchDashboard((current) => ({ ...current, layoutMode }));
   }
 
   return (
@@ -1287,6 +1532,14 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
                     </button>
                   )}
                   {!isSessionsRailCompact ? (
+                    <div className="session-dashboard-actions">
+                      <span className={`session-runtime-chip session-runtime-chip--${runtime.getSessionRuntime(session.id).status}`}>{runtime.getSessionRuntime(session.id).status}</span>
+                      {runtime.getSessionRuntime(session.id).queuedPrompts.length ? <span className="session-runtime-chip">Q{runtime.getSessionRuntime(session.id).queuedPrompts.length}</span> : null}
+                      <button aria-label={`Add ${session.title} to dashboard`} onClick={() => addSessionToDashboard(session.id)} type="button">Tile</button>
+                      <button aria-label={`Continue ${session.title}`} disabled={runtime.getSessionRuntime(session.id).status === "running" || connectionState !== "online"} onClick={() => void continueDashboardSession(session.id)} type="button">{runtime.getSessionRuntime(session.id).status === "running" ? "Already running" : "Continue"}</button>
+                    </div>
+                  ) : null}
+                  {!isSessionsRailCompact ? (
                     <button aria-label={`Archive session ${session.title}`} className="archive-session-button" onClick={() => onArchiveSession(session.id)} title="Archive session" type="button">
                       <Archive size={14} strokeWidth={2.4} aria-hidden="true" />
                     </button>
@@ -1323,23 +1576,88 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
           ) : null}
         </aside>
 
-        <div className="chat-main-pane">
-          <div className="chat-stage" onPointerDown={handleChatStagePointerDown}>
-            <div className="message-list" ref={messageListRef} role="log" aria-live="polite" aria-label="Hermes conversation messages">
-              {messages.map((message, index) => {
-                const userTurnsAfterMessage = messages.slice(index + 1).filter((item) => item.role === "user").length;
+        <div className="chat-main-pane chat-main-pane--dashboard">
+          <div className="agent-monitor-bar" aria-label="Agent monitor controls">
+            <div className="agent-monitor-status-cluster" aria-label="Agent dashboard status">
+              <span><b>{dashboardState.tiledSessionIds.length}</b> tiled</span>
+              <span><b>{runningCount}</b> running</span>
+              <span><b>{needsReplyCount}</b> needs reply</span>
+              <span><b>{queuedCount}</b> queued</span>
+            </div>
+            <div className="agent-monitor-command-cluster">
+              <button type="button" aria-pressed={dashboardState.autoPrioritize} onClick={() => patchDashboard((current) => ({ ...current, autoPrioritize: !current.autoPrioritize }))}>Auto-prioritize</button>
+              <button type="button" onClick={showActiveAgents}>Active agents</button>
+              <button type="button" onClick={() => patchDashboard((current) => ({ ...current, tiledSessionIds: [], primarySessionId: undefined, focusedSessionId: undefined }))}>Clear</button>
+            </div>
+            <label className="agent-monitor-layout-control">
+              <span>Layout</span>
+              <GlobalDropdown
+                label="Dashboard layout mode"
+                onChange={(value) => setDashboardLayoutMode(value as AgentDashboardLayoutMode)}
+                options={[
+                  { value: "auto", label: "Auto" },
+                  { value: "split-2", label: "2-col" },
+                  { value: "focus-stack", label: "Focus+stack" },
+                  { value: "quad", label: "2x2" },
+                ]}
+                size="compact"
+                value={dashboardState.layoutMode}
+              />
+            </label>
+          </div>
+          {expandedSession ? (
+            <div className="agent-expanded-chat">
+              <button type="button" onClick={() => setExpandedModeSessionId(null)}>Back to dashboard · {runningCount} running</button>
+              <div className="chat-stage" onPointerDown={handleChatStagePointerDown}>
+                <div className="message-list" ref={messageListRef} role="log" aria-live="polite" aria-label="Hermes conversation messages">
+                  {expandedSession.messages.map((message, index) => {
+                    const userTurnsAfterMessage = expandedSession.messages.slice(index + 1).filter((item) => item.role === "user").length;
+                    return <MessageBubble key={message.id} canRollback={userTurnsAfterMessage > 0 && !isSending} message={message} onRollback={() => void handleRollbackToMessage(index)} participant={message.participantId === "hermes" ? hermesWithPresence : participantsById[message.participantId]} />;
+                  })}
+                </div>
+              </div>
+            </div>
+          ) : dashboardVisibleSessions.length === 0 ? (
+            <div className="chat-stage" onPointerDown={handleChatStagePointerDown}>
+              <div className="message-list" ref={messageListRef} role="log" aria-live="polite" aria-label="Hermes conversation messages">
+                {messages.map((message, index) => {
+                  const userTurnsAfterMessage = messages.slice(index + 1).filter((item) => item.role === "user").length;
+                  return <MessageBubble key={message.id} canRollback={userTurnsAfterMessage > 0 && !isSending} message={message} onRollback={() => void handleRollbackToMessage(index)} participant={message.participantId === "hermes" ? hermesWithPresence : participantsById[message.participantId]} />;
+                })}
+              </div>
+            </div>
+          ) : (
+            <div className={`agent-monitor-grid agent-monitor-grid--${dashboardState.layoutMode} agent-monitor-grid--count-${dashboardVisibleSessions.length}`}>
+              {dashboardVisibleSessions.map((session) => {
+                const panelRuntime = runtime.getSessionRuntime(session.id);
+                const isPanelRunning = panelRuntime.status === "running" || panelRuntime.status === "needs-input";
+                const panelQueueOnly = !isPanelRunning && runningCount >= MAX_ACTIVE_AGENT_RUNS;
+                const panelDisabled = connectionState !== "online";
+                const panelDisabledReason = connectionState !== "online" ? disabledReason : undefined;
                 return (
-                  <MessageBubble
-                    key={message.id}
-                    canRollback={userTurnsAfterMessage > 0 && !isSending}
-                    message={message}
-                    onRollback={() => void handleRollbackToMessage(index)}
-                    participant={message.participantId === "hermes" ? hermesWithPresence : participantsById[message.participantId]}
+                  <AgentMonitorPanel
+                    key={session.id}
+                    session={session}
+                    runtimeState={panelRuntime}
+                    repository={repositories.find((repository) => repository.id === session.linkedRepositoryId)}
+                    isPrimary={(dashboardState.primarySessionId ?? dashboardVisibleSessions[0]?.id) === session.id}
+                    isFocused={(dashboardState.focusedSessionId ?? activeSessionId) === session.id}
+                    disabled={panelDisabled}
+                    disabledReason={panelDisabledReason}
+                    queueOnly={panelQueueOnly}
+                    onFocus={(sessionId) => { openSession(sessionId); patchDashboard((current) => ({ ...current, focusedSessionId: sessionId })); }}
+                    onSend={sendToDashboardSession}
+                    onStop={(sessionId) => void handleStopHermesRun("button", sessionId)}
+                    onContinue={continueDashboardSession}
+                    onExpand={(sessionId) => { openSession(sessionId); patchDashboard((current) => ({ ...current, focusedSessionId: sessionId })); setExpandedModeSessionId(sessionId); }}
+                    onRemoveFromDashboard={removeSessionFromDashboard}
+                    onMakePrimary={(sessionId) => patchDashboard((current) => ({ ...current, primarySessionId: sessionId, focusedSessionId: sessionId }))}
+                    onMove={moveDashboardSession}
                   />
                 );
               })}
             </div>
-          </div>
+          )}
         </div>
         {fileManagerOpen ? (
           <aside className="file-manager-sidebar" aria-label="macOS Finder file manager">
@@ -1372,7 +1690,9 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
             </div>
           </aside>
         ) : null}
-        <ChatComposer ref={composerRef} disabled={connectionState !== "online"} disabledReason={disabledReason} isSending={isSending} contextUsedPercent={contextUsedPercent} modelLabel={activeModelLabel} slashCommands={slashCommands} onSend={handleSend} onStop={handleStopHermesRun} />
+        {(expandedSession || dashboardState.tiledSessionIds.length === 0) ? (
+          <ChatComposer ref={composerRef} disabled={connectionState !== "online"} disabledReason={disabledReason} isSending={isSending} contextUsedPercent={contextUsedPercent} modelLabel={activeModelLabel} slashCommands={slashCommands} onSend={handleSend} onStop={() => void handleStopHermesRun("button", expandedSession?.id)} />
+        ) : null}
       </div>
 
       <footer className="chat-stats-strip" aria-label="Hermes session stats">
@@ -1405,43 +1725,79 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
         }}
         onRunCommand={(command) => {
           setCommandPaletteOpen(false);
-          void runSlashCommand(command);
+          if (!activeSession) return;
+          if (activeHermesRunsRef.current.has(activeSession.id) || runtime.getSessionRuntime(activeSession.id).status === "running" || runtime.getSessionRuntime(activeSession.id).status === "needs-input") {
+            queueHermesPrompt(activeSession.id, command, "slash");
+            runtime.queuePrompt(activeSession.id, command);
+            return;
+          }
+          void runSlashCommand(activeSession, command);
         }}
       />
 
       {activeCommandPanel ? (
         <div className="command-palette-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setActiveCommandPanel(null); }}>
-          <section aria-label={`${COMMAND_PANEL_COPY[activeCommandPanel].title} command panel`} className="zoid-native-command-panel" role="dialog" aria-modal="true" onKeyDown={(event) => trapDialogFocus(event, () => setActiveCommandPanel(null))} ref={activeCommandPanelRef} tabIndex={-1}>
-            <header>
-              <div><strong>{COMMAND_PANEL_COPY[activeCommandPanel].title}</strong><span>Native Zoid command surface</span></div>
-              <button onClick={() => setActiveCommandPanel(null)} type="button">Close</button>
+          <section aria-label={`${COMMAND_PANEL_COPY[activeCommandPanel].title} command panel`} className={`zoid-native-command-panel ${activeCommandPanel === "model" ? "zoid-native-command-panel--model" : ""}`} role="dialog" aria-modal="true" onKeyDown={(event) => trapDialogFocus(event, () => setActiveCommandPanel(null))} ref={activeCommandPanelRef} tabIndex={-1}>
+            <header className="command-panel-header">
+              <div>
+                <span className="command-panel-kicker">{activeCommandPanel === "model" ? "モデル設定" : "Native Zoid command surface"}</span>
+                <strong>{COMMAND_PANEL_COPY[activeCommandPanel].title}</strong>
+              </div>
+              <button aria-label="Close command panel" onClick={() => setActiveCommandPanel(null)} type="button">Close</button>
             </header>
-            <p>{COMMAND_PANEL_COPY[activeCommandPanel].body}</p>
             {activeCommandPanel === "model" ? (
               <div className="model-command-panel">
-                <div className="model-command-summary">
-                  <span>Active profile source</span>
-                  <strong title={modelPanelStorageLabel}>{modelPanelStorageLabel}</strong>
-                  <small>Selections are saved immediately to Hermes profile settings. Existing CLI sessions may require a new Zoid-launched session before the runtime model changes.</small>
-                </div>
-                <div className="model-command-grid" aria-busy={isUpdatingModelPanel}>
-                  <label className="model-command-field">
+                <section className="model-command-current" aria-label="Current model selection">
+                  <article>
                     <span>Provider</span>
-                    <GlobalDropdown disabled={!profileSettings || isUpdatingModelPanel} label="Model provider" onChange={handleModelProviderChange} options={providerOptions} size="compact" value={modelPanelDraft.provider} />
-                  </label>
-                  <label className="model-command-field">
+                    <strong title={modelPanelDraft.provider}>{modelPanelDraft.provider}</strong>
+                  </article>
+                  <article>
                     <span>Model</span>
-                    <GlobalDropdown disabled={!profileSettings || isUpdatingModelPanel || modelOptions.length === 0} label="Model" onChange={handleModelNameChange} options={modelOptions} size="compact" value={modelPanelDraft.model} />
-                  </label>
-                  <label className="model-command-field">
+                    <strong title={activeModelLabel}>{activeModelLabel}</strong>
+                  </article>
+                  <article>
                     <span>Reasoning</span>
-                    <GlobalDropdown disabled={!profileSettings || isUpdatingModelPanel} label="Reasoning effort" onChange={handleReasoningChange} options={REASONING_OPTIONS} size="compact" value={modelPanelDraft.reasoning} />
-                  </label>
-                </div>
+                    <strong>{activeReasoningLabel}</strong>
+                  </article>
+                </section>
+                <section className="model-command-controls" aria-labelledby="model-command-controls-title">
+                  <div className="model-command-section-heading">
+                    <span>01</span>
+                    <div>
+                      <h3 id="model-command-controls-title">Choose runtime defaults</h3>
+                      <p>{COMMAND_PANEL_COPY.model.body}</p>
+                    </div>
+                  </div>
+                  <div className="model-command-grid" aria-busy={isUpdatingModelPanel}>
+                    <label className="model-command-field">
+                      <span>Provider</span>
+                      <GlobalDropdown disabled={!profileSettings || isUpdatingModelPanel} label="Model provider" onChange={handleModelProviderChange} options={providerOptions} size="compact" value={modelPanelDraft.provider} />
+                      <small>Source account or local provider.</small>
+                    </label>
+                    <label className="model-command-field">
+                      <span>Model</span>
+                      <GlobalDropdown disabled={!profileSettings || isUpdatingModelPanel || modelOptions.length === 0} label="Model" onChange={handleModelNameChange} options={modelOptions} size="compact" value={modelPanelDraft.model} />
+                      <small>Provider-aware list; saved immediately.</small>
+                    </label>
+                    <label className="model-command-field">
+                      <span>Reasoning</span>
+                      <GlobalDropdown disabled={!profileSettings || isUpdatingModelPanel} label="Reasoning effort" onChange={handleReasoningChange} options={REASONING_OPTIONS} size="compact" value={modelPanelDraft.reasoning} />
+                      <small>Controls default thinking budget.</small>
+                    </label>
+                  </div>
+                </section>
+                <section className="model-command-contract" aria-label="Persistence behavior">
+                  <span>02</span>
+                  <div>
+                    <strong title={modelPanelStorageLabel}>Saved to {modelPanelStorageLabel}</strong>
+                    <p>Changes persist to Hermes profile settings immediately. Existing CLI sessions may require a new Zoid-launched session before runtime model changes take effect.</p>
+                  </div>
+                </section>
                 {modelPanelStatus ? <p className="model-command-status" role="status">{modelPanelStatus}</p> : null}
                 {modelPanelError ? <p className="model-command-error" role="alert">{modelPanelError}</p> : null}
               </div>
-            ) : null}
+            ) : <p>{COMMAND_PANEL_COPY[activeCommandPanel].body}</p>}
             {activeCommandPanel === "agents" ? (
               <div className="ruthless-reviewer-card">
                 <div>
@@ -1459,7 +1815,7 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
                 </button>
               </div>
             ) : null}
-            <small>Command behavior is sourced from Hermes; this panel keeps the interaction inside Zoid.</small>
+            {activeCommandPanel !== "model" ? <small>Command behavior is sourced from Hermes; this panel keeps the interaction inside Zoid.</small> : null}
           </section>
         </div>
       ) : null}

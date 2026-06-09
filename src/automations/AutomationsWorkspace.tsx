@@ -23,10 +23,26 @@ const filters: Array<{ label: string; value: AutomationFilter }> = [
 
 function formatDate(value: string | null) {
   if (!value) return "—";
-  const parsed = Number(value);
-  const date = Number.isFinite(parsed) && value.length < 16 ? new Date(parsed) : new Date(value);
+  const date = parseAutomationDate(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString();
+}
+
+function parseAutomationDate(value: string) {
+  const trimmed = value.trim();
+  const numeric = Number(trimmed);
+  if (Number.isFinite(numeric) && trimmed !== "") {
+    const absolute = Math.abs(numeric);
+    const milliseconds = absolute > 0 && absolute < 10_000_000_000 ? numeric * 1000 : numeric;
+    return new Date(milliseconds);
+  }
+  return new Date(trimmed);
+}
+
+function comparableAutomationTime(value: string | null) {
+  if (!value) return Number.POSITIVE_INFINITY;
+  const date = parseAutomationDate(value);
+  return Number.isNaN(date.getTime()) ? Number.POSITIVE_INFINITY : date.getTime();
 }
 
 function statusLabel(job: AutomationCronJob) {
@@ -39,6 +55,14 @@ function statusLabel(job: AutomationCronJob) {
 
 function displayName(value: string | null | undefined, fallback = "—") {
   return value && value.trim() ? value : fallback;
+}
+
+function formatAutomationError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("invoke") || message.includes("__TAURI__")) {
+    return "Hermes desktop bridge is unavailable in this preview. Open Zoid in the Tauri desktop shell to read native automation state.";
+  }
+  return message;
 }
 
 function Detail({ label, value }: { label: string; value: string | null | undefined }) {
@@ -72,25 +96,39 @@ export function AutomationsWorkspace({ onStatusChange }: AutomationsWorkspacePro
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const confirmPanelRef = useRef<HTMLDivElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
+  const actionInFlightRef = useRef(false);
+  const actionRequestIdRef = useRef(0);
+  const loadRequestIdRef = useRef(0);
+  const isMountedRef = useRef(false);
 
   async function loadAutomations() {
+    const requestId = loadRequestIdRef.current + 1;
+    loadRequestIdRef.current = requestId;
     setIsLoading(true);
     setErrorMessage(null);
     try {
       const nextList = await listHermesAutomations();
+      if (!isMountedRef.current || requestId !== loadRequestIdRef.current) return;
       setAutomationList(nextList);
       onStatusChange?.(deriveAutomationNavStatus(nextList, null));
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setErrorMessage(message);
+      if (!isMountedRef.current || requestId !== loadRequestIdRef.current) return;
+      setErrorMessage(formatAutomationError(error));
       onStatusChange?.("blocked");
     } finally {
-      setIsLoading(false);
+      if (isMountedRef.current && requestId === loadRequestIdRef.current) {
+        setIsLoading(false);
+      }
     }
   }
 
   useEffect(() => {
+    isMountedRef.current = true;
     void loadAutomations();
+    return () => {
+      isMountedRef.current = false;
+      loadRequestIdRef.current += 1;
+    };
   }, []);
 
   useEffect(() => {
@@ -111,10 +149,15 @@ export function AutomationsWorkspace({ onStatusChange }: AutomationsWorkspacePro
     setPendingAction(null);
   }
 
+  function openPendingAction(job: AutomationCronJob, action: Extract<AutomationAction, "run" | "remove">) {
+    setPendingActionError(null);
+    setPendingAction({ job, action });
+  }
+
   function handleConfirmKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key === "Escape") {
       event.preventDefault();
-      cancelPendingAction();
+      if (!isActionInFlight) cancelPendingAction();
       return;
     }
     if (event.key !== "Tab") return;
@@ -146,11 +189,18 @@ export function AutomationsWorkspace({ onStatusChange }: AutomationsWorkspacePro
   const nextJob = useMemo(() => {
     return (automationList?.jobs ?? [])
       .filter((job) => Boolean(job.nextRunAt))
-      .sort((a, b) => String(a.nextRunAt).localeCompare(String(b.nextRunAt)))[0] ?? null;
+      .sort((a, b) => comparableAutomationTime(a.nextRunAt) - comparableAutomationTime(b.nextRunAt))[0] ?? null;
   }, [automationList]);
+  const isActionInFlight = busyJobId !== null;
 
   async function runAction(job: AutomationCronJob, action: AutomationAction) {
+    if (actionInFlightRef.current) return;
     if (action === "remove" && job.protected) return;
+    actionInFlightRef.current = true;
+    const requestId = actionRequestIdRef.current + 1;
+    actionRequestIdRef.current = requestId;
+    loadRequestIdRef.current += 1;
+    setIsLoading(false);
     setBusyJobId(job.jobId);
     setBusyAction(action);
     setErrorMessage(null);
@@ -158,6 +208,7 @@ export function AutomationsWorkspace({ onStatusChange }: AutomationsWorkspacePro
     setActionMessage(null);
     try {
       const nextList = await manageHermesCronJob(job.jobId, action);
+      if (requestId !== actionRequestIdRef.current) return;
       if (action === "remove" && nextList.jobs.some((nextJob) => nextJob.jobId === job.jobId)) {
         throw new Error("Hermes read-back still includes this cron job after remove.");
       }
@@ -169,15 +220,19 @@ export function AutomationsWorkspace({ onStatusChange }: AutomationsWorkspacePro
       const actionVerb = action === "run" ? "Run requested for" : action === "remove" ? "Removed" : action === "pause" ? "Paused" : "Resumed";
       setActionMessage(`${actionVerb} “${job.name || job.jobId}”. Hermes provider read-back refreshed.`);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      if (requestId !== actionRequestIdRef.current) return;
+      const message = formatAutomationError(error);
       setErrorMessage(message);
       if (pendingAction?.job.jobId === job.jobId && pendingAction.action === action) {
         setPendingActionError(message);
       }
       onStatusChange?.("blocked");
     } finally {
-      setBusyJobId(null);
-      setBusyAction(null);
+      if (requestId === actionRequestIdRef.current) {
+        actionInFlightRef.current = false;
+        setBusyJobId(null);
+        setBusyAction(null);
+      }
     }
   }
 
@@ -190,14 +245,10 @@ export function AutomationsWorkspace({ onStatusChange }: AutomationsWorkspacePro
           <p>Control the local cron ledger without making Zoid the source of truth. Every run, pause, resume, and removal is read back from Hermes before the interface claims it.</p>
           <p className="automation-reference-line">Provider-owned schedules · protected system jobs · watcher state is read-only</p>
         </div>
-        <div className="automation-ink-clock" aria-hidden="true">
-          <span />
-          <span />
-          <span />
-        </div>
+        <div className="automation-ink-clock" aria-hidden="true"><span /><span /><span /></div>
         <div className="automation-header-actions" aria-label="Automation profile and refresh">
           <span className="automation-profile-label">Profile: {automationList?.activeProfile ?? "default"}</span>
-          <button className="automation-primary-button" disabled={isLoading} onClick={loadAutomations} type="button">
+          <button className="automation-primary-button automation-refresh-button" disabled={isLoading || isActionInFlight || pendingAction !== null} onClick={loadAutomations} type="button">
             <RefreshCcw aria-hidden="true" size={16} />
             {isLoading ? "Refreshing" : "Refresh"}
           </button>
@@ -205,7 +256,13 @@ export function AutomationsWorkspace({ onStatusChange }: AutomationsWorkspacePro
       </header>
 
       <p className="automation-status-line" role="status">
-        {errorMessage ? "Hermes automation bridge is blocked." : actionMessage ?? (isLoading ? "Refreshing Hermes automation ledger…" : `Hermes ledger refreshed for ${automationList?.activeProfile ?? "default"}.`)}
+        {errorMessage
+          ? "Hermes automation bridge is blocked."
+          : actionMessage ?? (isLoading
+            ? "Refreshing Hermes automation ledger…"
+            : automationList
+              ? `Hermes ledger refreshed for ${automationList.activeProfile}.`
+              : "Hermes automation ledger has not loaded yet.")}
       </p>
 
       {errorMessage ? (
@@ -246,7 +303,7 @@ export function AutomationsWorkspace({ onStatusChange }: AutomationsWorkspacePro
         <SummaryCard label="Enabled" value={summary?.enabledJobs ?? "—"} />
         <SummaryCard label="Paused" value={summary?.pausedJobs ?? "—"} />
         <SummaryCard label="Failed" value={summary?.failedJobs ?? "—"} tone={failedJobs.length > 0 ? "seal" : "neutral"} />
-        <SummaryCard label="Script-only" value={scriptJobs.length || "—"} />
+        <SummaryCard label="Script-only" value={automationList ? scriptJobs.length : "—"} />
       </div>
 
       <div className="automation-toolbar">
@@ -295,15 +352,16 @@ export function AutomationsWorkspace({ onStatusChange }: AutomationsWorkspacePro
           <div className="automation-job-list" role="list">
             {visibleJobs.map((job) => {
               const kind = getAutomationStatusKind(job);
-              const isBusy = busyJobId === job.jobId;
+              const isThisJobBusy = busyJobId === job.jobId;
               const canPause = job.enabled && kind !== "paused";
               const canResume = !job.enabled || kind === "paused";
+              const jobLabel = displayName(job.name, job.jobId);
               return (
                 <article className={`automation-job-card automation-job-card--${kind}`} key={job.jobId} role="listitem">
                   <div className="automation-job-card-header">
                     <div>
                       <p className="automation-job-id">{job.jobId}</p>
-                      <h4 title={job.name}>{job.name}</h4>
+                      <h4 title={jobLabel}>{jobLabel}</h4>
                     </div>
                     <span className={`automation-status-badge automation-status-badge--${kind}`}>{statusLabel(job)}</span>
                   </div>
@@ -330,10 +388,10 @@ export function AutomationsWorkspace({ onStatusChange }: AutomationsWorkspacePro
                   {job.promptPreview ? <p className="automation-prompt-preview">Prompt preview: {job.promptPreview}</p> : null}
 
                   <div className="automation-action-row">
-                    <button disabled={isBusy || !canPause} onClick={() => runAction(job, "pause")} type="button">{isBusy && busyAction === "pause" ? "Pausing" : "Pause"}</button>
-                    <button disabled={isBusy || !canResume} onClick={() => runAction(job, "resume")} type="button">{isBusy && busyAction === "resume" ? "Resuming" : "Resume"}</button>
-                    <button disabled={isBusy} onClick={() => setPendingAction({ job, action: "run" })} type="button"><Play aria-hidden="true" size={14} /> Run now</button>
-                    <button className="automation-danger-button" disabled={isBusy || job.protected} title={job.protectionReason ?? undefined} onClick={() => setPendingAction({ job, action: "remove" })} type="button"><Trash2 aria-hidden="true" size={14} /> Remove</button>
+                    <button disabled={isActionInFlight || !canPause} onClick={() => runAction(job, "pause")} type="button">{isThisJobBusy && busyAction === "pause" ? "Pausing" : "Pause"}</button>
+                    <button disabled={isActionInFlight || !canResume} onClick={() => runAction(job, "resume")} type="button">{isThisJobBusy && busyAction === "resume" ? "Resuming" : "Resume"}</button>
+                    <button disabled={isActionInFlight} onClick={() => openPendingAction(job, "run")} type="button"><Play aria-hidden="true" size={14} /> Run now</button>
+                    <button className="automation-danger-button" disabled={isActionInFlight || job.protected} title={job.protectionReason ?? undefined} onClick={() => openPendingAction(job, "remove")} type="button"><Trash2 aria-hidden="true" size={14} /> Remove</button>
                   </div>
                 </article>
               );
@@ -355,7 +413,7 @@ export function AutomationsWorkspace({ onStatusChange }: AutomationsWorkspacePro
                 {automationList.watchers.map((watcher) => (
                   <article className="automation-job-card automation-watcher-card" key={watcher.id} role="listitem">
                     <div className="automation-job-card-header">
-                      <div><p className="automation-job-id">{watcher.id}</p><h4>{watcher.name}</h4></div>
+                      <div><p className="automation-job-id">{watcher.id}</p><h4 title={displayName(watcher.name, watcher.id)}>{displayName(watcher.name, watcher.id)}</h4></div>
                       <span className={`automation-status-badge automation-status-badge--${watcher.state === "failed" ? "error" : watcher.state === "paused" ? "paused" : watcher.state === "running" ? "ok" : "unknown"}`}>{watcher.state}</span>
                     </div>
                     <div className="automation-detail-grid automation-detail-grid--watcher">
@@ -392,26 +450,48 @@ export function AutomationsWorkspace({ onStatusChange }: AutomationsWorkspacePro
 
       {pendingAction ? (
         <div className="automation-confirm-backdrop" role="presentation">
-          <div className="automation-confirm-panel" ref={confirmPanelRef} role="dialog" aria-modal="true" aria-label={`${pendingAction.action} cron job confirmation`} onKeyDown={handleConfirmKeyDown} tabIndex={-1}>
+          <div className="automation-confirm-panel" ref={confirmPanelRef} role="dialog" aria-modal="true" aria-labelledby="automation-confirm-title" aria-describedby="automation-confirm-description" onKeyDown={handleConfirmKeyDown} tabIndex={-1}>
             {(() => {
-              const isConfirmBusy = busyJobId === pendingAction.job.jobId && busyAction === pendingAction.action;
-              const confirmLabel = pendingAction.action === "remove"
+              const currentPendingAction = pendingAction;
+              const currentPendingJob = automationList?.jobs.find((job) => job.jobId === currentPendingAction.job.jobId) ?? currentPendingAction.job;
+              const pendingJobMissing = automationList !== null && !automationList.jobs.some((job) => job.jobId === currentPendingAction.job.jobId);
+              const pendingJobProtected = currentPendingAction.action === "remove" && currentPendingJob.protected;
+              const pendingJobLabel = displayName(currentPendingJob.name, currentPendingJob.jobId);
+              const isConfirmBusy = isActionInFlight && busyJobId === currentPendingJob.jobId && busyAction === currentPendingAction.action;
+              const confirmLabel = currentPendingAction.action === "remove"
                 ? (isConfirmBusy ? "Removing" : "Remove")
                 : (isConfirmBusy ? "Running" : "Run now");
+              const pendingGuardMessage = pendingJobMissing
+                ? "Hermes read-back no longer includes this cron job. Refresh before acting."
+                : pendingJobProtected
+                  ? currentPendingJob.protectionReason ?? "Hermes read-back now marks this cron job as protected."
+                  : null;
+
+              function confirmPendingAction() {
+                if (pendingJobMissing) {
+                  setPendingActionError("Hermes read-back no longer includes this cron job. Refresh before acting.");
+                  return;
+                }
+                if (pendingJobProtected) {
+                  setPendingActionError(currentPendingJob.protectionReason ?? "Hermes read-back now marks this cron job as protected.");
+                  return;
+                }
+                void runAction(currentPendingJob, currentPendingAction.action);
+              }
 
               return (
                 <>
                   <p className="kana-line">確認</p>
-                  <h3>{pendingAction.action === "remove" ? "Remove cron job?" : "Run cron job now?"}</h3>
-                  <p>
-                    {pendingAction.action === "remove"
-                      ? `This will remove “${pendingAction.job.name}” from Hermes after provider read-back verifies it is gone.`
-                      : `This will run “${pendingAction.job.name}” now and may trigger external side effects.`}
+                  <h3 id="automation-confirm-title">{currentPendingAction.action === "remove" ? "Remove cron job?" : "Run cron job now?"}</h3>
+                  <p id="automation-confirm-description">
+                    {currentPendingAction.action === "remove"
+                      ? `This will remove “${pendingJobLabel}” from Hermes after provider read-back verifies it is gone.`
+                      : `This will run “${pendingJobLabel}” now and may trigger external side effects.`}
                   </p>
-                  {pendingActionError ? <p className="automation-modal-error" role="alert">{pendingActionError}</p> : null}
+                  {pendingActionError || pendingGuardMessage ? <p className="automation-modal-error" role="alert">{pendingActionError ?? pendingGuardMessage}</p> : null}
                   <div className="automation-confirm-actions">
-                    <button disabled={isConfirmBusy} onClick={cancelPendingAction} type="button">Cancel</button>
-                    <button className={pendingAction.action === "remove" ? "automation-danger-button" : "automation-primary-button"} disabled={isConfirmBusy} onClick={() => runAction(pendingAction.job, pendingAction.action)} type="button">
+                    <button disabled={isActionInFlight} onClick={cancelPendingAction} type="button">Cancel</button>
+                    <button className={currentPendingAction.action === "remove" ? "automation-danger-button" : "automation-primary-button"} disabled={isActionInFlight} onClick={confirmPendingAction} type="button">
                       {confirmLabel}
                     </button>
                   </div>

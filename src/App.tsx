@@ -1,21 +1,27 @@
-import { AgentsHermesScreen, createSession, refreshHermesWelcomeCopy } from "./agents/AgentsHermesScreen";
-import type { ArchivedHermesChatSession, HermesChatSession } from "./agents/AgentsHermesScreen";
-import { AutomationsWorkspace } from "./automations/AutomationsWorkspace";
-import { BrainWorkspace } from "./brain/BrainWorkspace";
-import { CodeWorkspace } from "./code/CodeWorkspace";
-import { ContentWorkspace } from "./content/ContentWorkspace";
+import { createSession, refreshHermesWelcomeCopy } from "./sessionState";
+import type { ArchivedHermesChatSession, HermesChatSession } from "./sessionState";
+import {
+  REPOSITORY_OPERATION_PROFILES_STORAGE_KEY,
+  REPOSITORY_OPERATION_RUNS_STORAGE_KEY,
+  buildRepositoryOperationPrompt,
+  getRepositoryOperationProfile,
+  inferRepositoryOperationOutcome,
+  mergeRunbookUpdate,
+  repositoryOperationKey,
+  repositoryOperationTitle,
+} from "./code/repositoryOperations";
+import type { RepositoryOperationAction, RepositoryOperationProfile, RepositoryOperationRun } from "./code/repositoryOperations";
 import type { CodeRepository } from "./code/types";
-import { Bot, Brain as BrainIcon, CalendarDays, Code2, FolderKanban, Megaphone, Repeat2, Save, Settings } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import type { FormEvent, KeyboardEvent, SetStateAction } from "react";
+import { Save } from "lucide-react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import type { FormEvent, KeyboardEvent, ReactElement, SetStateAction } from "react";
 import { flushSync } from "react-dom";
 import { defaultHermesProfileSettings, loadHermesProfileSettings, saveHermesProfileSettings, warmFilePermissions } from "./agents/hermesProfileClient";
 import type { HermesProfileSettings } from "./agents/hermesProfileClient";
 import { ProvidersSettings } from "./providers/ProvidersSettings";
 import { listManagedProviders, type ManagedProvider } from "./providers/providerClient";
 import { GlobalDropdown } from "./ui/GlobalDropdown";
-import { chooseUniqueSessionAgentAvatarId, getSessionAgentAvatarById } from "./agents/sessionPortraits";
+import { chooseUniqueSessionAgentAvatarId, getSessionAgentAvatarById } from "./sessionPortraits";
 
 type NavigationStatus = "ready" | "idle" | "blocked";
 
@@ -23,20 +29,94 @@ type NavigationItem = {
   label: string;
   meta: string;
   status: NavigationStatus;
-  Icon: LucideIcon;
+  Icon: NavigationIcon;
 };
+
+type NavigationIconProps = {
+  size?: number;
+  strokeWidth?: number;
+  "aria-hidden"?: boolean | "true" | "false";
+};
+
+type NavigationIcon = (props: NavigationIconProps) => ReactElement;
 
 type ActiveWorkspace = "Brain" | "Agents" | "Code" | "Content" | "Automations" | "Settings";
 
+const LazyAgentsHermesScreen = lazy(() => import("./agents/AgentsHermesScreen").then((module) => ({ default: module.AgentsHermesScreen })));
+const LazyAutomationsWorkspace = lazy(() => import("./automations/AutomationsWorkspace").then((module) => ({ default: module.AutomationsWorkspace })));
+const LazyBrainWorkspace = lazy(() => import("./brain/BrainWorkspace").then((module) => ({ default: module.BrainWorkspace })));
+const LazyCodeWorkspace = lazy(() => import("./code/CodeWorkspace").then((module) => ({ default: module.CodeWorkspace })));
+const LazyContentWorkspace = lazy(() => import("./content/ContentWorkspace").then((module) => ({ default: module.ContentWorkspace })));
+
+function InkSigil({ size = 20, strokeWidth = 1.8, "aria-hidden": ariaHidden, variant }: NavigationIconProps & { variant: "brain" | "today" | "projects" | "agents" | "code" | "content" | "automations" | "settings" }) {
+  const common = { stroke: "currentColor", strokeWidth, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, fill: "none" };
+
+  return (
+    <svg className="nav-sigil" aria-hidden={ariaHidden} width={size} height={size} viewBox="0 0 24 24">
+      {variant === "brain" ? (
+        <>
+          <path {...common} d="M5.5 13.2c.4-5.5 4.5-8.8 8.8-7.7 4.2 1 5.9 5.4 3.5 9.2-2 3.2-6.2 4.6-9.4 2.8" />
+          <path {...common} d="M8.2 10.6c2.4-1.4 5.2-.8 6.8 1.2" />
+        </>
+      ) : null}
+      {variant === "today" ? (
+        <>
+          <path {...common} d="M7 5.5h10M7 18.5h10M6 8.5c3.3 1.2 8.7 1.2 12 0M6 15.5c3.3-1.2 8.7-1.2 12 0" />
+          <path {...common} d="M8 5.5c-1.6 3.9-1.6 9.1 0 13M16 5.5c1.6 3.9 1.6 9.1 0 13" />
+        </>
+      ) : null}
+      {variant === "projects" ? (
+        <>
+          <path {...common} d="M5 8.5c3.2-2 7.8-2 11.4 0 1.7.9 2.6 2.1 2.6 3.5s-.9 2.6-2.6 3.5c-3.6 2-8.2 2-11.4 0" />
+          <path {...common} d="M7.5 12h9" />
+        </>
+      ) : null}
+      {variant === "agents" ? (
+        <>
+          <path {...common} d="M6.2 15.8c2.5-6 8.4-9.6 12-7.3" />
+          <path {...common} d="M7.2 15.5c3.3.5 6.9-.5 9.3-2.8" />
+          <circle className="nav-sigil-seal" cx="6.2" cy="16.1" r="1.9" />
+        </>
+      ) : null}
+      {variant === "code" ? (
+        <>
+          <path {...common} d="M9.2 7.2 5.4 12l3.8 4.8M14.8 7.2l3.8 4.8-3.8 4.8" />
+          <path {...common} d="M12.7 6.5 11.3 17.5" />
+        </>
+      ) : null}
+      {variant === "content" ? (
+        <>
+          <path {...common} d="M5.5 16.8c4.2-5.6 8-8.7 13-9.6" />
+          <path {...common} d="M7.1 7.9c3.3.6 6.3 2.2 8.4 4.6" />
+          <path {...common} d="M5.5 16.8c2.6.6 5.8.1 8.6-1.4" />
+        </>
+      ) : null}
+      {variant === "automations" ? (
+        <>
+          <path {...common} d="M6 13.5c1.7 3.5 6.7 4.2 9.7 1.8 2.9-2.3 2.4-6.7-.9-8.2" />
+          <path {...common} d="M15.5 4.8 18.8 7l-3.5 2" />
+          <path {...common} d="M8.5 19.2 5.2 17l3.5-2" />
+        </>
+      ) : null}
+      {variant === "settings" ? (
+        <>
+          <path {...common} d="M12 5.2v13.6M5.2 12h13.6" />
+          <path {...common} d="M7.2 7.2c2.8-2.1 6.8-2.1 9.6 0M7.2 16.8c2.8 2.1 6.8 2.1 9.6 0" />
+        </>
+      ) : null}
+    </svg>
+  );
+}
+
 const navigationItems: NavigationItem[] = [
-  { label: "Brain", meta: "Notes sync", status: "idle", Icon: BrainIcon },
-  { label: "Today", meta: "Current work", status: "idle", Icon: CalendarDays },
-  { label: "Projects", meta: "Build lanes", status: "idle", Icon: FolderKanban },
-  { label: "Agents", meta: "Hermes chat", status: "ready", Icon: Bot },
-  { label: "Code", meta: "Repos", status: "idle", Icon: Code2 },
-  { label: "Content", meta: "OmniSocials", status: "idle", Icon: Megaphone },
-  { label: "Automations", meta: "Routines", status: "idle", Icon: Repeat2 },
-  { label: "Settings", meta: "Local app", status: "idle", Icon: Settings },
+  { label: "Brain", meta: "Notes sync", status: "idle", Icon: (props) => <InkSigil {...props} variant="brain" /> },
+  { label: "Today", meta: "Current work", status: "idle", Icon: (props) => <InkSigil {...props} variant="today" /> },
+  { label: "Projects", meta: "Build lanes", status: "idle", Icon: (props) => <InkSigil {...props} variant="projects" /> },
+  { label: "Agents", meta: "Hermes chat", status: "ready", Icon: (props) => <InkSigil {...props} variant="agents" /> },
+  { label: "Code", meta: "Repos", status: "idle", Icon: (props) => <InkSigil {...props} variant="code" /> },
+  { label: "Content", meta: "Social", status: "idle", Icon: (props) => <InkSigil {...props} variant="content" /> },
+  { label: "Automations", meta: "Routines", status: "idle", Icon: (props) => <InkSigil {...props} variant="automations" /> },
+  { label: "Settings", meta: "Local app", status: "idle", Icon: (props) => <InkSigil {...props} variant="settings" /> },
 ];
 
 const statusLabel = {
@@ -47,7 +127,6 @@ const statusLabel = {
 
 const LAST_WORKSPACE_STORAGE_KEY = "zoid25:last-active-workspace";
 const REPOSITORIES_STORAGE_KEY = "zoid25:code-repositories";
-const LINKED_REPOSITORY_STORAGE_KEY = "zoid25:linked-repository-id";
 const HERMES_SESSIONS_STORAGE_KEY = "zoid25:hermes-sessions";
 const HERMES_ARCHIVED_SESSIONS_STORAGE_KEY = "zoid25:hermes-archived-sessions";
 const SIDEBAR_MORPH_TIMING: KeyframeAnimationOptions = {
@@ -108,6 +187,10 @@ function isHermesChatSession(value: unknown): value is HermesChatSession {
     typeof session.updatedAt === "string" &&
     Array.isArray(session.messages) &&
     (session.linkedRepositoryId === undefined || typeof session.linkedRepositoryId === "string") &&
+    (session.operationRunId === undefined || typeof session.operationRunId === "string") &&
+    (session.operationAction === undefined || session.operationAction === "localhost" || session.operationAction === "staging" || session.operationAction === "production") &&
+    (session.operationRepositoryId === undefined || typeof session.operationRepositoryId === "string") &&
+    (session.pendingInitialPrompt === undefined || typeof session.pendingInitialPrompt === "string") &&
     (session.portraitId === undefined || typeof session.portraitId === "string") &&
     (session.needsReply === undefined || typeof session.needsReply === "boolean") &&
     (session.lastNotifiedAssistantMessageId === undefined || typeof session.lastNotifiedAssistantMessageId === "string") &&
@@ -139,11 +222,6 @@ function getInitialRepositories(): CodeRepository[] {
   }
 }
 
-function getInitialLinkedRepositoryId(): string {
-  if (typeof window === "undefined") return "";
-  return window.localStorage.getItem(LINKED_REPOSITORY_STORAGE_KEY) ?? "";
-}
-
 function getInitialHermesSessions(): HermesChatSession[] {
   if (typeof window === "undefined") return [createSession()];
 
@@ -153,12 +231,14 @@ function getInitialHermesSessions(): HermesChatSession[] {
     const parsedSessions: unknown = JSON.parse(storedSessions);
     const sessions = Array.isArray(parsedSessions) ? parsedSessions.filter(isHermesChatSession).map(refreshHermesWelcomeCopy) : [];
     const sessionsWithPortraits = sessions.reduce<HermesChatSession[]>((resolvedSessions, session) => {
-      if (getSessionAgentAvatarById(session.portraitId)) return [...resolvedSessions, session];
+      const usedPortraitIds = resolvedSessions.map((item) => item.portraitId);
+      const hasValidUnusedPortrait = getSessionAgentAvatarById(session.portraitId) && !usedPortraitIds.includes(session.portraitId);
+      if (hasValidUnusedPortrait) return [...resolvedSessions, session];
       return [
         ...resolvedSessions,
         {
           ...session,
-          portraitId: chooseUniqueSessionAgentAvatarId(resolvedSessions.map((item) => item.portraitId), session.id),
+          portraitId: chooseUniqueSessionAgentAvatarId(usedPortraitIds, session.id),
         },
       ];
     }, []);
@@ -176,6 +256,39 @@ function getInitialArchivedHermesSessions(): ArchivedHermesChatSession[] {
     if (!storedSessions) return [];
     const parsedSessions: unknown = JSON.parse(storedSessions);
     return Array.isArray(parsedSessions) ? parsedSessions.filter(isArchivedHermesChatSession) : [];
+  } catch {
+    return [];
+  }
+}
+
+function getInitialRepositoryOperationProfiles(): Record<string, RepositoryOperationProfile> {
+  if (typeof window === "undefined") return {};
+
+  try {
+    const storedProfiles = window.localStorage.getItem(REPOSITORY_OPERATION_PROFILES_STORAGE_KEY);
+    if (!storedProfiles) return {};
+    const parsedProfiles: unknown = JSON.parse(storedProfiles);
+    if (typeof parsedProfiles !== "object" || parsedProfiles === null || Array.isArray(parsedProfiles)) return {};
+    return Object.fromEntries(Object.entries(parsedProfiles).filter(([, value]) => {
+      const profile = value as Partial<RepositoryOperationProfile>;
+      return Boolean(profile && typeof profile.repoId === "string" && typeof profile.action === "string" && typeof profile.runbookMarkdown === "string");
+    })) as Record<string, RepositoryOperationProfile>;
+  } catch {
+    return {};
+  }
+}
+
+function getInitialRepositoryOperationRuns(): RepositoryOperationRun[] {
+  if (typeof window === "undefined") return [];
+
+  try {
+    const storedRuns = window.localStorage.getItem(REPOSITORY_OPERATION_RUNS_STORAGE_KEY);
+    if (!storedRuns) return [];
+    const parsedRuns: unknown = JSON.parse(storedRuns);
+    return Array.isArray(parsedRuns) ? parsedRuns.filter((run): run is RepositoryOperationRun => {
+      const candidate = run as Partial<RepositoryOperationRun>;
+      return Boolean(candidate && typeof candidate.id === "string" && typeof candidate.repoId === "string" && typeof candidate.sessionId === "string");
+    }) : [];
   } catch {
     return [];
   }
@@ -200,6 +313,10 @@ type BooleanProfileKey = {
   [K in keyof HermesProfileSettings]: HermesProfileSettings[K] extends boolean ? K : never
 }[keyof HermesProfileSettings];
 
+type NumberProfileKey = {
+  [K in keyof HermesProfileSettings]: HermesProfileSettings[K] extends number ? K : never
+}[keyof HermesProfileSettings];
+
 type ProfileTextField = {
   key: StringProfileKey;
   label: string;
@@ -215,10 +332,16 @@ function SettingsArchive({ archivedSessions, onRestoreSession, onDeleteArchivedS
   const [profileLoadError, setProfileLoadError] = useState<string | null>(null);
   const [selectedArchivedSessionIds, setSelectedArchivedSessionIds] = useState<string[]>([]);
   const [activeSettingsSection, setActiveSettingsSection] = useState("identity");
-  const [pendingArchiveDelete, setPendingArchiveDelete] = useState<{ sessionIds: string[]; label: string } | null>(null);
+  const [settingsTabsOrientation, setSettingsTabsOrientation] = useState<"horizontal" | "vertical">(() => {
+    if (typeof window === "undefined") return "horizontal";
+    return window.matchMedia("(max-width: 760px), (min-width: 1181px)").matches ? "vertical" : "horizontal";
+  });
+  const [pendingArchiveDelete, setPendingArchiveDelete] = useState<{ sessionIds: string[]; label: string; deleteAll?: boolean } | null>(null);
   const archiveDeleteCancelButtonRef = useRef<HTMLButtonElement | null>(null);
   const archiveDeleteDialogRef = useRef<HTMLElement | null>(null);
   const archiveDeletePreviousFocusRef = useRef<HTMLElement | null>(null);
+  const settingsHeroRef = useRef<HTMLElement | null>(null);
+  const settingsFormRef = useRef<HTMLFormElement | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -248,10 +371,32 @@ function SettingsArchive({ archivedSessions, onRestoreSession, onDeleteArchivedS
   }, []);
 
   useEffect(() => {
+    const archivedSessionIds = new Set(archivedSessions.map((session) => session.id));
+    setSelectedArchivedSessionIds((current) => current.filter((sessionId) => archivedSessionIds.has(sessionId)));
+  }, [archivedSessions]);
+
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 760px), (min-width: 1181px)");
+    const syncOrientation = () => setSettingsTabsOrientation(query.matches ? "vertical" : "horizontal");
+    syncOrientation();
+    query.addEventListener("change", syncOrientation);
+    return () => query.removeEventListener("change", syncOrientation);
+  }, []);
+
+  useEffect(() => {
     if (!pendingArchiveDelete) return undefined;
     archiveDeletePreviousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const inertTargets = [settingsHeroRef.current, settingsFormRef.current].filter(Boolean) as HTMLElement[];
+    inertTargets.forEach((target) => {
+      target.setAttribute("inert", "");
+      target.setAttribute("aria-hidden", "true");
+    });
     window.setTimeout(() => archiveDeleteCancelButtonRef.current?.focus(), 0);
     return () => {
+      inertTargets.forEach((target) => {
+        target.removeAttribute("inert");
+        target.removeAttribute("aria-hidden");
+      });
       archiveDeletePreviousFocusRef.current?.focus();
       archiveDeletePreviousFocusRef.current = null;
     };
@@ -269,23 +414,37 @@ function SettingsArchive({ archivedSessions, onRestoreSession, onDeleteArchivedS
     setSettings((current) => ({ ...current, [key]: value }));
   }
 
+  function updateNumberSetting(key: NumberProfileKey, value: number) {
+    const safeValue = Number.isFinite(value) ? Math.max(key === "soulCharLimit" ? 0 : 1, Math.round(value)) : defaultHermesProfileSettings[key];
+    setSettings((current) => ({ ...current, [key]: safeValue }));
+  }
+
   function selectArchivedSession(sessionId: string, selected: boolean) {
     setSelectedArchivedSessionIds((current) => selected ? Array.from(new Set([...current, sessionId])) : current.filter((id) => id !== sessionId));
   }
 
-  function requestArchiveDelete(sessionIds: string[], label: string) {
-    if (sessionIds.length === 0) return;
-    setPendingArchiveDelete({ sessionIds, label });
+  function requestArchiveDelete(sessionIds: string[], label: string, deleteAll = false) {
+    const currentArchivedSessionIds = new Set(archivedSessions.map((session) => session.id));
+    const currentSessionIds = Array.from(new Set(sessionIds.filter((sessionId) => currentArchivedSessionIds.has(sessionId))));
+    if (currentSessionIds.length === 0) return;
+    setPendingArchiveDelete({ sessionIds: currentSessionIds, label, deleteAll });
   }
 
   function confirmPendingArchiveDelete() {
     if (!pendingArchiveDelete) return;
-    if (pendingArchiveDelete.sessionIds.length === archivedSessions.length) {
+    const currentArchivedSessionIds = archivedSessions.map((session) => session.id);
+    const pendingSessionIds = new Set(pendingArchiveDelete.sessionIds);
+    const pendingCoversEveryCurrentArchive = pendingArchiveDelete.deleteAll === true
+      && currentArchivedSessionIds.length > 0
+      && pendingSessionIds.size === currentArchivedSessionIds.length
+      && currentArchivedSessionIds.every((sessionId) => pendingSessionIds.has(sessionId));
+    if (pendingCoversEveryCurrentArchive) {
       onDeleteAllArchivedSessions();
     } else {
-      onDeleteArchivedSessions(pendingArchiveDelete.sessionIds);
+      const currentPendingSessionIds = currentArchivedSessionIds.filter((sessionId) => pendingSessionIds.has(sessionId));
+      if (currentPendingSessionIds.length > 0) onDeleteArchivedSessions(currentPendingSessionIds);
     }
-    setSelectedArchivedSessionIds((current) => current.filter((id) => !pendingArchiveDelete.sessionIds.includes(id)));
+    setSelectedArchivedSessionIds((current) => current.filter((id) => !pendingSessionIds.has(id)));
     setPendingArchiveDelete(null);
   }
 
@@ -299,7 +458,7 @@ function SettingsArchive({ archivedSessions, onRestoreSession, onDeleteArchivedS
     if (event.key !== "Tab") return;
     const focusable = Array.from(archiveDeleteDialogRef.current?.querySelectorAll<HTMLElement>(
       'button:not(:disabled), [href], input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])'
-    ) ?? []).filter((element) => element.offsetParent !== null);
+    ) ?? []).filter((element) => element.getAttribute("aria-hidden") !== "true" && element.getClientRects().length > 0);
     if (focusable.length === 0) return;
     const first = focusable[0];
     const last = focusable[focusable.length - 1];
@@ -317,7 +476,29 @@ function SettingsArchive({ archivedSessions, onRestoreSession, onDeleteArchivedS
   }
 
   function deleteAllArchivedSessions() {
-    requestArchiveDelete(archivedSessions.map((session) => session.id), "all archived sessions");
+    requestArchiveDelete(archivedSessions.map((session) => session.id), "all archived sessions", true);
+  }
+
+  function handleSettingsTabsKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    const navigationKeys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"];
+    if (!navigationKeys.includes(event.key)) return;
+    event.preventDefault();
+    const currentIndex = activeSectionMeta.findIndex((section) => section.id === activeSettingsSection);
+    const safeCurrentIndex = currentIndex >= 0 ? currentIndex : 0;
+    const nextIndex = event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? activeSectionMeta.length - 1
+        : event.key === "ArrowLeft"
+          ? (safeCurrentIndex - 1 + activeSectionMeta.length) % activeSectionMeta.length
+        : event.key === "ArrowUp"
+          ? (safeCurrentIndex - 1 + activeSectionMeta.length) % activeSectionMeta.length
+          : event.key === "ArrowDown"
+            ? (safeCurrentIndex + 1) % activeSectionMeta.length
+          : (safeCurrentIndex + 1) % activeSectionMeta.length;
+    const nextSection = activeSectionMeta[nextIndex];
+    setActiveSettingsSection(nextSection.id);
+    window.setTimeout(() => document.getElementById(`profile-tab-${nextSection.id}`)?.focus(), 0);
   }
 
   function renderTextField(field: ProfileTextField) {
@@ -352,6 +533,22 @@ function SettingsArchive({ archivedSessions, onRestoreSession, onDeleteArchivedS
     );
   }
 
+  function renderNumberField(key: NumberProfileKey, label: string, helper: string, min = 1) {
+    return (
+      <label className="profile-field profile-number-field" key={key}>
+        <span>{label}</span>
+        <input
+          min={min}
+          onChange={(event) => updateNumberSetting(key, event.target.valueAsNumber)}
+          step={100}
+          type="number"
+          value={settings[key]}
+        />
+        <small>{helper}</small>
+      </label>
+    );
+  }
+
   function renderCatalogGroup(label: string, helper: string, key: StringProfileKey, availableValues: string[]) {
     const selectedValues = splitProfileList(String(settings[key] ?? ""));
     const options = mergeCatalog(String(settings[key] ?? ""), availableValues);
@@ -380,7 +577,7 @@ function SettingsArchive({ archivedSessions, onRestoreSession, onDeleteArchivedS
                   }}
                   type="checkbox"
                 />
-                <span>{option}</span>
+                <span title={option}>{option}</span>
                 <small>{selected ? "Enabled" : "Disabled"}</small>
               </label>
             );
@@ -452,46 +649,49 @@ function SettingsArchive({ archivedSessions, onRestoreSession, onDeleteArchivedS
     { id: "archive", number: "07", title: "Archive", detail: `${archivedSessions.length} archived sessions` },
   ];
   const currentSection = activeSectionMeta.find((section) => section.id === activeSettingsSection) ?? activeSectionMeta[0];
+  const updatedDate = settings.updatedAt ? new Date(Number(settings.updatedAt) || settings.updatedAt) : null;
+  const updatedLabel = updatedDate && !Number.isNaN(updatedDate.getTime()) ? updatedDate.toLocaleString() : "Not saved yet";
 
   return (
     <section aria-label="Settings" className="settings-archive-shell profile-page-shell profile-page-shell--organized settings-sumi-e">
-      <header className="settings-archive-header profile-hero profile-hero--compact settings-hero">
+      <header className="settings-archive-header profile-hero profile-hero--compact settings-hero" ref={settingsHeroRef}>
         <div className="settings-hero-copy">
           <p className="kana-line">設定</p>
           <h2>Profile, Memory & Soul</h2>
           <p>Compact control center for the active Hermes profile. Hermes-backed fields save to config.yaml, MEMORY.md, USER.md, Zoid-managed providers, or archived local sessions; Zoid-only fields are labeled as launch/profile context.</p>
-          <p className="settings-reference-line">Hermes profile · local memory · provider control · safe archive</p>
+          <p className="settings-reference-line">Hermes profile · memory · providers · archive</p>
         </div>
         <div className="settings-ink-mark" aria-hidden="true"><span /><span /><span /></div>
         <div className="profile-hero-card" aria-label="Active profile summary">
           <span>Active profile</span>
-          <strong>{settings.profile}</strong>
-          <small>{settings.storagePath}</small>
+          <strong title={settings.profile}>{settings.profile}</strong>
+          <small title={settings.storagePath}>{settings.storagePath}</small>
           {usingBrowserProfileFallback ? <small>Browser fallback: profile text is stored in localStorage on this device and is not encrypted by Zoid.</small> : null}
         </div>
       </header>
 
-      <form className="profile-settings-panel profile-settings-panel--complete" onSubmit={handleSaveProfile}>
+      <form className="profile-settings-panel profile-settings-panel--complete" onSubmit={handleSaveProfile} ref={settingsFormRef}>
         <div className="profile-settings-heading profile-settings-heading--sticky profile-settings-heading--compact">
           <div>
             <h3>{currentSection.title}</h3>
-            <p>{currentSection.detail} · Last updated: {settings.updatedAt ? new Date(Number(settings.updatedAt) || settings.updatedAt).toLocaleString() : "Not saved yet"}</p>
+            <p>{currentSection.detail} · Last updated: {updatedLabel}</p>
           </div>
           <button disabled={Boolean(profileLoadError)} type="submit"><Save size={14} aria-hidden="true" /> Save profile</button>
         </div>
 
         <section className="profile-settings-workspace" aria-label="Organized profile settings workspace">
           <aside className="profile-settings-nav" aria-label="Settings sections">
-            <div className="profile-nav-list" role="tablist" aria-orientation="horizontal">
+            <div className="profile-nav-list" onKeyDown={handleSettingsTabsKeyDown} role="tablist" aria-orientation={settingsTabsOrientation}>
               {activeSectionMeta.map((section) => (
                 <button
-                  aria-controls={`profile-section-${section.id}`}
+                  aria-controls={activeSettingsSection === section.id ? `profile-section-${section.id}` : undefined}
                   aria-selected={activeSettingsSection === section.id}
                   className={activeSettingsSection === section.id ? "active" : ""}
                   id={`profile-tab-${section.id}`}
                   key={section.id}
                   onClick={() => setActiveSettingsSection(section.id)}
                   role="tab"
+                  tabIndex={activeSettingsSection === section.id ? 0 : -1}
                   type="button"
                 >
                   <span>{section.number}</span>
@@ -502,10 +702,10 @@ function SettingsArchive({ archivedSessions, onRestoreSession, onDeleteArchivedS
             </div>
 
             <section className="profile-section profile-section--overview profile-section--overview-rail" aria-label="Profile overview">
-              <article><span>Memory</span><strong>{memoryFullness}%</strong><small>{settings.hermesMemory.length + settings.preferences.length}/{memoryBudgetLimit} chars</small><div className="profile-meter"><i style={{ width: `${memoryFullness}%` }} /></div></article>
-              <article><span>Soul</span><strong>{soulChars}</strong><small>{settings.soulCharLimit > 0 ? `${soulChars}/${settings.soulCharLimit} chars` : "system prompt chars"}</small></article>
-              <article><span>Access</span><strong>{settings.accessMode}</strong><small>{settings.approvalMode} approvals</small></article>
-              <article><span>Model</span><strong>{settings.modelName}</strong><small>{settings.modelProvider}</small></article>
+              <article><span>Memory</span><strong title={`${settings.hermesMemory.length + settings.preferences.length}/${memoryBudgetLimit} chars`}>{memoryFullness}%</strong><small>{settings.hermesMemory.length + settings.preferences.length}/{memoryBudgetLimit} chars</small><div className="profile-meter"><i style={{ width: `${memoryFullness}%` }} /></div></article>
+              <article><span>Soul</span><strong title={`${soulChars} chars`}>{soulChars}</strong><small>{settings.soulCharLimit > 0 ? `${soulChars}/${settings.soulCharLimit} chars` : "system prompt chars"}</small></article>
+              <article><span>Access</span><strong title={settings.accessMode}>{settings.accessMode}</strong><small>{settings.approvalMode} approvals</small></article>
+              <article><span>Model</span><strong title={settings.modelName}>{settings.modelName}</strong><small title={settings.modelProvider}>{settings.modelProvider}</small></article>
             </section>
           </aside>
 
@@ -525,6 +725,19 @@ function SettingsArchive({ archivedSessions, onRestoreSession, onDeleteArchivedS
               <section className="profile-section profile-section--active" id="profile-section-memory" aria-label="Hermes memory and soul" aria-labelledby="profile-tab-memory" role="tabpanel">
                 <div className="profile-section-title"><p>02</p><h3>Hermes memory & soul</h3><span>MEMORY.md plus config.yaml agent.system_prompt</span></div>
                 <div className="profile-grid">{soulFields.map(renderTextField)}</div>
+                <section className="profile-memory-budget-card" aria-label="Memory maximum character controls">
+                  <div className="profile-catalog-heading">
+                    <div>
+                      <h4>Memory lens limits</h4>
+                      <p>Adjust the max characters shown in the Memory card above and saved to Hermes config.yaml.</p>
+                    </div>
+                    <span>{memoryBudgetLimit} chars max</span>
+                  </div>
+                  <div className="profile-grid profile-grid--memory-limits">
+                    {renderNumberField("memoryCharLimit", "Hermes memory maximum", "Saved as memory.memory_char_limit; increase or reduce the durable MEMORY.md budget.")}
+                    {renderNumberField("userCharLimit", "User profile maximum", "Saved as memory.user_char_limit; controls the USER.md/profile portion of the combined memory lens.")}
+                  </div>
+                </section>
                 <p className="profile-security-note">Memory loads from Hermes MEMORY.md, preferences from USER.md, and soul from config.yaml agent.system_prompt. Enabled notes are prepended to Zoid-started Hermes prompts. Store preferences and operating notes here — not passwords, API keys, tokens, or private credentials. Browser fallback storage uses localStorage and is device-local, browser-readable, and not encrypted by Zoid.</p>
                 <div className="profile-toggle-grid">
                   {renderToggle("memoryEnabled", "Agent memory", "Inject durable Hermes notes into future sessions.")}
@@ -628,10 +841,10 @@ function SettingsArchive({ archivedSessions, onRestoreSession, onDeleteArchivedS
       </form>
       {pendingArchiveDelete ? (
         <div className="settings-confirm-backdrop" role="presentation">
-          <section aria-modal="true" aria-labelledby="settings-confirm-title" className="settings-confirm-panel" onKeyDown={handleArchiveDeleteDialogKeyDown} ref={archiveDeleteDialogRef} role="dialog">
+          <section aria-describedby="settings-confirm-description" aria-modal="true" aria-labelledby="settings-confirm-title" className="settings-confirm-panel" onKeyDown={handleArchiveDeleteDialogKeyDown} ref={archiveDeleteDialogRef} role="dialog">
             <p className="kana-line">確認</p>
             <h3 id="settings-confirm-title">Delete archive record?</h3>
-            <p>Delete {pendingArchiveDelete.sessionIds.length} archived agent session{pendingArchiveDelete.sessionIds.length === 1 ? "" : "s"} from {pendingArchiveDelete.label}. This is permanent and will not touch active sessions.</p>
+            <p id="settings-confirm-description">Delete {pendingArchiveDelete.sessionIds.length} archived agent session{pendingArchiveDelete.sessionIds.length === 1 ? "" : "s"} from {pendingArchiveDelete.label}. This is permanent and will not touch active sessions.</p>
             <div className="settings-confirm-actions">
               <button onClick={() => setPendingArchiveDelete(null)} ref={archiveDeleteCancelButtonRef} type="button">Cancel</button>
               <button className="settings-confirm-danger" onClick={confirmPendingArchiveDelete} type="button">Delete</button>
@@ -648,10 +861,11 @@ export default function App() {
   const sidebarMorphAnimationsRef = useRef<Animation[]>([]);
   const [activeWorkspace, setActiveWorkspace] = useState<ActiveWorkspace>(getInitialWorkspace);
   const [repositories, setRepositories] = useState<CodeRepository[]>(getInitialRepositories);
-  const [linkedRepositoryId, setLinkedRepositoryId] = useState(getInitialLinkedRepositoryId);
   const [hermesSessions, setHermesSessions] = useState<HermesChatSession[]>(getInitialHermesSessions);
   const [activeHermesSessionId, setActiveHermesSessionId] = useState(() => hermesSessions[0]?.id ?? createSession().id);
   const [archivedHermesSessions, setArchivedHermesSessions] = useState<ArchivedHermesChatSession[]>(getInitialArchivedHermesSessions);
+  const [repositoryOperationProfiles, setRepositoryOperationProfiles] = useState<Record<string, RepositoryOperationProfile>>(getInitialRepositoryOperationProfiles);
+  const [repositoryOperationRuns, setRepositoryOperationRuns] = useState<RepositoryOperationRun[]>(getInitialRepositoryOperationRuns);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [automationsStatus, setAutomationsStatus] = useState<NavigationStatus>("idle");
   const [startupNotice, setStartupNotice] = useState<string | null>(null);
@@ -672,16 +886,20 @@ export default function App() {
   }, [repositories]);
 
   useEffect(() => {
-    window.localStorage.setItem(LINKED_REPOSITORY_STORAGE_KEY, linkedRepositoryId);
-  }, [linkedRepositoryId]);
-
-  useEffect(() => {
     window.localStorage.setItem(HERMES_ARCHIVED_SESSIONS_STORAGE_KEY, JSON.stringify(archivedHermesSessions));
   }, [archivedHermesSessions]);
 
   useEffect(() => {
     window.localStorage.setItem(HERMES_SESSIONS_STORAGE_KEY, JSON.stringify(hermesSessions));
   }, [hermesSessions]);
+
+  useEffect(() => {
+    window.localStorage.setItem(REPOSITORY_OPERATION_PROFILES_STORAGE_KEY, JSON.stringify(repositoryOperationProfiles));
+  }, [repositoryOperationProfiles]);
+
+  useEffect(() => {
+    window.localStorage.setItem(REPOSITORY_OPERATION_RUNS_STORAGE_KEY, JSON.stringify(repositoryOperationRuns));
+  }, [repositoryOperationRuns]);
 
   useEffect(() => {
     if (hermesSessions.length === 0) {
@@ -740,6 +958,10 @@ export default function App() {
       needsReply: archivedSession.needsReply,
       lastNotifiedAssistantMessageId: archivedSession.lastNotifiedAssistantMessageId,
       notificationUpdatedAt: archivedSession.notificationUpdatedAt,
+      operationRunId: archivedSession.operationRunId,
+      operationAction: archivedSession.operationAction,
+      operationRepositoryId: archivedSession.operationRepositoryId,
+      pendingInitialPrompt: archivedSession.pendingInitialPrompt,
     };
     const restoredSessions = [restoredSession, ...hermesSessions];
     const remainingArchivedSessions = archivedHermesSessions.filter((session) => session.id !== sessionId);
@@ -747,6 +969,86 @@ export default function App() {
     setActiveHermesSessionId(restoredSession.id);
     setArchivedHermesSessions(remainingArchivedSessions);
     setActiveWorkspace("Agents");
+  }
+
+  function handleRepositoryOperationStart(repository: CodeRepository, action: RepositoryOperationAction) {
+    const now = new Date().toISOString();
+    const existingProfile = getRepositoryOperationProfile(repositoryOperationProfiles, repository, action);
+    const prompt = buildRepositoryOperationPrompt({ repository, action, profile: existingProfile });
+    const nextSession = createSession(repositoryOperationTitle(action, repository), hermesSessions);
+    const runId = `repo-run-${crypto.randomUUID()}`;
+    const operationSession: HermesChatSession = {
+      ...nextSession,
+      title: repositoryOperationTitle(action, repository),
+      linkedRepositoryId: repository.id,
+      operationAction: action,
+      operationRepositoryId: repository.id,
+      operationRunId: runId,
+      pendingInitialPrompt: prompt,
+      updatedAt: now,
+    };
+    const key = repositoryOperationKey(repository.id, action);
+    const nextRun: RepositoryOperationRun = {
+      id: runId,
+      repoId: repository.id,
+      action,
+      sessionId: operationSession.id,
+      startedAt: now,
+      outcome: "running",
+      initialPrompt: prompt,
+      runbookSnapshot: existingProfile.runbookMarkdown,
+    };
+
+    setRepositoryOperationProfiles((current) => ({
+      ...current,
+      [key]: {
+        ...existingProfile,
+        status: "running",
+        lastRunId: runId,
+        lastSessionId: operationSession.id,
+        lastStartedAt: now,
+        updatedAt: now,
+      },
+    }));
+    setRepositoryOperationRuns((current) => [nextRun, ...current]);
+    setHermesSessions((current) => [operationSession, ...current]);
+    setActiveHermesSessionId(operationSession.id);
+    setActiveWorkspace("Agents");
+  }
+
+  function handleRepositoryOperationComplete(result: {
+    sessionId: string;
+    runId: string;
+    repositoryId: string;
+    action: RepositoryOperationAction;
+    outcome: "success" | "failed" | "cancelled" | "needs-user" | "blocked";
+    responseContent: string;
+  }) {
+    const now = new Date().toISOString();
+    const key = repositoryOperationKey(result.repositoryId, result.action);
+    const resolvedOutcome = inferRepositoryOperationOutcome(result.responseContent, result.outcome);
+    setRepositoryOperationRuns((current) => current.map((run) => (
+      run.id === result.runId
+        ? { ...run, outcome: resolvedOutcome, finishedAt: now, responseContent: result.responseContent }
+        : run
+    )));
+    setRepositoryOperationProfiles((current) => {
+      const existingProfile = current[key];
+      if (!existingProfile) return current;
+      const nextStatus: RepositoryOperationProfile["status"] = resolvedOutcome === "success" ? "learned" : resolvedOutcome === "cancelled" || resolvedOutcome === "needs-user" ? "needs-review" : resolvedOutcome === "blocked" ? "blocked" : "broken";
+      const nextConfidence = resolvedOutcome === "success" ? Math.min(100, Math.max(existingProfile.confidenceScore + 25, 35)) : Math.max(0, existingProfile.confidenceScore - 20);
+      return {
+        ...current,
+        [key]: {
+          ...existingProfile,
+          status: nextStatus,
+          confidenceScore: nextConfidence,
+          runbookMarkdown: mergeRunbookUpdate(existingProfile, result.responseContent, now),
+          lastSuccessfulRunAt: resolvedOutcome === "success" ? now : existingProfile.lastSuccessfulRunAt,
+          updatedAt: now,
+        },
+      };
+    });
   }
 
   function handleSidebarMorphToggle() {
@@ -882,11 +1184,11 @@ export default function App() {
       className={isSidebarCollapsed ? "zoid25-shell sidebar-collapsed" : "zoid25-shell"}
       aria-label="Zoid 25 desktop scaffold"
     >
-      <aside className="blue-rail" aria-label="Global controls">
+      <aside className="ink-rail" aria-label="Global controls">
         <button
           aria-label={isSidebarCollapsed ? "Maximize sidebar" : "Minimize sidebar"}
           aria-pressed={isSidebarCollapsed}
-          className="rail-menu"
+          className={isSidebarCollapsed ? "rail-menu rail-menu--open" : "rail-menu rail-menu--close"}
           onClick={handleSidebarMorphToggle}
           title={isSidebarCollapsed ? "Maximize sidebar" : "Minimize sidebar"}
           type="button"
@@ -964,39 +1266,40 @@ export default function App() {
 
       {startupNotice ? <p className="app-startup-notice" role="status">{startupNotice}</p> : null}
 
-      {activeWorkspace === "Brain" ? (
-        <BrainWorkspace />
-      ) : activeWorkspace === "Code" ? (
-        <CodeWorkspace
-          linkedRepositoryId={linkedRepositoryId}
-          onLinkedRepositoryIdChange={setLinkedRepositoryId}
-          onRepositoriesChange={setRepositories}
-          repositories={repositories}
-        />
-      ) : activeWorkspace === "Automations" ? (
-        <AutomationsWorkspace onStatusChange={setAutomationsStatus} />
-      ) : activeWorkspace === "Content" ? (
-        <ContentWorkspace />
-      ) : activeWorkspace === "Settings" ? (
-        <SettingsArchive
-          archivedSessions={archivedHermesSessions}
-          onDeleteAllArchivedSessions={handleDeleteAllArchivedHermesSessions}
-          onDeleteArchivedSessions={handleDeleteArchivedHermesSessions}
-          onRestoreSession={handleRestoreHermesSession}
-        />
-      ) : (
-        <AgentsHermesScreen
-          activeSessionId={activeHermesSessionId}
-          isAgentsWorkspaceOpen={activeWorkspace === "Agents"}
-          linkedRepositoryId={linkedRepositoryId}
-          onActiveSessionIdChange={setActiveHermesSessionId}
-          onArchiveSession={handleArchiveHermesSession}
-          onLinkedRepositoryIdChange={setLinkedRepositoryId}
-          onSessionsChange={handleHermesSessionsChange}
-          repositories={repositories}
-          sessions={hermesSessions}
-        />
-      )}
+      <Suspense fallback={<p className="app-startup-notice app-startup-notice--loading" role="status">Loading {activeWorkspace} workspace…</p>}>
+        {activeWorkspace === "Brain" ? (
+          <LazyBrainWorkspace />
+        ) : activeWorkspace === "Code" ? (
+          <LazyCodeWorkspace
+            onRepositoriesChange={setRepositories}
+            onRepositoryOperationStart={handleRepositoryOperationStart}
+            operationProfiles={repositoryOperationProfiles}
+            repositories={repositories}
+          />
+        ) : activeWorkspace === "Automations" ? (
+          <LazyAutomationsWorkspace onStatusChange={setAutomationsStatus} />
+        ) : activeWorkspace === "Content" ? (
+          <LazyContentWorkspace />
+        ) : activeWorkspace === "Settings" ? (
+          <SettingsArchive
+            archivedSessions={archivedHermesSessions}
+            onDeleteAllArchivedSessions={handleDeleteAllArchivedHermesSessions}
+            onDeleteArchivedSessions={handleDeleteArchivedHermesSessions}
+            onRestoreSession={handleRestoreHermesSession}
+          />
+        ) : (
+          <LazyAgentsHermesScreen
+            activeSessionId={activeHermesSessionId}
+            isAgentsWorkspaceOpen={activeWorkspace === "Agents"}
+            onActiveSessionIdChange={setActiveHermesSessionId}
+            onArchiveSession={handleArchiveHermesSession}
+            onRepositoryOperationComplete={handleRepositoryOperationComplete}
+            onSessionsChange={handleHermesSessionsChange}
+            repositories={repositories}
+            sessions={hermesSessions}
+          />
+        )}
+      </Suspense>
     </main>
   );
 }

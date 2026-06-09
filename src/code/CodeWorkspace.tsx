@@ -1,14 +1,16 @@
 import { Search, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { GlobalDropdown } from "../ui/GlobalDropdown";
 import { cloneGithubRepository, listGithubBranches, scanGithubRepositories, selectFolderFromFinder, updateGithubDefaultBranch } from "./repositoryClient";
+import { REPOSITORY_OPERATION_LABELS, operationStatusLabel } from "./repositoryOperations";
+import type { RepositoryOperationAction, RepositoryOperationProfile } from "./repositoryOperations";
 import type { CodeRepository, GithubBranch } from "./types";
 
 type CodeWorkspaceProps = {
   repositories: CodeRepository[];
   onRepositoriesChange: (repositories: CodeRepository[]) => void;
-  linkedRepositoryId: string;
-  onLinkedRepositoryIdChange: (repositoryId: string) => void;
+  operationProfiles?: Record<string, RepositoryOperationProfile>;
+  onRepositoryOperationStart?: (repository: CodeRepository, action: RepositoryOperationAction) => void;
 };
 
 const DEFAULT_SCAN_FOLDER = "";
@@ -112,11 +114,35 @@ function RepositoryMeta({
   );
 }
 
+export function confirmProductionRepositoryOperation(repository: CodeRepository) {
+  const confirmation = [
+    `Start production deploy agent for ${repository.name}?`,
+    "",
+    `Path: ${repository.path}`,
+    `Branch: ${repository.branch ?? "Unknown"}`,
+    `Default branch: ${repository.defaultBranch ?? repository.branch ?? "Unknown"}`,
+    `Dirty state: ${repository.dirty ? "Dirty" : "Clean"}`,
+    "",
+    "This opens a production Hermes session. The agent must still ask before irreversible deploys, migrations, destructive commands, env overwrites, force pushes, or resets.",
+  ].join("\n");
+  return window.confirm(confirmation);
+}
+
+function handleRepositoryOperationButtonClick(
+  repository: CodeRepository,
+  action: RepositoryOperationAction,
+  onRepositoryOperationStart?: (repository: CodeRepository, action: RepositoryOperationAction) => void,
+) {
+  if (!onRepositoryOperationStart) return;
+  if (action === "production" && !confirmProductionRepositoryOperation(repository)) return;
+  onRepositoryOperationStart(repository, action);
+}
+
 export function CodeWorkspace({
   repositories,
   onRepositoriesChange,
-  linkedRepositoryId,
-  onLinkedRepositoryIdChange,
+  operationProfiles = {},
+  onRepositoryOperationStart,
 }: CodeWorkspaceProps) {
   const [scanFolder, setScanFolder] = useState(DEFAULT_SCAN_FOLDER);
   const [repoUrl, setRepoUrl] = useState("");
@@ -131,7 +157,19 @@ export function CodeWorkspace({
   const [defaultBranchStatus, setDefaultBranchStatus] = useState("");
   const [defaultBranchError, setDefaultBranchError] = useState("");
   const [repositoryScanFeedback, setRepositoryScanFeedback] = useState<{ tone: "info" | "success" | "error"; label: string; message: string } | null>(null);
+  const [cloneFeedback, setCloneFeedback] = useState<{ tone: "info" | "success" | "error"; label: string; message: string } | null>(null);
   const [recentlyAddedRepositoryIds, setRecentlyAddedRepositoryIds] = useState<string[]>([]);
+  const repositoriesRef = useRef(repositories);
+  const branchRequestIdRef = useRef(0);
+
+  useEffect(() => {
+    repositoriesRef.current = repositories;
+  }, [repositories]);
+
+  function emitRepositoriesChange(nextRepositories: CodeRepository[]) {
+    repositoriesRef.current = nextRepositories;
+    onRepositoriesChange(nextRepositories);
+  }
 
   const filteredRepositories = useMemo(() => {
     const query = repositorySearchQuery.trim().toLowerCase();
@@ -171,6 +209,7 @@ export function CodeWorkspace({
       }
     } catch (error) {
       console.error("Folder selection failed", error);
+      setRepositoryScanFeedback({ tone: "error", label: "Folder picker failed", message: errorToMessage(error) });
     }
   }
 
@@ -182,13 +221,14 @@ export function CodeWorkspace({
       }
     } catch (error) {
       console.error("Folder selection failed", error);
+      setCloneFeedback({ tone: "error", label: "Destination picker failed", message: errorToMessage(error) });
     }
   }
 
   async function handleScanFolder() {
     const folder = scanFolder.trim();
     if (!folder) {
-      console.error("Choose a folder from Finder before scanning.");
+      setRepositoryScanFeedback({ tone: "error", label: "Folder required", message: "Choose a folder from Finder before scanning." });
       return;
     }
 
@@ -197,9 +237,10 @@ export function CodeWorkspace({
     setRecentlyAddedRepositoryIds([]);
     try {
       const detectedRepositories = await scanGithubRepositories(folder);
-      const existingRepositoryIds = new Set(repositories.map((repository) => repository.id));
+      const currentRepositories = repositoriesRef.current;
+      const existingRepositoryIds = new Set(currentRepositories.map((repository) => repository.id));
       const newlyAddedRepositories = detectedRepositories.filter((repository) => !existingRepositoryIds.has(repository.id));
-      onRepositoriesChange(mergeRepositories(repositories, detectedRepositories));
+      emitRepositoriesChange(mergeRepositories(currentRepositories, detectedRepositories));
       setRecentlyAddedRepositoryIds(newlyAddedRepositories.map((repository) => repository.id));
       setRepositoryScanFeedback({
         tone: newlyAddedRepositories.length > 0 ? "success" : "info",
@@ -222,24 +263,28 @@ export function CodeWorkspace({
     const nextRepoUrl = repoUrl.trim();
     const nextDestinationRoot = destinationRoot.trim();
     if (!nextRepoUrl || !nextDestinationRoot) {
-      console.error("Enter a GitHub repo link and choose a destination folder from Finder before cloning.");
+      setCloneFeedback({ tone: "error", label: "Clone details required", message: "Enter a GitHub repo link and choose a destination folder from Finder before cloning." });
       return;
     }
 
     setBusyAction("clone");
+    setCloneFeedback({ tone: "info", label: "Cloning", message: `Cloning ${nextRepoUrl}…` });
     try {
       const clonedRepository = await cloneGithubRepository(nextRepoUrl, nextDestinationRoot);
-      onRepositoriesChange(mergeRepositories(repositories, [clonedRepository]));
-      onLinkedRepositoryIdChange(clonedRepository.id);
+      emitRepositoriesChange(mergeRepositories(repositoriesRef.current, [clonedRepository]));
       setRepoUrl("");
+      setCloneFeedback({ tone: "success", label: "Repo cloned", message: `${clonedRepository.name} was cloned and added to the repository list.` });
     } catch (error) {
       console.error("Clone failed", error);
+      setCloneFeedback({ tone: "error", label: "Clone failed", message: errorToMessage(error) });
     } finally {
       setBusyAction(null);
     }
   }
 
   async function handleEditDefaultBranch(repository: CodeRepository) {
+    const requestId = branchRequestIdRef.current + 1;
+    branchRequestIdRef.current = requestId;
     const currentDefaultBranch = repository.defaultBranch || repository.branch || "";
     const fallbackBranchOptions = currentDefaultBranch ? [{ name: currentDefaultBranch, isDefault: true }] : [];
     setDefaultBranchOptions(fallbackBranchOptions);
@@ -250,24 +295,28 @@ export function CodeWorkspace({
     setDefaultBranchStatus(`Loading GitHub branches for ${repository.name}…`);
     try {
       const branches = await listGithubBranches(repository.path, repository.remoteUrl, currentDefaultBranch);
+      if (branchRequestIdRef.current !== requestId) return;
       const branchNames = new Set(branches.map((branch) => branch.name));
       const options = currentDefaultBranch && !branchNames.has(currentDefaultBranch)
         ? [{ name: currentDefaultBranch, isDefault: true }, ...branches]
         : branches;
       setDefaultBranchOptions(options);
       setSelectedDefaultBranch(currentDefaultBranch || options[0]?.name || "");
-      setEditingDefaultBranchRepositoryId(repository.id);
-      setDefaultBranchStatus(`Select a default branch for ${repository.name}.`);
+      setDefaultBranchStatus(options.length > 0 ? `Select a default branch for ${repository.name}.` : `No branches found for ${repository.name}.`);
     } catch (error) {
+      if (branchRequestIdRef.current !== requestId) return;
       console.error("Default branch selection failed", error);
       setDefaultBranchError(`Default branch selection failed: ${errorToMessage(error)}`);
       setDefaultBranchStatus("Default branch selection failed.");
     } finally {
-      setUpdatingDefaultBranchRepositoryId(null);
+      if (branchRequestIdRef.current === requestId) {
+        setUpdatingDefaultBranchRepositoryId(null);
+      }
     }
   }
 
   function handleCancelDefaultBranchEdit() {
+    branchRequestIdRef.current += 1;
     setEditingDefaultBranchRepositoryId(null);
     setDefaultBranchOptions([]);
     setSelectedDefaultBranch("");
@@ -285,7 +334,7 @@ export function CodeWorkspace({
     setDefaultBranchStatus(`Updating GitHub default branch for ${repository.name}…`);
     try {
       const updatedRepository = await updateGithubDefaultBranch(repository.path, repository.remoteUrl, trimmedDefaultBranch);
-      onRepositoriesChange(repositories.map((item) => (item.id === repository.id ? { ...item, ...updatedRepository, addedAt: item.addedAt } : item)));
+      emitRepositoriesChange(repositoriesRef.current.map((item) => (item.id === repository.id ? { ...item, ...updatedRepository, addedAt: item.addedAt } : item)));
       setEditingDefaultBranchRepositoryId(null);
       setDefaultBranchOptions([]);
       setSelectedDefaultBranch("");
@@ -311,59 +360,7 @@ export function CodeWorkspace({
         <div className="code-ink-mark" aria-hidden="true"><span /><span /><span /></div>
       </header>
 
-      <div className="repo-control-grid" aria-label="Repository actions">
-        <section className="repo-action-panel" aria-label="Scan folder for repositories">
-          <h3>Scan folder</h3>
-          <label htmlFor="scan-folder-input">Selected folder</label>
-          <div className="folder-picker-row">
-            <input
-              id="scan-folder-input"
-              placeholder="Choose a folder from Finder"
-              readOnly
-              value={scanFolder}
-            />
-            <button disabled={busyAction !== null} onClick={handleChooseScanFolder} type="button">
-              Choose folder…
-            </button>
-          </div>
-          <button disabled={busyAction !== null || !scanFolder.trim()} onClick={handleScanFolder} type="button">
-            {busyAction === "scan" ? "Scanning…" : "Scan selected folder"}
-          </button>
-          {repositoryScanFeedback ? (
-            <div className={`repo-action-feedback repo-action-feedback--${repositoryScanFeedback.tone}`} role="status" aria-live="polite">
-              <span>{repositoryScanFeedback.label}</span>
-              <p>{repositoryScanFeedback.message}</p>
-            </div>
-          ) : null}
-        </section>
-
-        <section className="repo-action-panel" aria-label="Clone repository from GitHub link">
-          <h3>Clone repo</h3>
-          <label htmlFor="clone-url-input">GitHub repo link</label>
-          <input
-            id="clone-url-input"
-            onChange={(event) => setRepoUrl(event.target.value)}
-            placeholder="https://github.com/org/repo.git"
-            value={repoUrl}
-          />
-          <label htmlFor="clone-destination-input">Destination folder</label>
-          <div className="folder-picker-row">
-            <input
-              id="clone-destination-input"
-              placeholder="Choose a destination folder from Finder"
-              readOnly
-              value={destinationRoot}
-            />
-            <button disabled={busyAction !== null} onClick={handleChooseCloneDestination} type="button">
-              Choose destination…
-            </button>
-          </div>
-          <button disabled={busyAction !== null || !repoUrl.trim() || !destinationRoot.trim()} onClick={handleCloneRepository} type="button">
-            {busyAction === "clone" ? "Cloning…" : "Clone repo"}
-          </button>
-        </section>
-      </div>
-
+      <div className="code-repository-layout">
       <section className="repository-list-panel" aria-label="Repository list">
         <div className={isRepositorySearchOpen ? "repository-list-heading repository-list-heading--searching" : "repository-list-heading"}>
           <div className="repository-list-title-row">
@@ -409,14 +406,14 @@ export function CodeWorkspace({
         </div>
 
         {repositoryScanFeedback ? (
-          <div className={`repo-scan-feedback repo-scan-feedback--${repositoryScanFeedback.tone}`}>
+          <div className={`repo-scan-feedback repo-scan-feedback--${repositoryScanFeedback.tone}`} role={repositoryScanFeedback.tone === "error" ? "alert" : "status"} aria-live={repositoryScanFeedback.tone === "error" ? "assertive" : "polite"}>
             <span>{repositoryScanFeedback.label}</span>
             <p>{repositoryScanFeedback.message}</p>
           </div>
         ) : null}
 
         {(defaultBranchStatus || defaultBranchError) ? (
-          <div className={defaultBranchError ? "default-branch-feedback default-branch-feedback--error" : "default-branch-feedback"} role="status" aria-live="polite">
+          <div className={defaultBranchError ? "default-branch-feedback default-branch-feedback--error" : "default-branch-feedback"} role={defaultBranchError ? "alert" : "status"} aria-live={defaultBranchError ? "assertive" : "polite"}>
             <span>Default branch</span>
             <p>{defaultBranchError || defaultBranchStatus}</p>
           </div>
@@ -437,13 +434,6 @@ export function CodeWorkspace({
                       {repository.dirty ? "Dirty" : "Clean"}
                     </span>
                   </div>
-                  <button
-                    aria-pressed={repository.id === linkedRepositoryId}
-                    onClick={() => onLinkedRepositoryIdChange(repository.id)}
-                    type="button"
-                  >
-                    {repository.id === linkedRepositoryId ? "Using for Agents" : "Use for Agents"}
-                  </button>
                 </div>
                 <RepositoryMeta
                   branchOptions={editingDefaultBranchRepositoryId === repository.id ? defaultBranchOptions : []}
@@ -456,11 +446,90 @@ export function CodeWorkspace({
                   repository={repository}
                   selectedDefaultBranch={editingDefaultBranchRepositoryId === repository.id ? selectedDefaultBranch : ""}
                 />
+                <div className="repository-operation-strip" aria-label={`Agent operations for ${repository.name}`}>
+                  {(["localhost", "staging", "production"] as RepositoryOperationAction[]).map((action) => {
+                    const profile = operationProfiles[`${repository.id}:${action}`];
+                    const isRunning = profile?.status === "running";
+                    return (
+                      <button
+                        aria-label={`${REPOSITORY_OPERATION_LABELS[action]} for ${repository.name}`}
+                        className={`repository-operation-button repository-operation-button--${action}`}
+                        disabled={!onRepositoryOperationStart || isRunning}
+                        key={action}
+                        onClick={() => handleRepositoryOperationButtonClick(repository, action, onRepositoryOperationStart)}
+                        type="button"
+                      >
+                        <span>{REPOSITORY_OPERATION_LABELS[action]}</span>
+                        <small>{operationStatusLabel(profile)}</small>
+                      </button>
+                    );
+                  })}
+                </div>
               </article>
             ))}
           </div>
         )}
       </section>
+
+      <aside className="repo-control-grid" aria-label="Repository actions">
+        <section className="repo-action-panel repo-action-panel--scan" aria-label="Scan folder for repositories">
+          <h3>Scan folder</h3>
+          <label htmlFor="scan-folder-input">Selected folder</label>
+          <div className="folder-picker-row">
+            <input
+              aria-describedby="scan-folder-help"
+              id="scan-folder-input"
+              placeholder="Choose a folder from Finder"
+              readOnly
+              value={scanFolder}
+            />
+            <button disabled={busyAction !== null} onClick={handleChooseScanFolder} type="button">
+              Choose folder…
+            </button>
+          </div>
+          <p className="repo-action-hint" id="scan-folder-help">Finder folder required before scanning.</p>
+          <button aria-describedby="scan-folder-help" disabled={busyAction !== null || !scanFolder.trim()} onClick={handleScanFolder} type="button">
+            {busyAction === "scan" ? "Scanning…" : "Scan selected folder"}
+          </button>
+        </section>
+
+        <section className="repo-action-panel repo-action-panel--clone" aria-label="Clone repository from GitHub link">
+          <h3>Clone repo</h3>
+          <label htmlFor="clone-url-input">GitHub repo link</label>
+          <input
+            aria-describedby="clone-url-help"
+            id="clone-url-input"
+            onChange={(event) => setRepoUrl(event.target.value)}
+            placeholder="https://github.com/org/repo.git"
+            value={repoUrl}
+          />
+          <label htmlFor="clone-destination-input">Destination folder</label>
+          <div className="folder-picker-row">
+            <input
+              aria-describedby="clone-destination-help"
+              id="clone-destination-input"
+              placeholder="Choose a destination folder from Finder"
+              readOnly
+              value={destinationRoot}
+            />
+            <button disabled={busyAction !== null} onClick={handleChooseCloneDestination} type="button">
+              Choose destination…
+            </button>
+          </div>
+          <p className="repo-action-hint" id="clone-url-help">GitHub URL and destination folder are required before cloning.</p>
+          <p className="repo-action-hint" id="clone-destination-help">Use Finder to choose where the repository should be saved.</p>
+          <button aria-describedby="clone-url-help clone-destination-help" disabled={busyAction !== null || !repoUrl.trim() || !destinationRoot.trim()} onClick={handleCloneRepository} type="button">
+            {busyAction === "clone" ? "Cloning…" : "Clone repo"}
+          </button>
+          {cloneFeedback ? (
+            <div className={`repo-action-feedback repo-action-feedback--${cloneFeedback.tone}`} role={cloneFeedback.tone === "error" ? "alert" : "status"} aria-live={cloneFeedback.tone === "error" ? "assertive" : "polite"}>
+              <span>{cloneFeedback.label}</span>
+              <p>{cloneFeedback.message}</p>
+            </div>
+          ) : null}
+        </section>
+      </aside>
+      </div>
     </section>
   );
 }

@@ -11,7 +11,7 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --lib --bins -- --test-threads=1",
-    "test:frontend": "tsx src/scaffold.test.ts && tsx src/content/contentWorkspace.test.ts && tsx src/ui/GlobalDropdown.behavior.test.tsx && tsx src/brain/BrainWorkspace.behavior.test.tsx && tsx src/automations/AutomationsWorkspace.behavior.test.tsx && tsx src/agents/ChatComposer.slash.test.tsx && tsx src/agents/ChatComposer.behavior.test.tsx && tsx src/agents/CommandPalette.behavior.test.tsx && tsx src/agents/AgentsHermesScreen.file-manager.test.tsx && tsx src/agents/ruthlessReviewerAgent.behavior.test.ts",
+    "test:frontend": "tsx src/scaffold.test.ts && tsx src/code/repositoryOperations.test.ts && tsx src/code/CodeWorkspace.behavior.test.tsx && tsx src/content/contentWorkspace.test.ts && tsx src/social/socialViewModel.test.ts && tsx src/social/SocialDashboard.behavior.test.tsx && tsx src/ui/GlobalDropdown.behavior.test.tsx && tsx src/brain/BrainWorkspace.behavior.test.tsx && tsx src/automations/AutomationsWorkspace.behavior.test.tsx && tsx src/agents/ChatComposer.slash.test.tsx && tsx src/agents/ChatComposer.behavior.test.tsx && tsx src/agents/CommandPalette.behavior.test.tsx && tsx src/agents/dashboardLayoutState.test.ts && tsx src/agents/continuationBrief.test.ts && tsx src/agents/AgentsHermesScreen.file-manager.test.tsx && tsx src/agents/ruthlessReviewerAgent.behavior.test.ts",
     "test": "npm run test:frontend && npm run test:rust"
   },
   "dependencies": {

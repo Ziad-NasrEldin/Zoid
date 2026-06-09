@@ -41,9 +41,9 @@ const attachmentActionLabels: Record<ComposerAttachmentAction, string> = {
 
 const COMPOSER_MIN_HEIGHT = 44;
 const COMPOSER_MAX_HEIGHT = 132;
-const TYPING_SOUND_MIN_INTERVAL_MS = 70;
-const TYPING_SOUND_VOLUME = 0.009;
-const TYPING_SOUND_CLICK_VOLUME = 0.0035;
+const TYPING_SOUND_MIN_INTERVAL_MS = 160;
+const TYPING_SOUND_VOLUME = 0.0036;
+const TYPING_SOUND_CLICK_VOLUME = 0.0009;
 
 type ZoidAudioWindow = Window & typeof globalThis & {
   webkitAudioContext?: typeof AudioContext;
@@ -285,25 +285,28 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     const primaryGain = context.createGain();
     const clickGain = context.createGain();
     const filter = context.createBiquadFilter();
-    const pitch = inputType?.startsWith("delete") ? 420 : 640 + Math.random() * 70;
+    const bambooWaterDropPitch = inputType?.startsWith("delete") ? 196 : 220 + Math.random() * 16;
+    const templeBellOvertonePitch = bambooWaterDropPitch * 2.5;
+    const tatamiRoomDamping = 0.34 + Math.random() * 0.08;
 
     primaryOscillator.type = "sine";
-    primaryOscillator.frequency.setValueAtTime(pitch, now);
-    primaryOscillator.frequency.exponentialRampToValueAtTime(Math.max(260, pitch * 0.74), now + 0.055);
-    clickOscillator.type = "triangle";
-    clickOscillator.frequency.setValueAtTime(pitch * 1.7, now);
-    clickOscillator.frequency.exponentialRampToValueAtTime(Math.max(620, pitch * 1.15), now + 0.032);
+    primaryOscillator.frequency.setValueAtTime(bambooWaterDropPitch, now);
+    primaryOscillator.frequency.exponentialRampToValueAtTime(Math.max(150, bambooWaterDropPitch * 0.7), now + 0.22);
+    clickOscillator.type = "sine";
+    clickOscillator.frequency.setValueAtTime(templeBellOvertonePitch, now);
+    clickOscillator.frequency.exponentialRampToValueAtTime(Math.max(360, templeBellOvertonePitch * 0.58), now + 0.09);
 
-    filter.type = "bandpass";
-    filter.frequency.setValueAtTime(780, now);
-    filter.Q.setValueAtTime(0.72, now);
+    filter.type = "lowpass";
+    filter.frequency.setValueAtTime(720, now);
+    filter.frequency.exponentialRampToValueAtTime(390, now + 0.24);
+    filter.Q.setValueAtTime(tatamiRoomDamping, now);
 
     primaryGain.gain.setValueAtTime(0.0001, now);
-    primaryGain.gain.exponentialRampToValueAtTime(TYPING_SOUND_VOLUME, now + 0.008);
-    primaryGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.068);
+    primaryGain.gain.exponentialRampToValueAtTime(TYPING_SOUND_VOLUME, now + 0.032);
+    primaryGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.28);
     clickGain.gain.setValueAtTime(0.0001, now);
-    clickGain.gain.exponentialRampToValueAtTime(TYPING_SOUND_CLICK_VOLUME, now + 0.004);
-    clickGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.035);
+    clickGain.gain.exponentialRampToValueAtTime(TYPING_SOUND_CLICK_VOLUME, now + 0.012);
+    clickGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
 
     primaryOscillator.connect(primaryGain);
     clickOscillator.connect(clickGain);
@@ -312,8 +315,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     filter.connect(context.destination);
     primaryOscillator.start(now);
     clickOscillator.start(now);
-    primaryOscillator.stop(now + 0.075);
-    clickOscillator.stop(now + 0.04);
+    primaryOscillator.stop(now + 0.3);
+    clickOscillator.stop(now + 0.14);
     primaryOscillator.onended = () => {
       primaryOscillator.disconnect();
       clickOscillator.disconnect();

@@ -16,6 +16,32 @@ export default defineConfig(async () => ({
       agentation: agentationDetailFixedEntry,
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (
+            id.includes("/src/agents/sessionState") ||
+            id.includes("/src/agents/sessionPortraits") ||
+            id.includes("/src/agents/hermesProfileClient") ||
+            id.includes("/src/agents/types")
+          ) return undefined;
+          if (id.includes("/src/agents/")) return "workspace-agents";
+          if (id.includes("/src/brain/")) return "workspace-brain";
+          if (id.includes("/src/code/")) return "workspace-code";
+          if (id.includes("/src/content/")) return "workspace-content";
+          if (id.includes("/src/automations/")) return "workspace-automations";
+          if (id.includes("/src/providers/")) return "workspace-providers";
+          if (!id.includes("node_modules")) return undefined;
+          if (id.includes("/react/") || id.includes("/react-dom/")) return "react-vendor";
+          if (id.includes("/lucide-react/")) return "icons";
+          if (id.includes("/@tauri-apps/")) return "tauri-vendor";
+          if (id.includes("/agentation/")) return "agentation";
+          return "vendor";
+        },
+      },
+    },
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

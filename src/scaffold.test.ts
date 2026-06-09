@@ -138,6 +138,32 @@ if (!app.includes("ink-rail")) {
   throw new Error("Sumi-e ink rail is missing");
 }
 
+for (const requiredMotionFoundation of [
+  "--motion-panel: 380ms;",
+  "--ease-editorial: cubic-bezier(0.16, 1, 0.3, 1);",
+  "@keyframes motion-paper-panel-enter",
+  "@keyframes motion-seal-stamp",
+  "@keyframes motion-ink-scan",
+  "@keyframes motion-attention-ping",
+  ".app-startup-notice--loading::before",
+  ".zoid-dropdown.is-open .zoid-dropdown-trigger",
+  ".nav-row:hover::after, .nav-row.active::after",
+  "@media (prefers-reduced-motion: reduce)",
+]) {
+  if (!css.includes(requiredMotionFoundation)) {
+    throw new Error(`Editorial Ink Mechanics motion foundation is missing: ${requiredMotionFoundation}`);
+  }
+}
+
+for (const requiredMotionStateHook of [
+  'data-state={isOpen ? "open" : "closed"}',
+  'app-startup-notice app-startup-notice--loading',
+]) {
+  if (!app.includes(requiredMotionStateHook) && !globalDropdown.includes(requiredMotionStateHook)) {
+    throw new Error(`Motion state hook is missing: ${requiredMotionStateHook}`);
+  }
+}
+
 for (const forbiddenGlobalSumiELeak of ["settings-control-room", "blue-rail", "#3558a2", "rgba(53, 88, 162", "rgba(53,88,162", "#e7edfa", "#fde863"]) {
   if (app.includes(forbiddenGlobalSumiELeak) || css.includes(forbiddenGlobalSumiELeak)) {
     throw new Error(`Global sumi-e chrome must not retain old Kujoyama/control-room styling: ${forbiddenGlobalSumiELeak}`);
@@ -212,6 +238,24 @@ for (const requiredModelQuickSwitch of [
   }
 }
 
+for (const requiredModelPanelRedesign of [
+  "zoid-native-command-panel--model",
+  "model-command-current",
+  "Choose runtime defaults",
+  "model-command-controls",
+  "model-command-contract",
+  "Saved to {modelPanelStorageLabel}",
+  "className=\"command-panel-header\"",
+  ".zoid-native-command-panel--model { width: min(780px, calc(100vw - 44px)); max-width: 780px; padding: 0; overflow: visible;",
+  ".model-command-panel { display: grid; grid-template-columns: 236px minmax(0, 1fr);",
+  ".model-command-current { display: grid; grid-auto-rows: min-content; grid-row: 1 / span 3; grid-template-columns: minmax(0, 1fr);",
+  ".model-command-field { display: grid; grid-template-columns: 104px minmax(0, 1fr);",
+]) {
+  if (!screen.includes(requiredModelPanelRedesign) && !css.includes(requiredModelPanelRedesign)) {
+    throw new Error(`Model controls command panel must be structured and redesigned, not a messy generic panel: ${requiredModelPanelRedesign}`);
+  }
+}
+
 for (const requiredCollapseCss of [".zoid25-shell.sidebar-collapsed", ".sidebar-collapsed .editorial-sidebar", ".sidebar-collapsed .rail-nav", ".rail-nav-item.active", "sidebar-morphing", "cubic-bezier(0.16, 1, 0.3, 1)"]) {
   if (!css.includes(requiredCollapseCss)) {
     throw new Error(`Sidebar collapse styling is missing: ${requiredCollapseCss}`);
@@ -232,14 +276,17 @@ if (!app.includes("window.localStorage.setItem(LAST_WORKSPACE_STORAGE_KEY, activ
 
 for (const requiredRepositoryPersistence of [
   "REPOSITORIES_STORAGE_KEY",
-  "LINKED_REPOSITORY_STORAGE_KEY",
   "getInitialRepositories",
-  "getInitialLinkedRepositoryId",
   "window.localStorage.setItem(REPOSITORIES_STORAGE_KEY, JSON.stringify(repositories))",
-  "window.localStorage.setItem(LINKED_REPOSITORY_STORAGE_KEY, linkedRepositoryId)",
 ]) {
   if (!app.includes(requiredRepositoryPersistence)) {
-    throw new Error(`Scanned repositories and linked repository selection must persist across sessions: ${requiredRepositoryPersistence}`);
+    throw new Error(`Scanned repositories must persist across sessions: ${requiredRepositoryPersistence}`);
+  }
+}
+
+for (const forbiddenGlobalAgentsRepositoryLink of ["LINKED_REPOSITORY_STORAGE_KEY", "getInitialLinkedRepositoryId", "setLinkedRepositoryId", "onLinkedRepositoryIdChange="]) {
+  if (app.includes(forbiddenGlobalAgentsRepositoryLink) || codeWorkspace.includes(forbiddenGlobalAgentsRepositoryLink)) {
+    throw new Error(`Global repository-to-Agents linkage must be removed: ${forbiddenGlobalAgentsRepositoryLink}`);
   }
 }
 
@@ -299,7 +346,7 @@ if (!app.includes("CodeWorkspace") || app.includes("empty-code-workspace")) {
   throw new Error("Code workspace must render the GitHub repositories integration, not the old empty page");
 }
 
-for (const requiredCodeSurface of ["Scan folder", "Clone repo", "Repository list", "Use for Agents", "Search repositories", "repository-search-input", "filteredRepositories", "repositoryScanFeedback", "repo-action-feedback", "repo-scan-feedback", "repository-card--just-added", "Run localhost", "Deploy staging", "Deploy production", "repository-operation-strip"]) {
+for (const requiredCodeSurface of ["Scan folder", "Clone repo", "Repository list", "Search repositories", "repository-search-input", "filteredRepositories", "repositoryScanFeedback", "repo-action-feedback", "repo-scan-feedback", "repository-card--just-added", "Run localhost", "Deploy staging", "Deploy production", "repository-operation-strip"]) {
   if (!codeWorkspace.includes(requiredCodeSurface) && !repositoryOperations.includes(requiredCodeSurface)) {
     throw new Error(`Code workspace is missing repository management surface: ${requiredCodeSurface}`);
   }
@@ -574,6 +621,10 @@ for (const requiredCompleteProfileSurface of [
   "Safety, privacy, voice & notifications",
   "memoryEnabled",
   "userProfileEnabled",
+  "Memory lens limits",
+  "profile-memory-budget-card",
+  "renderNumberField(\"memoryCharLimit\"",
+  "renderNumberField(\"userCharLimit\"",
   "accessMode",
   "approvalMode",
   "gatewayPlatforms",
@@ -595,6 +646,9 @@ for (const requiredProfilePersistence of [
   "typeof parsed !== \"object\" || parsed === null",
   "save_hermes_profile_settings",
   "warm_file_permissions",
+  "memory_char_limit",
+  "user_char_limit",
+  "Memory and user profile character limits must be greater than zero.",
   "--yolo",
   "#[serde(default, rename_all = \"camelCase\")]",
   "isRunningInTauri()",
@@ -720,9 +774,55 @@ for (const requiredSettingsSumiE of [
   "settings-ink-reveal",
   "settings-mark-reveal",
   "scrollbar-color: var(--settings-seal)",
+  "profile-tab-panel-enter",
+  "transition: opacity 220ms ease",
+  "prefers-reduced-motion: reduce",
 ]) {
   if (!app.includes(requiredSettingsSumiE) && !css.includes(requiredSettingsSumiE)) {
     throw new Error(`Settings page must inherit the Brain sumi-e design system: ${requiredSettingsSumiE}`);
+  }
+}
+
+for (const requiredSettingsMotionCaveatCoverage of [
+  "settings-live-row-reveal",
+  "settings-confirm-rule-draw",
+  ".settings-sumi-e .profile-catalog-item input",
+  ".settings-sumi-e .profile-toggle input",
+  ".settings-sumi-e .provider-meta-grid div",
+  ".settings-sumi-e .provider-status-badge",
+  ".settings-sumi-e .archive-session-select input",
+  ".settings-sumi-e .repo-empty-state",
+  ".settings-sumi-e .provider-card:hover .provider-status-badge",
+  ".settings-sumi-e .archived-session-card:hover .archive-session-select",
+  ".settings-sumi-e .provider-card--invalid",
+  ".settings-sumi-e .provider-card--validated",
+]) {
+  if (!css.includes(requiredSettingsMotionCaveatCoverage)) {
+    throw new Error(`Settings hidden/live-data motion caveat coverage is missing: ${requiredSettingsMotionCaveatCoverage}`);
+  }
+}
+
+for (const requiredConditionalStateMotion of [
+  ".automation-sumi-e .automation-modal-error",
+  ".automation-sumi-e .automation-error-line",
+  ".automation-sumi-e .repo-empty-state",
+  ".social-empty",
+]) {
+  if (!css.includes(requiredConditionalStateMotion)) {
+    throw new Error(`Animation pass must cover hidden empty/error/modal states: ${requiredConditionalStateMotion}`);
+  }
+}
+
+const settingsReducedMotionBlock = css.slice(
+  css.indexOf("@media (prefers-reduced-motion: reduce) {\n  .settings-sumi-e"),
+  css.indexOf("/* MaVoid Buffer social dashboard */"),
+);
+for (const requiredSettingsReducedMotionCaveatCoverage of [
+  ".settings-sumi-e .repo-empty-state",
+  ".settings-sumi-e .settings-confirm-panel::before",
+]) {
+  if (!settingsReducedMotionBlock.includes(requiredSettingsReducedMotionCaveatCoverage)) {
+    throw new Error(`Settings reduced-motion caveat coverage is missing: ${requiredSettingsReducedMotionCaveatCoverage}`);
   }
 }
 
@@ -888,8 +988,9 @@ for (const requiredHermesFeedbackPolish of [
   "overflow: visible;",
   "grid-column: 1 / -1;",
   "grid-row: 2;",
-  "grid-template-columns: minmax(220px, 0.72fr) minmax(320px, 1fr) minmax(148px, max-content);",
-  "width: 100%;",
+  "grid-template-columns: max-content minmax(320px, 1fr) minmax(148px, max-content);",
+  "width: max-content;",
+  "max-width: 100%;",
   "gap: 14px;",
   ".agents-sumi-e .repository-link-control--topbar .zoid-dropdown-trigger { min-height: 44px; padding-block: 0; }",
   ".agents-sumi-e .repository-link-control--topbar .zoid-dropdown {",
@@ -941,6 +1042,34 @@ for (const forbiddenHermesNeutralStatColor of [
 ]) {
   if (css.includes(forbiddenHermesNeutralStatColor)) {
     throw new Error(`Hermes stats strip must not keep the old neutral palette: ${forbiddenHermesNeutralStatColor}`);
+  }
+}
+
+for (const pageFeedbackLayoutPolish of [
+  ".ink-rail {\n  position: relative;\n  isolation: isolate;\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  height: 100vh;",
+  ".rail-language {\n  position: absolute;",
+  "bottom: 24px;",
+  "transform: translate3d(-50%, 0, 0);",
+  "transition: opacity 320ms ease, transform 540ms cubic-bezier(0.16, 1, 0.3, 1);",
+  "padding: clamp(14px, 1.5vw, 24px) clamp(16px, 3vw, 48px) 20px;",
+  "min-height: clamp(240px, 22vw, 340px);",
+  "grid-template-columns: minmax(0, 0.72fr) minmax(100px, 0.14fr) auto;",
+  "width: clamp(92px, 11vw, 156px);",
+  "automation-primary-button automation-refresh-button",
+  ".automation-sumi-e .automation-header-actions .automation-refresh-button::after { content: none; }",
+]) {
+  if (!css.includes(pageFeedbackLayoutPolish) && !screen.includes(pageFeedbackLayoutPolish) && !automationsWorkspace.includes(pageFeedbackLayoutPolish)) {
+    throw new Error(`Page feedback layout polish is missing: ${pageFeedbackLayoutPolish}`);
+  }
+}
+
+for (const stalePageFeedbackLayout of [
+  "min-height: clamp(460px, 38vw, 580px);",
+  "width: clamp(118px, 16vw, 218px);",
+  "padding: clamp(20px, 2vw, 32px) clamp(16px, 3vw, 48px) 20px;",
+]) {
+  if (css.includes(stalePageFeedbackLayout)) {
+    throw new Error(`Page feedback layout polish must remove stale oversized rule: ${stalePageFeedbackLayout}`);
   }
 }
 
@@ -1133,8 +1262,42 @@ if (css.includes("min-width: 940px") || css.includes("grid-template-columns: 72p
   throw new Error("Fixed desktop sizing must not remain because it can push the right side offscreen");
 }
 
-if (!css.includes(".chat-stats-strip { display: flex;") || !css.includes(".chat-stats-strip > span:nth-child(3), .chat-stats-strip > span:nth-child(4)")) {
-  throw new Error("Hermes stats strip must size sections by their content instead of uniform columns");
+const cssBlockHas = (selector: string, snippets: string[]) => {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const block = new RegExp(`${escapedSelector}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? "";
+  return snippets.every((snippet) => block.includes(snippet));
+};
+
+if (
+  !cssBlockHas(".chat-stats-strip", [
+    "display: grid",
+    "grid-template-columns: max-content max-content minmax(0, 1fr) minmax(180px, 0.65fr)",
+    "align-items: stretch",
+  ]) ||
+  !cssBlockHas(".chat-stats-strip > span", [
+    "display: flex",
+    "align-items: center",
+    "min-height: 46px",
+    "padding: 0 14px",
+    "white-space: nowrap",
+    "line-height: 1",
+  ]) ||
+  !cssBlockHas(".chat-stats-strip > span b", ["font-size: inherit", "line-height: 1"]) ||
+  !cssBlockHas(".chat-stats-model-copy", ["display: inline-flex", "align-items: center", "line-height: 1"]) ||
+  !cssBlockHas(".agents-sumi-e .chat-stats-strip b", [
+    "display: inline-flex",
+    "align-items: center",
+    "font-family: inherit",
+    "font-size: inherit",
+    "line-height: 1",
+    "letter-spacing: inherit",
+  ]) ||
+  !cssBlockHas(".chat-stats-strip > .chat-stats-model-section", [
+    "display: grid",
+    "grid-template-columns: minmax(0, 1fr) auto",
+  ])
+) {
+  throw new Error("Hermes stats strip must keep metric text baseline-aligned inside compact cells and flexible model/session cells");
 }
 
 for (const requiredChatPolish of [
@@ -1192,7 +1355,7 @@ for (const removedMetric of ["<span>Messages:", "<span>Bridge:", "<span>Operator
   }
 }
 
-if (!client.includes("linkedRepository") || !screen.includes("sendHermesCliMessage(") || !(screen.includes("selectedRepository?.path") || screen.includes("detectedRepository?.path"))) {
+if (!client.includes("linkedRepository") || !(screen.includes("sendHermesCliRunMessage(") || screen.includes("sendHermesCliMessage(")) || !(screen.includes("selectedRepository?.path") || screen.includes("detectedRepository?.path"))) {
   throw new Error("Selected repository path must be passed into the Hermes send path");
 }
 

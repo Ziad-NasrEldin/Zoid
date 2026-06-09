@@ -1,13 +1,14 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashSet};
+use tauri::Emitter;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::env;
 use std::fs;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wait_timeout::ChildExt;
@@ -29,18 +30,74 @@ const IGNORED_SCAN_DIRS: [&str; 7] = [
     ".hermes",
 ];
 
-#[derive(Debug, Default)]
-struct HermesRunControl {
+const MAX_ACTIVE_HERMES_RUNS: usize = 4;
+
+#[derive(Debug, Clone)]
+struct HermesRunSlot {
+    session_id: String,
+    run_id: String,
     starting: bool,
+    started_at: String,
     active_pid: Option<u32>,
     active_process_group: Option<u32>,
     cancel_requested: bool,
     signal_delivered: bool,
 }
 
-fn hermes_run_control() -> &'static Mutex<HermesRunControl> {
-    static CONTROL: OnceLock<Mutex<HermesRunControl>> = OnceLock::new();
-    CONTROL.get_or_init(|| Mutex::new(HermesRunControl::default()))
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HermesRunSnapshot {
+    session_id: String,
+    run_id: String,
+    started_at: String,
+    status: String,
+    pid: Option<u32>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AgentRunEvent {
+    #[serde(rename = "type")]
+    event_type: String,
+    run_id: String,
+    session_id: String,
+    timestamp: String,
+    sequence: u64,
+    channel: Option<String>,
+    chunk: Option<String>,
+    message: Option<String>,
+    exit_code: Option<i32>,
+}
+
+fn emit_agent_run_event(app_handle: Option<&tauri::AppHandle>, event: AgentRunEvent) {
+    if let Some(app_handle) = app_handle {
+        let _ = app_handle.emit("agent-run-event", event);
+    }
+}
+
+impl HermesRunSlot {
+    fn starting(session_id: String, run_id: String) -> Self {
+        Self {
+            session_id,
+            run_id,
+            starting: true,
+            started_at: now_millis_string(),
+            active_pid: None,
+            active_process_group: None,
+            cancel_requested: false,
+            signal_delivered: false,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct HermesRunRegistry {
+    runs: HashMap<String, HermesRunSlot>,
+}
+
+fn hermes_run_registry() -> &'static Mutex<HermesRunRegistry> {
+    static REGISTRY: OnceLock<Mutex<HermesRunRegistry>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HermesRunRegistry::default()))
 }
 
 #[derive(Debug, Serialize)]
@@ -374,6 +431,173 @@ pub struct AutomationList {
     refreshed_at: String,
     hermes_command: Option<String>,
     active_profile: String,
+}
+
+
+const MAVOID_SOCIAL_WORKSPACE_DEFAULT: &str = "/Users/ziadnasreldin/MaVoid/social-automation-buffer";
+const MAVOID_BUFFER_ENDPOINT: &str = "https://api.buffer.com/graphql";
+const MAVOID_CREATOR_JOB_ID: &str = "12fd35ec77e2";
+const MAVOID_MONITOR_JOB_ID: &str = "9562e7cb93b6";
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MavoidSocialCounts {
+    total_posts: usize,
+    needs_review: usize,
+    ready_to_schedule: usize,
+    scheduled_verified: usize,
+    posted: usize,
+    blocked: usize,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MavoidCredentialPresence {
+    buffer_access_token: bool,
+    buffer_organization_id: bool,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MavoidBufferHealth {
+    ok: bool,
+    http_status: Option<i64>,
+    rate_limited: bool,
+    rate_limit_window: Option<String>,
+    credentials_present: MavoidCredentialPresence,
+    last_checked_at: Option<String>,
+    message: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MavoidAutomationStatus {
+    creator_job_id: String,
+    creator_enabled: bool,
+    creator_state: String,
+    creator_next_run_at: Option<String>,
+    monitor_job_id: String,
+    monitor_enabled: bool,
+    monitor_state: String,
+    monitor_next_run_at: Option<String>,
+    cooldown_job_id: Option<String>,
+    cooldown_next_run_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MavoidSocialSlot {
+    id: String,
+    date: String,
+    slot_type: String,
+    local_publish_time: String,
+    utc_publish_time: Option<String>,
+    status: String,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MavoidReviewReport {
+    verdict: String,
+    reviewer: Option<String>,
+    report_path: Option<String>,
+    required_fixes: Vec<String>,
+    approved_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MavoidMediaAsset {
+    path: String,
+    public_url: Option<String>,
+    content_type: Option<String>,
+    bytes: Option<u64>,
+    width: Option<u32>,
+    height: Option<u32>,
+    validated_at: Option<String>,
+    provider: Option<String>,
+    temporary: bool,
+    validation_status: String,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MavoidBufferPost {
+    buffer_id: Option<String>,
+    platform: String,
+    channel_id: Option<String>,
+    channel_display_name: Option<String>,
+    scheduled_at_utc: Option<String>,
+    scheduled_at_local: Option<String>,
+    state: String,
+    read_back_verified_at: Option<String>,
+    published_url: Option<String>,
+    last_error_code: Option<String>,
+    last_error_message: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MavoidReportRef {
+    label: String,
+    path: String,
+    kind: String,
+    created_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MavoidSocialEvent {
+    timestamp: String,
+    actor: String,
+    event_type: String,
+    message: String,
+    severity: String,
+    evidence_path: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MavoidSocialPost {
+    id: String,
+    post_date: String,
+    slot_type: String,
+    title: String,
+    topic_or_news_item: String,
+    caption: String,
+    platforms: Vec<String>,
+    status: String,
+    review: Option<MavoidReviewReport>,
+    media_assets: Vec<MavoidMediaAsset>,
+    buffer_posts: Vec<MavoidBufferPost>,
+    reports: Vec<MavoidReportRef>,
+    events: Vec<MavoidSocialEvent>,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MavoidSocialOverview {
+    workspace_path: String,
+    overall_status: String,
+    active_blocker: Option<String>,
+    buffer_endpoint: String,
+    buffer_health: MavoidBufferHealth,
+    automation: MavoidAutomationStatus,
+    counts: MavoidSocialCounts,
+    next_slots: Vec<MavoidSocialSlot>,
+    latest_report_path: Option<String>,
+    updated_at: String,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MavoidMediaValidation {
+    url: String,
+    ok: bool,
+    http_status: Option<i32>,
+    content_type: Option<String>,
+    bytes: Option<u64>,
+    message: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -1977,7 +2201,8 @@ fn sync_apple_notes_sources_inner() -> Result<BrainStore, String> {
     let synced_at = now_millis_string();
     for source in sources {
         let script = apple_notes_source_notes_script(&source);
-        let result = run_apple_notes_script(&script).and_then(|raw| parse_apple_notes_raw_notes_json(&raw));
+        let result =
+            run_apple_notes_script(&script).and_then(|raw| parse_apple_notes_raw_notes_json(&raw));
         apply_apple_notes_source_sync_result(&mut store, &source, result, &synced_at);
     }
     store.updated_at = synced_at;
@@ -2385,7 +2610,10 @@ fn create_brain_clarifying_session_inner(
     Ok(store)
 }
 
-fn brain_agent_brief_for_session(store: &BrainStore, session: &BrainClarificationSession) -> String {
+fn brain_agent_brief_for_session(
+    store: &BrainStore,
+    session: &BrainClarificationSession,
+) -> String {
     let note = store.notes.iter().find(|note| note.id == session.note_id);
     let note_title = note
         .map(|note| note.title.trim())
@@ -2474,7 +2702,10 @@ fn answer_brain_clarifying_session_in_store(
             });
         }
     }
-    if store.clarification_sessions[session_index].open_questions.is_empty() {
+    if store.clarification_sessions[session_index]
+        .open_questions
+        .is_empty()
+    {
         let session_snapshot = store.clarification_sessions[session_index].clone();
         let brief = brain_agent_brief_for_session(store, &session_snapshot);
         let session = &mut store.clarification_sessions[session_index];
@@ -2494,7 +2725,10 @@ fn answer_brain_clarifying_session_in_store(
     Ok(())
 }
 
-fn answer_brain_clarifying_session_inner(session_id: &str, answer: &str) -> Result<BrainStore, String> {
+fn answer_brain_clarifying_session_inner(
+    session_id: &str,
+    answer: &str,
+) -> Result<BrainStore, String> {
     let mut store = load_brain_store_inner()?;
     let now = now_millis_string();
     answer_brain_clarifying_session_in_store(&mut store, session_id, answer, &now)?;
@@ -2529,17 +2763,26 @@ fn capped_partial_output(value: &str) -> String {
     if value.chars().count() <= MAX_PARTIAL_OUTPUT_CHARS {
         return value.to_string();
     }
-    let clipped = value.chars().take(MAX_PARTIAL_OUTPUT_CHARS).collect::<String>();
+    let clipped = value
+        .chars()
+        .take(MAX_PARTIAL_OUTPUT_CHARS)
+        .collect::<String>();
     format!("{clipped}…")
 }
 
 fn timeout_error_with_partial_output(stdout: &str, stderr: &str) -> String {
     let mut message = "Command timed out before returning a response.".to_string();
     if !stderr.is_empty() {
-        message.push_str(&format!(" Partial stderr: {}", capped_partial_output(stderr)));
+        message.push_str(&format!(
+            " Partial stderr: {}",
+            capped_partial_output(stderr)
+        ));
     }
     if !stdout.is_empty() {
-        message.push_str(&format!(" Partial stdout: {}", capped_partial_output(stdout)));
+        message.push_str(&format!(
+            " Partial stdout: {}",
+            capped_partial_output(stdout)
+        ));
     }
     message
 }
@@ -2618,16 +2861,48 @@ fn signal_hermes_process_group(process_group: u32, signal: &str) -> Result<(), S
     }
 }
 
-fn clear_hermes_run_control(pid: u32) {
-    let mut control = hermes_run_control()
+fn normalize_hermes_run_identifier(value: Option<String>, fallback: &str) -> String {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+fn hermes_run_key(session_id: &str, run_id: &str) -> String {
+    format!("{session_id}\u{1f}{run_id}")
+}
+
+fn list_hermes_run_snapshots_inner() -> Vec<HermesRunSnapshot> {
+    let registry = hermes_run_registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if control.active_pid == Some(pid) || control.starting {
-        control.starting = false;
-        control.active_pid = None;
-        control.active_process_group = None;
-        control.cancel_requested = false;
-        control.signal_delivered = false;
+    registry
+        .runs
+        .values()
+        .map(|slot| HermesRunSnapshot {
+            session_id: slot.session_id.clone(),
+            run_id: slot.run_id.clone(),
+            started_at: slot.started_at.clone(),
+            status: if slot.cancel_requested { "stopping" } else { "running" }.to_string(),
+            pid: slot.active_pid,
+        })
+        .collect()
+}
+
+fn clear_session_hermes_run(session_id: &str, run_id: &str, pid: u32) {
+    let key = hermes_run_key(session_id, run_id);
+    let mut registry = hermes_run_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let should_remove = registry
+        .runs
+        .get(&key)
+        .map(|slot| slot.active_pid == Some(pid) || slot.starting)
+        .unwrap_or(false);
+    if should_remove {
+        registry.runs.remove(&key);
     }
 }
 
@@ -2635,21 +2910,44 @@ fn run_hermes_command_with_cancel(
     command: &mut Command,
     timeout: Duration,
 ) -> Result<(bool, String, String), String> {
+    run_hermes_command_for_session_with_cancel(
+        command,
+        timeout,
+        DEFAULT_HERMES_SESSION.to_string(),
+        "compat-run".to_string(),
+        None,
+    )
+}
+
+fn run_hermes_command_for_session_with_cancel(
+    command: &mut Command,
+    timeout: Duration,
+    session_id: String,
+    run_id: String,
+    app_handle: Option<tauri::AppHandle>,
+) -> Result<(bool, String, String), String> {
+    let run_key = hermes_run_key(&session_id, &run_id);
     {
-        let mut control = hermes_run_control()
+        let mut registry = hermes_run_registry()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if control.starting || control.active_pid.is_some() {
+        if registry
+            .runs
+            .values()
+            .any(|slot| slot.session_id == session_id)
+        {
             return Err(
-                "Hermes is already responding. Stop the current run before starting another one."
+                "Hermes is already responding in this session. Stop the current run before starting another one."
                     .to_string(),
             );
         }
-        control.starting = true;
-        control.active_pid = None;
-        control.active_process_group = None;
-        control.cancel_requested = false;
-        control.signal_delivered = false;
+        if registry.runs.len() >= MAX_ACTIVE_HERMES_RUNS {
+            return Err("Too many Hermes runs are active. Stop an existing run before starting another one.".to_string());
+        }
+        registry.runs.insert(
+            run_key.clone(),
+            HermesRunSlot::starting(session_id.clone(), run_id.clone()),
+        );
     }
 
     #[cfg(unix)]
@@ -2662,30 +2960,71 @@ fn run_hermes_command_with_cancel(
     {
         Ok(child) => child,
         Err(error) => {
-            clear_hermes_run_control(0);
+            clear_session_hermes_run(&session_id, &run_id, 0);
             return Err(format!("Failed to start Hermes command: {error}"));
         }
     };
     let pid = child.id();
     let process_group = pid;
+    let stdout_accumulator = Arc::new(Mutex::new(String::new()));
+    let stderr_accumulator = Arc::new(Mutex::new(String::new()));
+    let event_sequence = Arc::new(Mutex::new(0_u64));
+    emit_agent_run_event(app_handle.as_ref(), AgentRunEvent { event_type: "agent-run-started".to_string(), run_id: run_id.clone(), session_id: session_id.clone(), timestamp: now_millis_string(), sequence: 0, channel: Some("system".to_string()), chunk: None, message: None, exit_code: None });
+
+    let stdout_thread = child.stdout.take().map(|stdout| {
+        let app_handle = app_handle.clone();
+        let session_id = session_id.clone();
+        let run_id = run_id.clone();
+        let output = Arc::clone(&stdout_accumulator);
+        let sequence = Arc::clone(&event_sequence);
+        thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                let chunk = format!("{line}\n");
+                if let Ok(mut content) = output.lock() { content.push_str(&chunk); }
+                let next_sequence = if let Ok(mut guard) = sequence.lock() { *guard += 1; *guard } else { 0 };
+                emit_agent_run_event(app_handle.as_ref(), AgentRunEvent { event_type: "agent-run-output".to_string(), run_id: run_id.clone(), session_id: session_id.clone(), timestamp: now_millis_string(), sequence: next_sequence, channel: Some("stdout".to_string()), chunk: Some(chunk), message: None, exit_code: None });
+            }
+        })
+    });
+    let stderr_thread = child.stderr.take().map(|stderr| {
+        let app_handle = app_handle.clone();
+        let session_id = session_id.clone();
+        let run_id = run_id.clone();
+        let output = Arc::clone(&stderr_accumulator);
+        let sequence = Arc::clone(&event_sequence);
+        thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                let chunk = format!("{line}\n");
+                if let Ok(mut content) = output.lock() { content.push_str(&chunk); }
+                let next_sequence = if let Ok(mut guard) = sequence.lock() { *guard += 1; *guard } else { 0 };
+                emit_agent_run_event(app_handle.as_ref(), AgentRunEvent { event_type: "agent-run-output".to_string(), run_id: run_id.clone(), session_id: session_id.clone(), timestamp: now_millis_string(), sequence: next_sequence, channel: Some("stderr".to_string()), chunk: Some(chunk), message: None, exit_code: None });
+            }
+        })
+    });
 
     let should_deliver_starting_cancel = {
-        let mut control = hermes_run_control()
+        let mut registry = hermes_run_registry()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        control.starting = false;
-        control.active_pid = Some(pid);
-        control.active_process_group = Some(process_group);
-        control.cancel_requested
+        let slot = registry
+            .runs
+            .get_mut(&run_key)
+            .ok_or_else(|| "Hermes run registry lost the active run slot.".to_string())?;
+        slot.starting = false;
+        slot.active_pid = Some(pid);
+        slot.active_process_group = Some(process_group);
+        slot.cancel_requested
     };
 
     if should_deliver_starting_cancel {
         let _ = signal_hermes_process_group(process_group, "-INT");
-        let mut control = hermes_run_control()
+        let mut registry = hermes_run_registry()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if control.active_pid == Some(pid) {
-            control.signal_delivered = true;
+        if let Some(slot) = registry.runs.get_mut(&run_key) {
+            if slot.active_pid == Some(pid) {
+                slot.signal_delivered = true;
+            }
         }
     }
 
@@ -2694,23 +3033,27 @@ fn run_hermes_command_with_cancel(
     let poll_interval = Duration::from_millis(100);
     let cancel_grace_period = Duration::from_secs(3);
 
-    loop {
-        if let Some(_status) = child
+    let status = loop {
+        if let Some(status) = child
             .wait_timeout(poll_interval)
             .map_err(|error| format!("Failed while waiting for Hermes command: {error}"))?
         {
-            break;
+            break status;
         }
 
         let (cancel_requested, signal_delivered, active_process_group) = {
-            let control = hermes_run_control()
+            let registry = hermes_run_registry()
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            (
-                control.active_pid == Some(pid) && control.cancel_requested,
-                control.signal_delivered,
-                control.active_process_group,
-            )
+            if let Some(slot) = registry.runs.get(&run_key) {
+                (
+                    slot.active_pid == Some(pid) && slot.cancel_requested,
+                    slot.signal_delivered,
+                    slot.active_process_group,
+                )
+            } else {
+                (false, false, None)
+            }
         };
 
         if cancel_requested {
@@ -2718,11 +3061,13 @@ fn run_hermes_command_with_cancel(
             if !signal_delivered {
                 if let Some(group) = active_process_group {
                     if signal_hermes_process_group(group, "-INT").is_ok() {
-                        let mut control = hermes_run_control()
+                        let mut registry = hermes_run_registry()
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner());
-                        if control.active_pid == Some(pid) {
-                            control.signal_delivered = true;
+                        if let Some(slot) = registry.runs.get_mut(&run_key) {
+                            if slot.active_pid == Some(pid) {
+                                slot.signal_delivered = true;
+                            }
                         }
                     }
                 }
@@ -2733,7 +3078,7 @@ fn run_hermes_command_with_cancel(
                 }
                 let _ = child.kill();
                 let _ = child.wait();
-                clear_hermes_run_control(pid);
+                clear_session_hermes_run(&session_id, &run_id, pid);
                 return Err("Hermes run was stopped by the user.".to_string());
             }
             continue;
@@ -2745,57 +3090,86 @@ fn run_hermes_command_with_cancel(
             }
             let _ = child.kill();
             let _ = child.wait();
-            clear_hermes_run_control(pid);
+            clear_session_hermes_run(&session_id, &run_id, pid);
             return Err("Hermes command timed out before returning a response.".to_string());
         }
-    }
+    };
 
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("Failed to read Hermes command output: {error}"))?;
+    if let Some(handle) = stdout_thread { let _ = handle.join(); }
+    if let Some(handle) = stderr_thread { let _ = handle.join(); }
+    let stdout = stdout_accumulator.lock().map(|content| content.trim().to_string()).unwrap_or_default();
+    let stderr = stderr_accumulator.lock().map(|content| content.trim().to_string()).unwrap_or_default();
     let was_cancelled = {
-        let mut control = hermes_run_control()
+        let mut registry = hermes_run_registry()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let was_cancelled = control.active_pid == Some(pid) && control.cancel_requested;
-        if control.active_pid == Some(pid) {
-            control.starting = false;
-            control.active_pid = None;
-            control.active_process_group = None;
-            control.cancel_requested = false;
-            control.signal_delivered = false;
-        }
+        let was_cancelled = registry
+            .runs
+            .get(&run_key)
+            .map(|slot| slot.active_pid == Some(pid) && slot.cancel_requested)
+            .unwrap_or(false);
+        registry.runs.remove(&run_key);
         was_cancelled
     };
 
     if was_cancelled {
+        let terminal_sequence = if let Ok(mut guard) = event_sequence.lock() { *guard += 1; *guard } else { 0 };
+        emit_agent_run_event(app_handle.as_ref(), AgentRunEvent { event_type: "agent-run-stopped".to_string(), run_id: run_id.clone(), session_id: session_id.clone(), timestamp: now_millis_string(), sequence: terminal_sequence, channel: Some("system".to_string()), chunk: None, message: Some("Hermes run was stopped by the user.".to_string()), exit_code: None });
         return Err("Hermes run was stopped by the user.".to_string());
     }
 
+    let terminal_sequence = if let Ok(mut guard) = event_sequence.lock() { *guard += 1; *guard } else { 0 };
+    emit_agent_run_event(app_handle.as_ref(), AgentRunEvent { event_type: "agent-run-completed".to_string(), run_id: run_id.clone(), session_id: session_id.clone(), timestamp: now_millis_string(), sequence: terminal_sequence, channel: Some("system".to_string()), chunk: None, message: None, exit_code: status.code() });
     Ok((
-        output.status.success(),
-        String::from_utf8_lossy(&output.stdout).trim().to_string(),
-        String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        status.success(),
+        stdout,
+        stderr,
     ))
 }
 
 fn cancel_active_hermes_run_inner() -> Result<bool, String> {
-    let (pid, process_group, already_delivered) = {
-        let mut control = hermes_run_control()
+    let maybe_first = {
+        let registry = hermes_run_registry()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if control.starting && control.active_pid.is_none() {
-            control.cancel_requested = true;
+        registry
+            .runs
+            .values()
+            .next()
+            .map(|slot| (slot.session_id.clone(), slot.run_id.clone()))
+    };
+    let Some((session_id, run_id)) = maybe_first else {
+        return Ok(false);
+    };
+    cancel_hermes_run_inner(Some(session_id), Some(run_id))
+}
+
+fn cancel_hermes_run_inner(
+    session_id: Option<String>,
+    run_id: Option<String>,
+) -> Result<bool, String> {
+    let session_id = normalize_hermes_run_identifier(session_id, DEFAULT_HERMES_SESSION);
+    let run_id = normalize_hermes_run_identifier(run_id, "compat-run");
+    let run_key = hermes_run_key(&session_id, &run_id);
+    let (pid, process_group, already_delivered) = {
+        let mut registry = hermes_run_registry()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(slot) = registry.runs.get_mut(&run_key) else {
+            return Ok(false);
+        };
+        if slot.starting && slot.active_pid.is_none() {
+            slot.cancel_requested = true;
             return Ok(true);
         }
-        let Some(pid) = control.active_pid else {
+        let Some(pid) = slot.active_pid else {
             return Ok(false);
         };
-        let Some(process_group) = control.active_process_group else {
+        let Some(process_group) = slot.active_process_group else {
             return Ok(false);
         };
-        control.cancel_requested = true;
-        (pid, process_group, control.signal_delivered)
+        slot.cancel_requested = true;
+        (pid, process_group, slot.signal_delivered)
     };
 
     if already_delivered {
@@ -2804,11 +3178,13 @@ fn cancel_active_hermes_run_inner() -> Result<bool, String> {
 
     match signal_hermes_process_group(process_group, "-INT") {
         Ok(()) => {
-            let mut control = hermes_run_control()
+            let mut registry = hermes_run_registry()
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if control.active_pid == Some(pid) {
-                control.signal_delivered = true;
+            if let Some(slot) = registry.runs.get_mut(&run_key) {
+                if slot.active_pid == Some(pid) {
+                    slot.signal_delivered = true;
+                }
             }
             Ok(true)
         }
@@ -2820,7 +3196,7 @@ fn cancel_active_hermes_run_inner() -> Result<bool, String> {
                 .map(|status| !status.success())
                 .unwrap_or(false)
             {
-                clear_hermes_run_control(pid);
+                clear_session_hermes_run(&session_id, &run_id, pid);
                 Ok(false)
             } else {
                 Err(format!("Failed to send Ctrl+C to Hermes run: {error}"))
@@ -3370,6 +3746,7 @@ fn apply_profile_runtime_args_from_settings(
     }
 }
 
+#[cfg(test)]
 fn apply_profile_runtime_args(args: &mut Vec<String>) -> Result<(), String> {
     let settings = load_hermes_profile_settings_inner()?;
     apply_profile_runtime_args_from_settings(args, &settings);
@@ -3424,13 +3801,6 @@ fn prompt_with_enabled_profile_context_from_settings(
     } else {
         format!("{context}\n\n[User message]\n{prompt}")
     }
-}
-
-fn prompt_with_enabled_profile_context(prompt: &str) -> Result<String, String> {
-    let settings = load_hermes_profile_settings_inner()?;
-    Ok(prompt_with_enabled_profile_context_from_settings(
-        prompt, &settings,
-    ))
 }
 
 fn build_profiled_hermes_chat_args(
@@ -3758,13 +4128,16 @@ fn bounded_email_body(value: &str, max_chars: usize) -> String {
 fn send_agent_response_email_notification_inner(
     request: AgentResponseEmailNotificationRequest,
 ) -> Result<AgentResponseEmailNotificationResult, String> {
-    let host = env::var("ZOID_NOTIFY_SMTP_HOST")
-        .map_err(|_| "Email notifications are not configured: set ZOID_NOTIFY_SMTP_HOST.".to_string())?;
+    let host = env::var("ZOID_NOTIFY_SMTP_HOST").map_err(|_| {
+        "Email notifications are not configured: set ZOID_NOTIFY_SMTP_HOST.".to_string()
+    })?;
     let port = env::var("ZOID_NOTIFY_SMTP_PORT").unwrap_or_else(|_| "587".to_string());
-    let username = env::var("ZOID_NOTIFY_SMTP_USERNAME")
-        .map_err(|_| "Email notifications are not configured: set ZOID_NOTIFY_SMTP_USERNAME.".to_string())?;
-    let password = env::var("ZOID_NOTIFY_SMTP_PASSWORD")
-        .map_err(|_| "Email notifications are not configured: set ZOID_NOTIFY_SMTP_PASSWORD.".to_string())?;
+    let username = env::var("ZOID_NOTIFY_SMTP_USERNAME").map_err(|_| {
+        "Email notifications are not configured: set ZOID_NOTIFY_SMTP_USERNAME.".to_string()
+    })?;
+    let password = env::var("ZOID_NOTIFY_SMTP_PASSWORD").map_err(|_| {
+        "Email notifications are not configured: set ZOID_NOTIFY_SMTP_PASSWORD.".to_string()
+    })?;
     let from = env::var("ZOID_NOTIFY_EMAIL_FROM").unwrap_or_else(|_| username.clone());
     let to = request
         .to
@@ -3774,10 +4147,7 @@ fn send_agent_response_email_notification_inner(
     let subject = bounded_email_header(&request.subject, 160);
     let session_title = bounded_email_header(&request.session_title, 160);
     let summary = bounded_email_body(&request.summary, 16 * 1024);
-    let body = format!(
-        "Session: {session_title}\n\n{}\n",
-        summary
-    );
+    let body = format!("Session: {session_title}\n\n{}\n", summary);
 
     let python_script = r#"
 import os
@@ -4882,6 +5252,16 @@ fn save_real_hermes_sources(settings: &HermesProfileSettings) -> Result<(), Stri
     );
     yaml_set(
         &mut config,
+        &["memory", "memory_char_limit"],
+        serde_yaml::Value::Number(serde_yaml::Number::from(settings.memory_char_limit)),
+    );
+    yaml_set(
+        &mut config,
+        &["memory", "user_char_limit"],
+        serde_yaml::Value::Number(serde_yaml::Number::from(settings.user_char_limit)),
+    );
+    yaml_set(
+        &mut config,
         &["checkpoints", "enabled"],
         serde_yaml::Value::Bool(settings.checkpoints_enabled),
     );
@@ -5065,6 +5445,9 @@ fn save_hermes_profile_settings_inner(
             "Invalid voice_preference '{}'. Allowed values: off, tts, voice.",
             settings.voice_preference
         ));
+    }
+    if settings.memory_char_limit == 0 || settings.user_char_limit == 0 {
+        return Err("Memory and user profile character limits must be greater than zero.".to_string());
     }
     let path = hermes_profile_settings_path()?;
     if let Some(parent) = path.parent() {
@@ -5339,6 +5722,222 @@ fn manage_hermes_cron_job_inner(job_id: &str, action: &str) -> Result<Automation
     Ok(refreshed)
 }
 
+
+fn mavoid_social_workspace_path() -> PathBuf {
+    env::var("ZOID_MAVOID_SOCIAL_WORKSPACE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(MAVOID_SOCIAL_WORKSPACE_DEFAULT))
+}
+
+fn json_string(value: &serde_json::Value, key: &str) -> Option<String> {
+    value.get(key).and_then(|item| item.as_str()).map(ToString::to_string)
+}
+
+fn read_json_file(path: &Path) -> Result<serde_json::Value, String> {
+    let content = fs::read_to_string(path).map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+    serde_json::from_str(&content).map_err(|error| format!("Failed to parse {}: {error}", path.display()))
+}
+
+fn mavoid_empty_counts() -> MavoidSocialCounts {
+    MavoidSocialCounts { total_posts: 0, needs_review: 0, ready_to_schedule: 0, scheduled_verified: 0, posted: 0, blocked: 0 }
+}
+
+fn mavoid_unknown_buffer_health(message: Option<String>) -> MavoidBufferHealth {
+    MavoidBufferHealth {
+        ok: false,
+        http_status: None,
+        rate_limited: false,
+        rate_limit_window: None,
+        credentials_present: MavoidCredentialPresence { buffer_access_token: false, buffer_organization_id: false },
+        last_checked_at: None,
+        message,
+    }
+}
+
+fn mavoid_health_from_status(status: &serde_json::Value) -> MavoidBufferHealth {
+    let blocker = json_string(status, "current_blocker").unwrap_or_default();
+    let rate_limited = blocker.contains("RATE_LIMIT_EXCEEDED") || blocker.contains("429");
+    MavoidBufferHealth {
+        ok: !rate_limited && blocker.is_empty(),
+        http_status: if blocker.contains("429") { Some(429) } else { None },
+        rate_limited,
+        rate_limit_window: if blocker.contains("24h") { Some("24h".to_string()) } else { None },
+        credentials_present: MavoidCredentialPresence { buffer_access_token: false, buffer_organization_id: false },
+        last_checked_at: json_string(status, "created_at"),
+        message: if blocker.is_empty() { None } else { Some(blocker) },
+    }
+}
+
+fn mavoid_automation_from_list(status: &serde_json::Value, list: Option<&AutomationList>) -> MavoidAutomationStatus {
+    let status_cron = status.get("cron").unwrap_or(&serde_json::Value::Null);
+    let creator_job_id = json_string(status_cron, "creator_job_id").unwrap_or_else(|| MAVOID_CREATOR_JOB_ID.to_string());
+    let monitor_job_id = json_string(status_cron, "monitor_job_id").unwrap_or_else(|| MAVOID_MONITOR_JOB_ID.to_string());
+    let cooldown_job_id = json_string(status_cron, "cooldown_resume_job_id");
+    let creator = list.and_then(|item| item.jobs.iter().find(|job| job.job_id == creator_job_id));
+    let monitor = list.and_then(|item| item.jobs.iter().find(|job| job.job_id == monitor_job_id));
+    let cooldown = cooldown_job_id.as_ref().and_then(|id| list.and_then(|item| item.jobs.iter().find(|job| &job.job_id == id)));
+    MavoidAutomationStatus {
+        creator_job_id,
+        creator_enabled: creator.map(|job| job.enabled).unwrap_or(false),
+        creator_state: creator.map(|job| job.state.clone()).unwrap_or_else(|| "unknown".to_string()),
+        creator_next_run_at: creator.and_then(|job| job.next_run_at.clone()),
+        monitor_job_id,
+        monitor_enabled: monitor.map(|job| job.enabled).unwrap_or(false),
+        monitor_state: monitor.map(|job| job.state.clone()).unwrap_or_else(|| "unknown".to_string()),
+        monitor_next_run_at: monitor.and_then(|job| job.next_run_at.clone()),
+        cooldown_job_id,
+        cooldown_next_run_at: cooldown.and_then(|job| job.next_run_at.clone()),
+    }
+}
+
+fn mavoid_post_from_manifest(path: &Path) -> Result<MavoidSocialPost, String> {
+    let manifest = read_json_file(path)?;
+    let parent = path.parent().unwrap_or_else(|| Path::new(""));
+    let id = parent.file_name().and_then(|name| name.to_str()).unwrap_or("mavoid-post").to_string();
+    let caption = json_string(&manifest, "caption").unwrap_or_default();
+    let image = json_string(&manifest, "image")
+        .map(PathBuf::from)
+        .filter(|candidate| candidate.exists())
+        .unwrap_or_else(|| parent.join("mavoid-buffer-proof-2026-06-09.png"));
+    let preferred_url = json_string(&manifest, "preferred_public_media_url");
+    let platforms = manifest.get("platforms").and_then(|value| value.as_array()).map(|items| {
+        items.iter().filter_map(|item| item.as_str().map(ToString::to_string)).collect::<Vec<_>>()
+    }).filter(|items| !items.is_empty()).unwrap_or_else(|| vec!["instagram".to_string(), "facebook".to_string(), "linkedin".to_string()]);
+    let verdict = json_string(&manifest, "review_verdict").unwrap_or_else(|| "MISSING".to_string());
+    let review_path = parent.join("review-report.md");
+    let status = if json_string(&manifest, "status").unwrap_or_default().contains("rate_limit") { "rate_limited" } else if verdict == "APPROVED" { "media_hosted" } else { "review_requested" };
+    let mut reports = vec![MavoidReportRef { label: "Manifest".to_string(), path: path.to_string_lossy().to_string(), kind: "generation".to_string(), created_at: None }];
+    if review_path.exists() {
+        reports.push(MavoidReportRef { label: "Review report".to_string(), path: review_path.to_string_lossy().to_string(), kind: "review".to_string(), created_at: None });
+    }
+    Ok(MavoidSocialPost {
+        id,
+        post_date: "2026-06-09".to_string(),
+        slot_type: "manual_campaign".to_string(),
+        title: "Buffer pipeline proof".to_string(),
+        topic_or_news_item: json_string(&manifest, "purpose").unwrap_or_else(|| "Buffer migration proof".to_string()),
+        caption,
+        platforms: platforms.clone(),
+        status: status.to_string(),
+        review: Some(MavoidReviewReport { verdict, reviewer: json_string(&manifest, "reviewer"), report_path: if review_path.exists() { Some(review_path.to_string_lossy().to_string()) } else { None }, required_fixes: Vec::new(), approved_at: None }),
+        media_assets: vec![MavoidMediaAsset { path: image.to_string_lossy().to_string(), public_url: preferred_url, content_type: Some("image/png".to_string()), bytes: fs::metadata(&image).ok().map(|item| item.len()), width: Some(1080), height: Some(1350), validated_at: json_string(&manifest, "updated_at"), provider: Some("public-url".to_string()), temporary: true, validation_status: "valid".to_string() }],
+        buffer_posts: platforms.into_iter().map(|platform| MavoidBufferPost { buffer_id: None, platform, channel_id: None, channel_display_name: None, scheduled_at_utc: None, scheduled_at_local: None, state: "not_created".to_string(), read_back_verified_at: None, published_url: None, last_error_code: Some("RATE_LIMIT_EXCEEDED".to_string()), last_error_message: Some("Buffer rate limit 24h".to_string()) }).collect(),
+        reports,
+        events: vec![MavoidSocialEvent { timestamp: json_string(&manifest, "updated_at").unwrap_or_else(now_millis_string), actor: "zoid".to_string(), event_type: "local_artifact_loaded".to_string(), message: "Loaded from MaVoid Buffer workspace.".to_string(), severity: "info".to_string(), evidence_path: Some(path.to_string_lossy().to_string()) }],
+    })
+}
+
+fn mavoid_social_list_posts_inner() -> Result<Vec<MavoidSocialPost>, String> {
+    let workspace = mavoid_social_workspace_path();
+    let artifacts = workspace.join("artifacts");
+    let mut posts = Vec::new();
+    if artifacts.exists() {
+        for entry in fs::read_dir(&artifacts).map_err(|error| format!("Failed to scan {}: {error}", artifacts.display()))? {
+            let entry = entry.map_err(|error| format!("Failed to read artifact entry: {error}"))?;
+            let manifest = entry.path().join("manifest.json");
+            if manifest.exists() {
+                posts.push(mavoid_post_from_manifest(&manifest)?);
+            }
+        }
+    }
+    posts.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(posts)
+}
+
+fn mavoid_counts(posts: &[MavoidSocialPost]) -> MavoidSocialCounts {
+    let mut counts = mavoid_empty_counts();
+    for post in posts {
+        counts.total_posts += 1;
+        if post.status == "review_requested" || post.status == "request_changes" || post.review.as_ref().map(|review| review.verdict.as_str()) == Some("REQUEST_CHANGES") { counts.needs_review += 1; }
+        if post.status == "approved" || post.status == "media_hosted" { counts.ready_to_schedule += 1; }
+        if post.status == "scheduled_verified" { counts.scheduled_verified += 1; }
+        if post.status == "posted" { counts.posted += 1; }
+        if matches!(post.status.as_str(), "rate_limited" | "media_blocked" | "buffer_failed" | "failed_closed") { counts.blocked += 1; }
+    }
+    counts
+}
+
+fn mavoid_social_overview_with_health(buffer_health_override: Option<MavoidBufferHealth>) -> Result<MavoidSocialOverview, String> {
+    let workspace = mavoid_social_workspace_path();
+    let status_path = workspace.join("STATUS.json");
+    let status = if status_path.exists() { read_json_file(&status_path)? } else { serde_json::json!({}) };
+    let automation_list = list_hermes_automations_inner().ok();
+    let posts = mavoid_social_list_posts_inner().unwrap_or_default();
+    let buffer_health = buffer_health_override.unwrap_or_else(|| if status.is_object() { mavoid_health_from_status(&status) } else { mavoid_unknown_buffer_health(Some("STATUS.json missing".to_string())) });
+    let counts = mavoid_counts(&posts);
+    let overall_status = if buffer_health.rate_limited { "rate_limited" } else if counts.needs_review > 0 { "needs_review" } else if counts.ready_to_schedule > 0 { "ready_to_schedule" } else if counts.total_posts == 0 { "unknown" } else { "healthy" };
+    Ok(MavoidSocialOverview {
+        workspace_path: workspace.to_string_lossy().to_string(),
+        overall_status: overall_status.to_string(),
+        active_blocker: json_string(&status, "current_blocker").or_else(|| buffer_health.message.clone()),
+        buffer_endpoint: MAVOID_BUFFER_ENDPOINT.to_string(),
+        buffer_health,
+        automation: mavoid_automation_from_list(&status, automation_list.as_ref()),
+        counts,
+        next_slots: Vec::new(),
+        latest_report_path: Some(workspace.join("reports/buffer-blocker-fixes-handoff.md").to_string_lossy().to_string()).filter(|path| Path::new(path).exists()),
+        updated_at: now_millis_string(),
+    })
+}
+
+fn mavoid_social_get_post_inner(post_id: &str) -> Result<MavoidSocialPost, String> {
+    mavoid_social_list_posts_inner()?.into_iter().find(|post| post.id == post_id).ok_or_else(|| format!("MaVoid social post not found: {post_id}"))
+}
+
+fn parse_mavoid_buffer_check_output(output: &str) -> MavoidBufferHealth {
+    let parsed: serde_json::Value = serde_json::from_str(output).unwrap_or_else(|_| serde_json::json!({"message": output}));
+    MavoidBufferHealth {
+        ok: parsed.get("ok").and_then(|value| value.as_bool()).unwrap_or(false),
+        http_status: parsed.get("http_status").and_then(|value| value.as_i64()),
+        rate_limited: parsed.get("rate_limited").and_then(|value| value.as_bool()).unwrap_or(false),
+        rate_limit_window: json_string(&parsed, "rate_limit_window"),
+        credentials_present: MavoidCredentialPresence {
+            buffer_access_token: parsed.pointer("/credentials_present/BUFFER_ACCESS_TOKEN").and_then(|value| value.as_bool()).unwrap_or(false),
+            buffer_organization_id: parsed.pointer("/credentials_present/BUFFER_ORGANIZATION_ID").and_then(|value| value.as_bool()).unwrap_or(false),
+        },
+        last_checked_at: Some(now_millis_string()),
+        message: parsed.pointer("/response/errors/0/message").and_then(|value| value.as_str()).map(ToString::to_string).or_else(|| json_string(&parsed, "message")),
+    }
+}
+
+fn mavoid_social_run_buffer_health_check_inner() -> Result<MavoidSocialOverview, String> {
+    let script = mavoid_social_workspace_path().join("scripts/buffer_check.py");
+    let mut command = Command::new("python3");
+    command.arg(&script);
+    let (_success, stdout, stderr) = run_command_with_timeout(&mut command, Duration::from_secs(45))?;
+    let output = if stdout.trim().is_empty() { stderr } else { stdout };
+    let health = parse_mavoid_buffer_check_output(&output);
+    mavoid_social_overview_with_health(Some(health))
+}
+
+fn mavoid_social_manage_automation_inner(action: &str) -> Result<MavoidSocialOverview, String> {
+    let (job_id, cron_action) = match action {
+        "run_creator" => (MAVOID_CREATOR_JOB_ID, "run"),
+        "pause_creator" => (MAVOID_CREATOR_JOB_ID, "pause"),
+        "resume_creator" => (MAVOID_CREATOR_JOB_ID, "resume"),
+        "pause_monitor" => (MAVOID_MONITOR_JOB_ID, "pause"),
+        "resume_monitor" => (MAVOID_MONITOR_JOB_ID, "resume"),
+        _ => return Err(format!("Unsupported MaVoid social automation action: {action}")),
+    };
+    let _ = manage_hermes_cron_job_inner(job_id, cron_action)?;
+    mavoid_social_overview_with_health(None)
+}
+
+fn mavoid_social_validate_media_url_inner(url: &str) -> Result<MavoidMediaValidation, String> {
+    if !url.starts_with("https://") {
+        return Ok(MavoidMediaValidation { url: url.to_string(), ok: false, http_status: None, content_type: None, bytes: None, message: "Only https:// media URLs are allowed.".to_string() });
+    }
+    let mut command = Command::new("curl");
+    command.args(["-L", "-I", "--max-time", "20", url]);
+    let (success, stdout, stderr) = run_command_with_timeout(&mut command, Duration::from_secs(30))?;
+    let output = if stdout.trim().is_empty() { stderr } else { stdout };
+    let status = output.lines().filter_map(|line| line.strip_prefix("HTTP/").and_then(|rest| rest.split_whitespace().next()).and_then(|code| code.parse::<i32>().ok())).last();
+    let content_type = output.lines().find_map(|line| line.to_lowercase().strip_prefix("content-type:").map(|_| line.split_once(':').map(|(_, value)| value.trim().to_string()).unwrap_or_default()));
+    let bytes = output.lines().find_map(|line| line.to_lowercase().strip_prefix("content-length:").and_then(|_| line.split_once(':').and_then(|(_, value)| value.trim().parse::<u64>().ok())));
+    let image = content_type.as_deref().map(|value| value.starts_with("image/png") || value.starts_with("image/jpeg") || value.starts_with("image/webp")).unwrap_or(false);
+    Ok(MavoidMediaValidation { url: url.to_string(), ok: success && status == Some(200) && image, http_status: status, content_type, bytes, message: if success && status == Some(200) && image { "Direct image URL is valid.".to_string() } else { "URL did not validate as a direct public image.".to_string() } })
+}
+
 mod commands {
     use super::*;
 
@@ -5431,15 +6030,30 @@ mod commands {
     }
 
     #[tauri::command]
+    pub async fn list_hermes_cli_runs() -> Result<Vec<HermesRunSnapshot>, String> {
+        Ok(list_hermes_run_snapshots_inner())
+    }
+
+    #[tauri::command]
     pub async fn cancel_hermes_cli_message() -> Result<bool, String> {
         cancel_active_hermes_run_inner()
     }
 
     #[tauri::command]
-    pub async fn send_hermes_cli_message(
+    pub async fn cancel_hermes_cli_run(
+        session_id: Option<String>,
+        run_id: Option<String>,
+    ) -> Result<bool, String> {
+        cancel_hermes_run_inner(session_id, run_id)
+    }
+
+    fn send_hermes_cli_message_inner(
         messages: Vec<HermesCliMessage>,
         linked_repository: Option<String>,
         hermes_session: Option<String>,
+        session_id: Option<String>,
+        run_id: Option<String>,
+        app_handle: Option<tauri::AppHandle>,
     ) -> Result<HermesCliResponse, String> {
         let prompt = messages
             .iter()
@@ -5453,6 +6067,11 @@ mod commands {
             "Hermes CLI was not found. Set ZOID_HERMES_CLI or ensure hermes is on PATH.".to_string()
         })?;
         let session = hermes_session_name();
+        let run_session_id = normalize_hermes_run_identifier(
+            session_id.or_else(|| hermes_session.clone()),
+            &session,
+        );
+        let run_id = normalize_hermes_run_identifier(run_id, "default-run");
         let repository_workdir = resolve_linked_repository_workdir(linked_repository)?;
         let parsed_cli_args = hermes_cli_args_from_prompt(&prompt)?;
         let explicit_hermes_command = parsed_cli_args.is_some();
@@ -5470,9 +6089,12 @@ mod commands {
         }
         command.args(&cli_args);
 
-        let (success, stdout, stderr) = run_hermes_command_with_cancel(
+        let (success, stdout, stderr) = run_hermes_command_for_session_with_cancel(
             &mut command,
             Duration::from_secs(HERMES_TIMEOUT_SECONDS),
+            run_session_id,
+            run_id,
+            app_handle,
         )?;
 
         if !success {
@@ -5499,6 +6121,55 @@ mod commands {
             content: with_terminal_usage(&usage, &content),
             session: returned_session,
         })
+    }
+
+    #[tauri::command]
+    pub async fn send_hermes_cli_message(
+        messages: Vec<HermesCliMessage>,
+        linked_repository: Option<String>,
+        hermes_session: Option<String>,
+        app_handle: tauri::AppHandle,
+    ) -> Result<HermesCliResponse, String> {
+        send_hermes_cli_message_inner(messages, linked_repository, hermes_session, None, None, Some(app_handle))
+    }
+
+    #[cfg(test)]
+    pub async fn send_hermes_cli_message_for_test(
+        messages: Vec<HermesCliMessage>,
+        linked_repository: Option<String>,
+        hermes_session: Option<String>,
+    ) -> Result<HermesCliResponse, String> {
+        send_hermes_cli_message_inner(messages, linked_repository, hermes_session, None, None, None)
+    }
+
+    #[tauri::command]
+    pub async fn send_hermes_cli_run_message(
+        messages: Vec<HermesCliMessage>,
+        linked_repository: Option<String>,
+        hermes_session: Option<String>,
+        session_id: Option<String>,
+        run_id: Option<String>,
+        app_handle: tauri::AppHandle,
+    ) -> Result<HermesCliResponse, String> {
+        send_hermes_cli_message_inner(
+            messages,
+            linked_repository,
+            hermes_session,
+            session_id,
+            run_id,
+            Some(app_handle),
+        )
+    }
+
+    #[cfg(test)]
+    pub async fn send_hermes_cli_run_message_for_test(
+        messages: Vec<HermesCliMessage>,
+        linked_repository: Option<String>,
+        hermes_session: Option<String>,
+        session_id: Option<String>,
+        run_id: Option<String>,
+    ) -> Result<HermesCliResponse, String> {
+        send_hermes_cli_message_inner(messages, linked_repository, hermes_session, session_id, run_id, None)
     }
 
     #[tauri::command]
@@ -5557,6 +6228,37 @@ mod commands {
         action: String,
     ) -> Result<AutomationList, String> {
         manage_hermes_cron_job_inner(&job_id, &action)
+    }
+
+
+    #[tauri::command]
+    pub async fn mavoid_social_get_overview() -> Result<MavoidSocialOverview, String> {
+        mavoid_social_overview_with_health(None)
+    }
+
+    #[tauri::command]
+    pub async fn mavoid_social_list_posts() -> Result<Vec<MavoidSocialPost>, String> {
+        mavoid_social_list_posts_inner()
+    }
+
+    #[tauri::command]
+    pub async fn mavoid_social_get_post(post_id: String) -> Result<MavoidSocialPost, String> {
+        mavoid_social_get_post_inner(&post_id)
+    }
+
+    #[tauri::command]
+    pub async fn mavoid_social_run_buffer_health_check() -> Result<MavoidSocialOverview, String> {
+        mavoid_social_run_buffer_health_check_inner()
+    }
+
+    #[tauri::command]
+    pub async fn mavoid_social_manage_automation(action: String) -> Result<MavoidSocialOverview, String> {
+        mavoid_social_manage_automation_inner(&action)
+    }
+
+    #[tauri::command]
+    pub async fn mavoid_social_validate_media_url(url: String) -> Result<MavoidMediaValidation, String> {
+        mavoid_social_validate_media_url_inner(&url)
     }
 
     #[tauri::command]
@@ -5630,8 +6332,11 @@ pub fn run() {
             commands::answer_brain_clarifying_session,
             commands::list_hermes_slash_commands,
             commands::execute_hermes_slash_command,
+            commands::list_hermes_cli_runs,
             commands::cancel_hermes_cli_message,
+            commands::cancel_hermes_cli_run,
             commands::send_hermes_cli_message,
+            commands::send_hermes_cli_run_message,
             commands::send_agent_response_email_notification,
             commands::list_file_manager_directory,
             commands::scan_github_repositories,
@@ -5640,6 +6345,12 @@ pub fn run() {
             commands::update_github_default_branch,
             commands::list_hermes_automations,
             commands::manage_hermes_cron_job,
+            commands::mavoid_social_get_overview,
+            commands::mavoid_social_list_posts,
+            commands::mavoid_social_get_post,
+            commands::mavoid_social_run_buffer_health_check,
+            commands::mavoid_social_manage_automation,
+            commands::mavoid_social_validate_media_url,
             commands::load_hermes_profile_settings,
             commands::save_hermes_profile_settings,
             commands::warm_file_permissions,
@@ -5792,7 +6503,9 @@ mod tests {
     fn command_timeout_drains_partial_stdout_and_stderr() {
         let started_at = Instant::now();
         let mut command = Command::new("/bin/sh");
-        command.arg("-c").arg("printf partial-out; printf partial-err >&2; sleep 5");
+        command
+            .arg("-c")
+            .arg("printf partial-out; printf partial-err >&2; sleep 5");
         let error = run_command_with_timeout(&mut command, Duration::from_millis(150)).unwrap_err();
         assert!(
             started_at.elapsed() < Duration::from_secs(1),
@@ -5800,8 +6513,14 @@ mod tests {
             started_at.elapsed()
         );
         assert!(error.contains("Command timed out"));
-        assert!(error.contains("partial-out"), "stdout should be drained: {error}");
-        assert!(error.contains("partial-err"), "stderr should be drained: {error}");
+        assert!(
+            error.contains("partial-out"),
+            "stdout should be drained: {error}"
+        );
+        assert!(
+            error.contains("partial-err"),
+            "stderr should be drained: {error}"
+        );
     }
 
     #[test]
@@ -5890,7 +6609,10 @@ mod tests {
         );
         assert_eq!(store.notes[0].title, "Local title");
         assert_eq!(store.notes[0].body, "Local body");
-        assert_eq!(store.notes[0].current_hash, note_content_hash("Local title", "Local body"));
+        assert_eq!(
+            store.notes[0].current_hash,
+            note_content_hash("Local title", "Local body")
+        );
         assert_eq!(store.notes[0].last_synced_title, "Title");
         assert_eq!(store.notes[0].last_synced_body, "Body");
         assert_eq!(store.notes[0].sync_status, "changedInZoid");
@@ -6138,13 +6860,21 @@ Some context #launch https://example.com",
 
     #[test]
     fn brain_extraction_rejects_stale_missing_and_conflicted_notes() {
-        for status in ["changedInApple", "changedInZoid", "conflict", "missingInApple"] {
+        for status in [
+            "changedInApple",
+            "changedInZoid",
+            "conflict",
+            "missingInApple",
+        ] {
             let mut store = BrainStore::default();
             let mut note = brain_note("note-stale", "Stale", "1. Should not extract");
             note.sync_status = status.to_string();
             store.notes.push(note);
             let error = extract_brain_note_in_store(&mut store, "note-stale", "1000").unwrap_err();
-            assert!(error.contains(status), "error should name stale sync status: {error}");
+            assert!(
+                error.contains(status),
+                "error should name stale sync status: {error}"
+            );
             assert!(store.extractions.is_empty());
             assert!(store.task_candidates.is_empty());
         }
@@ -6308,7 +7038,13 @@ Some context #launch https://example.com",
         ));
         extract_brain_note_in_store(&mut store, "note-1", "1000").unwrap();
         let candidate_id = store.task_candidates[0].id.clone();
-        create_brain_clarifying_session_in_store(&mut store, "note-1", vec![candidate_id.clone()], "1001").unwrap();
+        create_brain_clarifying_session_in_store(
+            &mut store,
+            "note-1",
+            vec![candidate_id.clone()],
+            "1001",
+        )
+        .unwrap();
         let session_id = store.clarification_sessions[0].id.clone();
         while !store.clarification_sessions[0].open_questions.is_empty() {
             answer_brain_clarifying_session_in_store(
@@ -6323,7 +7059,9 @@ Some context #launch https://example.com",
         assert_eq!(session.status, "briefReady");
         assert!(session.resolved_brief.contains("# Agent Brief"));
         assert!(session.resolved_brief.contains("Launch note"));
-        assert!(session.resolved_brief.contains("Execution rule: Do not run automatically"));
+        assert!(session
+            .resolved_brief
+            .contains("Execution rule: Do not run automatically"));
         assert_eq!(session.hermes_session_id, None);
         assert_eq!(
             store
@@ -6947,7 +7685,7 @@ Some context #launch https://example.com",
 
         let previous_cli = std::env::var("ZOID_HERMES_CLI").ok();
         std::env::set_var("ZOID_HERMES_CLI", &fake_hermes);
-        let response = tauri::async_runtime::block_on(commands::send_hermes_cli_message(
+        let response = tauri::async_runtime::block_on(commands::send_hermes_cli_message_for_test(
             vec![HermesCliMessage {
                 role: "user".to_string(),
                 content: "pwd".to_string(),
@@ -6969,6 +7707,196 @@ Some context #launch https://example.com",
             .contains(&format!("workdir:{}", expected_repo.display())));
         assert!(!response.content.contains("Terminal command"));
         assert!(!response.content.contains("hermes chat"));
+    }
+
+    #[test]
+    fn hermes_cli_allows_overlapping_runs_for_different_sessions() {
+        let _guard = env_lock();
+        let root = unique_temp_path("hermes-parallel-different-sessions");
+        fs::create_dir_all(&root).unwrap();
+        let fake_hermes = root.join("hermes");
+        let started_a = root.join("started-a");
+        fs::write(
+            &fake_hermes,
+            format!(
+                "#!/bin/bash\nif [ \"$1\" = \"--version\" ]; then echo 'hermes fake'; exit 0; fi\nprompt=\"${{@: -1}}\"\nif [ \"$prompt\" = \"slow-a\" ]; then touch '{}'; sleep 1; echo done-a; exit 0; fi\necho done-$prompt\n",
+                started_a.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&fake_hermes).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&fake_hermes, permissions).unwrap();
+
+        let previous_cli = std::env::var("ZOID_HERMES_CLI").ok();
+        std::env::set_var("ZOID_HERMES_CLI", &fake_hermes);
+        let first = thread::spawn(|| {
+            tauri::async_runtime::block_on(commands::send_hermes_cli_run_message_for_test(
+                vec![HermesCliMessage {
+                    role: "user".to_string(),
+                    content: "hermes chat --query slow-a".to_string(),
+                }],
+                None,
+                None,
+                Some("session-a".to_string()),
+                Some("run-a".to_string()),
+            ))
+        });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !started_a.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(started_a.exists(), "first fake Hermes run did not start");
+        let second = tauri::async_runtime::block_on(commands::send_hermes_cli_run_message_for_test(
+            vec![HermesCliMessage {
+                role: "user".to_string(),
+                content: "hermes chat --query fast-b".to_string(),
+            }],
+            None,
+            None,
+            Some("session-b".to_string()),
+            Some("run-b".to_string()),
+        ))
+        .unwrap();
+        let first = first.join().unwrap().unwrap();
+
+        if let Some(previous_cli) = previous_cli {
+            std::env::set_var("ZOID_HERMES_CLI", previous_cli);
+        } else {
+            std::env::remove_var("ZOID_HERMES_CLI");
+        }
+        let _ = fs::remove_dir_all(&root);
+        assert!(first.content.contains("done-a"));
+        assert!(second.content.contains("done-fast-b"));
+    }
+
+    #[test]
+    fn hermes_cli_rejects_overlapping_runs_in_same_session() {
+        let _guard = env_lock();
+        let root = unique_temp_path("hermes-parallel-same-session");
+        fs::create_dir_all(&root).unwrap();
+        let fake_hermes = root.join("hermes");
+        let started = root.join("started");
+        fs::write(
+            &fake_hermes,
+            format!("#!/bin/bash\nif [ \"$1\" = \"--version\" ]; then echo 'hermes fake'; exit 0; fi\ntouch '{}'; sleep 1; echo done\n", started.display()),
+        ).unwrap();
+        let mut permissions = fs::metadata(&fake_hermes).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&fake_hermes, permissions).unwrap();
+        let previous_cli = std::env::var("ZOID_HERMES_CLI").ok();
+        std::env::set_var("ZOID_HERMES_CLI", &fake_hermes);
+        let first = thread::spawn(|| {
+            tauri::async_runtime::block_on(commands::send_hermes_cli_run_message_for_test(
+                vec![HermesCliMessage {
+                    role: "user".to_string(),
+                    content: "hermes chat --query slow".to_string(),
+                }],
+                None,
+                None,
+                Some("same-session".to_string()),
+                Some("run-1".to_string()),
+            ))
+        });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !started.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(started.exists(), "first fake Hermes run did not start");
+        let rejected = tauri::async_runtime::block_on(commands::send_hermes_cli_run_message_for_test(
+            vec![HermesCliMessage {
+                role: "user".to_string(),
+                content: "hermes chat --query second".to_string(),
+            }],
+            None,
+            None,
+            Some("same-session".to_string()),
+            Some("run-2".to_string()),
+        ))
+        .unwrap_err();
+        assert!(
+            rejected.contains("already responding in this session"),
+            "unexpected rejection: {rejected}"
+        );
+        first.join().unwrap().unwrap();
+        if let Some(previous_cli) = previous_cli {
+            std::env::set_var("ZOID_HERMES_CLI", previous_cli);
+        } else {
+            std::env::remove_var("ZOID_HERMES_CLI");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn hermes_cli_cancellation_is_scoped_to_session_and_run() {
+        let _guard = env_lock();
+        let root = unique_temp_path("hermes-cancel-scoped");
+        fs::create_dir_all(&root).unwrap();
+        let fake_hermes = root.join("hermes");
+        let started_a = root.join("started-a");
+        let started_b = root.join("started-b");
+        fs::write(&fake_hermes, format!("#!/bin/bash\nif [ \"$1\" = \"--version\" ]; then echo 'hermes fake'; exit 0; fi\nprompt=\"${{@: -1}}\"\nif [ \"$prompt\" = \"a\" ]; then touch '{}'; sleep 10; echo done-a; exit 0; fi\ntouch '{}'; sleep 1; echo done-b\n", started_a.display(), started_b.display())).unwrap();
+        let mut permissions = fs::metadata(&fake_hermes).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&fake_hermes, permissions).unwrap();
+        let previous_cli = std::env::var("ZOID_HERMES_CLI").ok();
+        std::env::set_var("ZOID_HERMES_CLI", &fake_hermes);
+        let a = thread::spawn(|| {
+            tauri::async_runtime::block_on(commands::send_hermes_cli_run_message_for_test(
+                vec![HermesCliMessage {
+                    role: "user".to_string(),
+                    content: "hermes chat --query a".to_string(),
+                }],
+                None,
+                None,
+                Some("cancel-a".to_string()),
+                Some("run-a".to_string()),
+            ))
+        });
+        let b = thread::spawn(|| {
+            tauri::async_runtime::block_on(commands::send_hermes_cli_run_message_for_test(
+                vec![HermesCliMessage {
+                    role: "user".to_string(),
+                    content: "hermes chat --query b".to_string(),
+                }],
+                None,
+                None,
+                Some("cancel-b".to_string()),
+                Some("run-b".to_string()),
+            ))
+        });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while (!started_a.exists() || !started_b.exists()) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            started_a.exists() && started_b.exists(),
+            "fake Hermes runs did not both start"
+        );
+        assert!(
+            tauri::async_runtime::block_on(commands::cancel_hermes_cli_run(
+                Some("cancel-a".to_string()),
+                Some("run-a".to_string())
+            ))
+            .unwrap()
+        );
+        let a_error = a.join().unwrap().unwrap_err();
+        let b_response = b.join().unwrap().unwrap();
+        if let Some(previous_cli) = previous_cli {
+            std::env::set_var("ZOID_HERMES_CLI", previous_cli);
+        } else {
+            std::env::remove_var("ZOID_HERMES_CLI");
+        }
+        let _ = fs::remove_dir_all(&root);
+        assert!(
+            a_error.contains("stopped by the user"),
+            "unexpected cancel error: {a_error}"
+        );
+        assert!(
+            b_response.content.contains("done-b"),
+            "scoped cancel killed unrelated run: {}",
+            b_response.content
+        );
     }
 
     #[test]
@@ -7345,7 +8273,7 @@ Some context #launch https://example.com",
 
         let previous_cli = std::env::var("ZOID_HERMES_CLI").ok();
         std::env::set_var("ZOID_HERMES_CLI", &fake_hermes);
-        let response = tauri::async_runtime::block_on(commands::send_hermes_cli_message(
+        let response = tauri::async_runtime::block_on(commands::send_hermes_cli_message_for_test(
             vec![HermesCliMessage {
                 role: "user".to_string(),
                 content: "hermes tools list".to_string(),
@@ -7432,7 +8360,10 @@ stdout:
         assert_eq!(list.jobs.len(), 1);
         assert_eq!(list.jobs[0].job_id, "9562e7cb93b6");
         assert_eq!(list.jobs[0].name, "MaVoid OmniSocials Publish Monitor");
-        assert!(!list.jobs.iter().any(|job| job.job_id.contains("email_retries")));
+        assert!(!list
+            .jobs
+            .iter()
+            .any(|job| job.job_id.contains("email_retries")));
     }
 
     #[test]
@@ -8175,7 +9106,10 @@ exit 2
         let run = manage_hermes_cron_job_inner("abc123def456", "run").unwrap();
         assert!(run.jobs.iter().any(|job| job.job_id == "abc123def456"));
         let removed_list = manage_hermes_cron_job_inner("abc123def456", "remove").unwrap();
-        assert!(!removed_list.jobs.iter().any(|job| job.job_id == "abc123def456"));
+        assert!(!removed_list
+            .jobs
+            .iter()
+            .any(|job| job.job_id == "abc123def456"));
 
         let calls = fs::read_to_string(&log).unwrap();
         for expected in [
