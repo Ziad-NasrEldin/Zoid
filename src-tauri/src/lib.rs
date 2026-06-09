@@ -3961,6 +3961,29 @@ fn remember_file_permission_path(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn is_permission_marker_persistence_error(error: &str) -> bool {
+    error.starts_with("Failed to create permissions marker directory:")
+        || error.starts_with("Failed to save permissions marker:")
+}
+
+fn remember_file_permission_path_best_effort(path: &Path) -> Result<(), String> {
+    match remember_file_permission_path(path) {
+        Ok(()) => Ok(()),
+        Err(error) if is_permission_marker_persistence_error(&error) => {
+            touch_file_permission_path(path).map(|_| ())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn remember_file_permission_path_without_touch_best_effort(path: &Path) -> Result<(), String> {
+    match remember_file_permission_path_without_touch(path) {
+        Ok(()) => Ok(()),
+        Err(error) if is_permission_marker_persistence_error(&error) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 fn remember_file_permission_path_without_touch(path: &Path) -> Result<(), String> {
     let marker_path = file_permission_bootstrap_path()?;
     let marker = load_file_permission_marker(&marker_path);
@@ -4279,7 +4302,7 @@ fn read_default_branch(path: &Path) -> Option<String> {
 }
 
 fn read_repository_details(path: &Path, source: &str) -> Result<CodeRepository, String> {
-    remember_file_permission_path(path)?;
+    remember_file_permission_path_best_effort(path)?;
     if !path.exists() || !path.is_dir() {
         return Err(format!(
             "Repository path must be an existing directory: {}",
@@ -4379,7 +4402,7 @@ fn list_file_manager_directory_inner(
         .filter(|value| !value.trim().is_empty())
         .map(|value| PathBuf::from(value.trim()))
         .unwrap_or(default_file_manager_root()?);
-    remember_file_permission_path(&requested_path)?;
+    remember_file_permission_path_best_effort(&requested_path)?;
 
     let directory_path = requested_path
         .canonicalize()
@@ -4485,7 +4508,7 @@ fn scan_repositories_recursive(
 
 fn scan_repository_folder(folder: &str) -> Result<Vec<CodeRepository>, String> {
     let root = PathBuf::from(folder.trim());
-    remember_file_permission_path(&root)?;
+    remember_file_permission_path_best_effort(&root)?;
     if !root.exists() {
         return Err(format!("Scan folder does not exist: {}", root.display()));
     }
@@ -4576,9 +4599,9 @@ fn update_default_branch(
     if !repository_path.is_empty() {
         let repository_path_buf = PathBuf::from(repository_path);
         if has_remote_url(&remote_url) {
-            remember_file_permission_path_without_touch(&repository_path_buf)?;
+            remember_file_permission_path_without_touch_best_effort(&repository_path_buf)?;
         } else {
-            remember_file_permission_path(&repository_path_buf)?;
+            remember_file_permission_path_best_effort(&repository_path_buf)?;
         }
     }
     let repository_remote_url = remote_url
@@ -4646,9 +4669,9 @@ fn list_remote_branches(
     if !repository_path.is_empty() {
         let repository_path_buf = PathBuf::from(repository_path);
         if has_remote_url(&remote_url) {
-            remember_file_permission_path_without_touch(&repository_path_buf)?;
+            remember_file_permission_path_without_touch_best_effort(&repository_path_buf)?;
         } else {
-            remember_file_permission_path(&repository_path_buf)?;
+            remember_file_permission_path_best_effort(&repository_path_buf)?;
         }
     }
     let repository_remote_url = remote_url
@@ -7285,6 +7308,99 @@ Some context #launch https://example.com",
         assert_eq!(listing.entries[2].kind, "file");
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn file_manager_listing_does_not_fail_when_permission_marker_cannot_persist() {
+        let _guard = env_lock();
+        let root = unique_temp_path("file-manager-marker-denied");
+        let blocked_home = root.join("blocked-hermes-home");
+        fs::create_dir_all(root.join("visible")).unwrap();
+        fs::write(&blocked_home, "not a directory").unwrap();
+        let previous_hermes_home = std::env::var("HERMES_HOME").ok();
+        std::env::set_var("HERMES_HOME", &blocked_home);
+
+        let listing = list_file_manager_directory_inner(Some(root.to_string_lossy().to_string())).unwrap();
+        let expected_path = root.canonicalize().unwrap_or_else(|_| root.clone()).to_string_lossy().to_string();
+
+        if let Some(previous_hermes_home) = previous_hermes_home {
+            std::env::set_var("HERMES_HOME", previous_hermes_home);
+        } else {
+            std::env::remove_var("HERMES_HOME");
+        }
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(listing.path, expected_path);
+    }
+
+    #[test]
+    fn scan_repository_folder_does_not_fail_when_permission_marker_cannot_persist() {
+        let _guard = env_lock();
+        let root = unique_temp_path("repo-scan-marker-denied");
+        let blocked_home = root.join("blocked-hermes-home");
+        let repo = root.join("repo");
+        init_git_repo(&repo);
+        fs::write(&blocked_home, "not a directory").unwrap();
+        let previous_hermes_home = std::env::var("HERMES_HOME").ok();
+        std::env::set_var("HERMES_HOME", &blocked_home);
+
+        let repositories = scan_repository_folder(root.to_str().unwrap()).unwrap();
+
+        if let Some(previous_hermes_home) = previous_hermes_home {
+            std::env::set_var("HERMES_HOME", previous_hermes_home);
+        } else {
+            std::env::remove_var("HERMES_HOME");
+        }
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(repositories.len(), 1);
+    }
+
+    #[test]
+    fn github_branch_lookup_does_not_fail_when_permission_marker_cannot_persist() {
+        let _guard = env_lock();
+        let root = unique_temp_path("branch-marker-denied");
+        let blocked_home = root.join("blocked-hermes-home");
+        let repo = root.join("repo");
+        init_git_repo(&repo);
+        let mut remote = Command::new("git");
+        remote.arg("-C").arg(&repo).args([
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/nousresearch/hermes-agent.git",
+        ]);
+        let (remote_ok, _, remote_stderr) =
+            run_command_with_timeout(&mut remote, Duration::from_secs(20)).unwrap();
+        assert!(remote_ok, "git remote add failed: {remote_stderr}");
+        let fake_gh = root.join("gh");
+        fs::write(&fake_gh, "#!/bin/sh\nif [ \"$1\" = \"api\" ]; then printf 'main\\n'; exit 0; fi\nexit 1\n").unwrap();
+        let mut permissions = fs::metadata(&fake_gh).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&fake_gh, permissions).unwrap();
+        fs::write(&blocked_home, "not a directory").unwrap();
+        let previous_path = std::env::var("PATH").ok();
+        let previous_hermes_home = std::env::var("HERMES_HOME").ok();
+        std::env::set_var("PATH", format!("{}:{}", root.display(), previous_path.clone().unwrap_or_default()));
+        std::env::set_var("HERMES_HOME", &blocked_home);
+
+        let branches = list_remote_branches(
+            repo.to_str().unwrap(),
+            Some("https://github.com/nousresearch/hermes-agent.git".to_string()),
+            Some("main".to_string()),
+        )
+        .unwrap();
+
+        if let Some(previous_path) = previous_path {
+            std::env::set_var("PATH", previous_path);
+        } else {
+            std::env::remove_var("PATH");
+        }
+        if let Some(previous_hermes_home) = previous_hermes_home {
+            std::env::set_var("HERMES_HOME", previous_hermes_home);
+        } else {
+            std::env::remove_var("HERMES_HOME");
+        }
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(branches.len(), 1);
     }
 
     #[test]

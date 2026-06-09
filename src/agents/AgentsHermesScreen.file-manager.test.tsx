@@ -152,6 +152,42 @@ function createDomEvent(type: string, bubbles = true, cancelable = false) {
   return event;
 }
 
+type MockDataTransfer = {
+  dropEffect: string;
+  effectAllowed: string;
+  getData: (type: string) => string;
+  setData: (type: string, value: string) => void;
+};
+
+function createDragEvent(type: string, dataTransfer: MockDataTransfer) {
+  const event = createDomEvent(type, true, true) as Event & { dataTransfer: MockDataTransfer; relatedTarget?: EventTarget | null };
+  Object.defineProperty(event, "dataTransfer", { configurable: true, value: dataTransfer });
+  Object.defineProperty(event, "relatedTarget", { configurable: true, value: null });
+  return event;
+}
+
+function createPointerEvent(type: string, options: { clientX: number; clientY: number; button?: number }) {
+  const event = createDomEvent(type, true, true) as Event & { clientX: number; clientY: number; button: number; pointerId: number; preventDefault: () => void; defaultPrevented: boolean };
+  let defaultPrevented = false;
+  Object.defineProperty(event, "clientX", { configurable: true, value: options.clientX });
+  Object.defineProperty(event, "clientY", { configurable: true, value: options.clientY });
+  Object.defineProperty(event, "button", { configurable: true, value: options.button ?? 0 });
+  Object.defineProperty(event, "pointerId", { configurable: true, value: 1 });
+  Object.defineProperty(event, "defaultPrevented", { configurable: true, get: () => defaultPrevented });
+  event.preventDefault = () => { defaultPrevented = true; };
+  return event;
+}
+
+function createMockDataTransfer(): MockDataTransfer {
+  const data = new Map<string, string>();
+  return {
+    dropEffect: "none",
+    effectAllowed: "all",
+    getData: (type: string) => data.get(type) ?? "",
+    setData: (type: string, value: string) => { data.set(type, value); },
+  };
+}
+
 async function inputTextarea(element: HTMLTextAreaElement, value: string) {
   await act(async () => {
     const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
@@ -240,7 +276,10 @@ async function runFileManagerTests() {
   await click(openButton);
   await settle();
 
-  assert.ok(container.querySelector(".file-manager-sidebar"), "opening should render the right file manager sidebar");
+  const openedSidebar = container.querySelector<HTMLElement>(".file-manager-sidebar");
+  assert.ok(openedSidebar, "opening should render the right file manager sidebar");
+  assert.ok(openedSidebar.classList.contains("file-manager-sidebar--open"), "opened Finder sidebar should receive the visible motion state class");
+  assert.equal(openedSidebar.inert, false, "opened Finder sidebar should remain interactive");
   assert.equal(container.querySelector('[role="tree"]'), null, "Finder list should not claim ARIA tree semantics without tree keyboard handling");
   assert.equal(container.querySelector('[role="treeitem"]'), null, "Finder rows should use native list semantics unless a full ARIA tree is implemented");
   assert.match(container.textContent ?? "", /\/Users\/ziadnasreldin/, "initial root should show the macOS home path");
@@ -252,6 +291,7 @@ async function runFileManagerTests() {
   await click(projectsButton);
   await settle();
   assert.match(container.textContent ?? "", /Readme\.md/, "clicking a folder should expand and render nested contents");
+  assert.ok(container.querySelector(".file-manager-branch"), "expanded folder contents should be wrapped in the animated branch container");
 
   const expandedProjectsButton = [...container.querySelectorAll<HTMLButtonElement>(".file-manager-item--folder")].find((button) => button.textContent?.includes("Projects"));
   assert.ok(expandedProjectsButton, "expanded Projects folder row should remain clickable");
@@ -283,8 +323,22 @@ async function runFileManagerTests() {
   const widthAfter = workspace.style.getPropertyValue("--file-manager-width");
   assert.notEqual(widthAfter, widthBefore, "dragging the Finder resize handle should change the real layout width variable");
 
+  const closeButton = container.querySelector<HTMLButtonElement>('.file-manager-header button[aria-label="Close file manager"]');
+  assert.ok(closeButton, "Finder sidebar should expose a close button");
+  await click(closeButton);
+  const closingSidebar = container.querySelector<HTMLElement>(".file-manager-sidebar");
+  assert.ok(closingSidebar, "closing Finder sidebar should remain mounted for exit motion");
+  assert.ok(closingSidebar.classList.contains("file-manager-sidebar--closed"), "closing Finder sidebar should receive the exit motion state class");
+  assert.equal(closingSidebar.inert, true, "closing Finder sidebar should be inert while exit animation runs");
+
   const css = readFileSync(new URL("../App.css", import.meta.url), "utf8");
   assert.ok(css.includes(".chat-workspace--file-manager-open .file-manager-sidebar { grid-column: 1; grid-row: 3;"), "narrow layout should place the file manager in the real single-column grid instead of implicit column 3");
+  assert.ok(css.includes(".file-manager-sidebar { position: relative;") && css.includes("opacity: 1; pointer-events: auto; transform: translateX(0) scaleX(1);"), "base Finder sidebar style should be visible so missing/open-state timing never leaves it invisible");
+  assert.ok(css.includes(".file-manager-sidebar--closed"), "Finder sidebar should keep a closing state for motion instead of disappearing immediately");
+  assert.ok(css.includes(".file-manager-branch"), "Finder folder expansion should animate nested branch reveal");
+  assert.ok(css.includes("textarea { resize: none; }"), "textareas should not show native resize handles in bottom-anchored composers");
+  assert.ok(css.includes('grid-template-areas: "status commands layout"'), "agent monitor controls should stay in one row");
+  assert.ok(css.includes(".agents-sumi-e .agent-monitor-grid--count-4 .agent-monitor-status-strip { min-height: 18px;"), "four-panel idle/status rows should stay compact");
 
   await act(async () => root.unmount());
   clearMocks();
@@ -324,6 +378,86 @@ async function runSessionsOverflowCueTests() {
     sessionsList.dispatchEvent(createDomEvent("scroll"));
   });
   assert.equal(container.querySelector('button[aria-label="More sessions below"]'), null, "overflow cue should disappear as soon as the user scrolls down");
+
+  await act(async () => root.unmount());
+  clearMocks();
+}
+
+async function runDashboardDragDropTests() {
+  window.localStorage.clear();
+  installMockIpc();
+  const initialSessions: HermesChatSession[] = [
+    { ...createSession("Primary"), id: "drag-a", title: "Primary" },
+    { ...createSession("Secondary"), id: "drag-b", title: "Secondary" },
+    { ...createSession("Third"), id: "drag-c", title: "Third" },
+    { ...createSession("Fourth"), id: "drag-d", title: "Fourth" },
+  ];
+  const { container, root } = await renderHermesScreen({ initialSessions });
+
+  const mainPane = container.querySelector<HTMLElement>(".chat-main-pane--dashboard");
+  assert.ok(mainPane, "dashboard chat pane should be the drop target");
+  const secondaryHandle = container.querySelector<HTMLElement>('[data-dashboard-drag-session="drag-b"]');
+  assert.ok(secondaryHandle, "session portrait icon should expose a drag handle");
+  assert.equal(secondaryHandle.getAttribute("draggable"), "true", "drag must start from the session icon itself");
+
+  const firstDrag = createMockDataTransfer();
+  await act(async () => {
+    secondaryHandle.dispatchEvent(createDragEvent("dragstart", firstDrag));
+    mainPane.dispatchEvent(createDragEvent("dragover", firstDrag));
+  });
+  assert.equal(firstDrag.effectAllowed, "copy", "session icon drag should advertise copy semantics for tiling");
+  assert.equal(firstDrag.dropEffect, "copy", "chat pane should accept the session drop as a split action");
+  assert.ok(mainPane.classList.contains("chat-main-pane--drop-armed"), "chat pane should show a drop-armed state while hovering with a session icon");
+  await act(async () => {
+    mainPane.dispatchEvent(createDragEvent("drop", firstDrag));
+  });
+  await settle();
+
+  let panels = [...container.querySelectorAll<HTMLElement>(".agent-monitor-panel")];
+  assert.equal(panels.length, 2, "dropping one session onto the single main chat should split into two chat panels");
+  assert.ok(container.querySelector(".agent-monitor-grid--split-2.agent-monitor-grid--count-2"), "two dropped chats should use the split-2 dashboard layout");
+  assert.ok(panels[0].classList.contains("agent-monitor-panel--primary"), "the original main chat should become the primary panel");
+  assert.match(container.textContent ?? "", /Secondary/, "the dropped session should become the second panel");
+
+  const thirdHandle = container.querySelector<HTMLElement>('[data-dashboard-drag-session="drag-c"]');
+  assert.ok(thirdHandle, "third session drag handle should render");
+  Object.defineProperty(mainPane, "getBoundingClientRect", {
+    configurable: true,
+    value: () => ({ left: 100, top: 100, right: 900, bottom: 700, width: 800, height: 600, x: 100, y: 100, toJSON: () => ({}) }),
+  });
+  await act(async () => {
+    thirdHandle.dispatchEvent(createPointerEvent("pointerdown", { clientX: 20, clientY: 220 }));
+    window.dispatchEvent(createPointerEvent("pointermove", { clientX: 220, clientY: 220 }));
+  });
+  assert.ok(mainPane.classList.contains("chat-main-pane--drop-armed"), "pointer dragging the session icon over the chat pane should arm the real drop target");
+  await act(async () => {
+    window.dispatchEvent(createPointerEvent("pointerup", { clientX: 220, clientY: 220 }));
+  });
+  await settle();
+
+  panels = [...container.querySelectorAll<HTMLElement>(".agent-monitor-panel")];
+  assert.equal(panels.length, 3, "dropping into two open chats should split into three chat panels");
+  assert.ok(container.querySelector(".agent-monitor-grid--focus-stack.agent-monitor-grid--count-3"), "three chats should use the primary plus two secondary layout");
+
+  const fourthHandle = container.querySelector<HTMLElement>('[data-dashboard-drag-session="drag-d"]');
+  assert.ok(fourthHandle, "fourth session drag handle should render");
+  await act(async () => {
+    fourthHandle.dispatchEvent(createPointerEvent("pointerdown", { clientX: 20, clientY: 280 }));
+    window.dispatchEvent(createPointerEvent("pointermove", { clientX: 260, clientY: 260 }));
+    window.dispatchEvent(createPointerEvent("pointerup", { clientX: 260, clientY: 260 }));
+  });
+  await settle();
+
+  panels = [...container.querySelectorAll<HTMLElement>(".agent-monitor-panel")];
+  assert.equal(panels.length, 4, "dropping into three open chats should split into four chat panels");
+  assert.ok(container.querySelector(".agent-monitor-grid--quad.agent-monitor-grid--count-4"), "four chats should use the quad layout");
+  const persistedDashboard = JSON.parse(window.localStorage.getItem("zoid25:agents-dashboard") ?? "{}");
+  assert.deepEqual(persistedDashboard.tiledSessionIds, ["drag-a", "drag-b", "drag-c", "drag-d"], "drag/drop dashboard layout should persist all four tiled sessions in order");
+  assert.equal(persistedDashboard.primarySessionId, "drag-a", "the original main chat should persist as the primary panel");
+
+  const css = readFileSync(new URL("../App.css", import.meta.url), "utf8");
+  assert.ok(css.includes("agent-dashboard-panel-enter"), "newly split panels should have a smooth enter animation");
+  assert.ok(css.includes("chat-main-pane--drop-armed"), "drop target should have a visible smooth armed state");
 
   await act(async () => root.unmount());
   clearMocks();
@@ -558,6 +692,7 @@ assert.ok(!agentsSource.includes("sendAgentResponseEmailNotification({"), "Agent
 
 await runFileManagerTests();
 await runSessionsOverflowCueTests();
+await runDashboardDragDropTests();
 await runRepositoryLinkingTests();
 await runSlashConfirmationPreservationTests();
 await runQueuedSlashCommandTests();

@@ -28,6 +28,7 @@ const codeWorkspace = readFileSync(new URL("./code/CodeWorkspace.tsx", import.me
 const repositoryClient = readFileSync(new URL("./code/repositoryClient.ts", import.meta.url), "utf8");
 const repositoryOperations = readFileSync(new URL("./code/repositoryOperations.ts", import.meta.url), "utf8");
 const agentNotifications = existsSync(new URL("./agents/agentNotifications.ts", import.meta.url)) ? readFileSync(new URL("./agents/agentNotifications.ts", import.meta.url), "utf8") : "";
+const agentMonitorPanel = readFileSync(new URL("./agents/AgentMonitorPanel.tsx", import.meta.url), "utf8");
 const ruthlessReviewerAgent = existsSync(new URL("./agents/ruthlessReviewerAgent.ts", import.meta.url)) ? readFileSync(new URL("./agents/ruthlessReviewerAgent.ts", import.meta.url), "utf8") : "";
 const brainWorkspace = existsSync(new URL("./brain/BrainWorkspace.tsx", import.meta.url)) ? readFileSync(new URL("./brain/BrainWorkspace.tsx", import.meta.url), "utf8") : "";
 const brainClient = existsSync(new URL("./brain/brainClient.ts", import.meta.url)) ? readFileSync(new URL("./brain/brainClient.ts", import.meta.url), "utf8") : "";
@@ -37,6 +38,31 @@ if (!/<LazyAgentsHermesScreen[\s\S]{0,520}repositories=\{repositories\}[\s\S]{0,
 }
 if (/<LazyAgentsHermesScreen[\s\S]{0,520}(linkedRepositoryId=|onLinkedRepositoryIdChange=)/.test(app)) {
   throw new Error("Global Code repository link must not be passed into Agents chat sessions");
+}
+
+for (const requiredAgentRunCleanupInvariant of [
+  "function clearActiveHermesRunIfCurrent(sessionId: string, assistantId: string)",
+  "activeRun?.assistantId !== assistantId",
+  "clearActiveHermesRunIfCurrent(sendingSessionId, assistantId)",
+]) {
+  if (!screen.includes(requiredAgentRunCleanupInvariant)) {
+    throw new Error(`Agent run cleanup must be scoped to the completed assistant run: ${requiredAgentRunCleanupInvariant}`);
+  }
+}
+if (screen.includes("activeHermesRunsRef.current.delete(sendingSessionId)") || screen.includes("activeHermesRunsRef.current.delete(pending.sessionId)")) {
+  throw new Error("Agent run cleanup must not delete a session's active run without checking the assistant/run id");
+}
+for (const requiredAgentPanelKeyboardInvariant of [
+  "role=\"group\"",
+  "onKeyDown={handlePanelKeyDown}",
+  "event.key === \"Enter\" || event.key === \" \"",
+]) {
+  if (!agentMonitorPanel.includes(requiredAgentPanelKeyboardInvariant)) {
+    throw new Error(`Focusable agent monitor panel must have keyboard-equivalent group focus behavior: ${requiredAgentPanelKeyboardInvariant}`);
+  }
+}
+if (agentMonitorPanel.includes("role=\"button\"") && agentMonitorPanel.includes("agent-monitor-composer")) {
+  throw new Error("Agent monitor panel must not expose the entire composite panel as a button around nested controls");
 }
 
 for (const requiredBrainShell of ["Brain", "Notes sync", "BrainWorkspace", "Apple Notes Brain", "Create Zoid Brain folder"]) {
@@ -1499,6 +1525,10 @@ for (const requiredAutomationCss of [".automations-workspace-shell", ".automatio
   if (!css.includes(requiredAutomationCss)) {
     throw new Error(`Automations styling is missing: ${requiredAutomationCss}`);
   }
+}
+
+if (!css.includes(".automation-sumi-e .automations-workspace-header::before") || !css.includes("bottom: 6px; height: 7px") || css.includes("automations-workspace-header::before { content: \"\"; position: absolute; left: 0; right: clamp(80px, 24vw, 340px); bottom: -1px")) {
+  throw new Error("Automations header brush divider must stay inside the header so it does not overlap the status text below");
 }
 
 if (!backend.includes("protection_reason_for_job") || !backend.includes("Protected cron job cannot be removed") || !backend.includes("watcher_source_status: \"unavailable\"")) {

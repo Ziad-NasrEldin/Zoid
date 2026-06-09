@@ -65,3 +65,37 @@ export function saveAgentDashboardState(state: AgentDashboardStateV1, storage: S
   if (!storage) return;
   storage.setItem(AGENT_DASHBOARD_STORAGE_KEY, JSON.stringify(state));
 }
+
+export function applyDraggedSessionToDashboard(current: AgentDashboardStateV1, draggedSessionId: string, activeSessionId: string | undefined, validSessionIds: readonly string[]): AgentDashboardStateV1 {
+  const validIds = new Set(validSessionIds);
+  if (!validIds.has(draggedSessionId)) return sanitizeAgentDashboardState(current, validSessionIds);
+
+  const existingTiles = current.tiledSessionIds.filter((id) => validIds.has(id)).slice(0, AGENT_DASHBOARD_MAX_TILES);
+  const nextTiles = existingTiles.length === 0 && activeSessionId && validIds.has(activeSessionId) && activeSessionId !== draggedSessionId
+    ? [activeSessionId]
+    : [...existingTiles];
+
+  if (!nextTiles.includes(draggedSessionId) && nextTiles.length < AGENT_DASHBOARD_MAX_TILES) {
+    nextTiles.push(draggedSessionId);
+  }
+
+  const primarySessionId = current.primarySessionId && nextTiles.includes(current.primarySessionId)
+    ? current.primarySessionId
+    : nextTiles[0];
+  const layoutMode: AgentDashboardLayoutMode = nextTiles.length >= 4
+    ? "quad"
+    : nextTiles.length === 3
+      ? "focus-stack"
+      : nextTiles.length === 2
+        ? "split-2"
+        : current.layoutMode;
+
+  return {
+    ...current,
+    tiledSessionIds: nextTiles,
+    primarySessionId,
+    focusedSessionId: nextTiles.includes(draggedSessionId) ? draggedSessionId : current.focusedSessionId ?? primarySessionId,
+    layoutMode,
+    autoPrioritize: false,
+  };
+}

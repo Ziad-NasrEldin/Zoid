@@ -39,8 +39,15 @@ export function AgentMonitorPanel({ session, runtimeState, repository, isPrimary
       void submit();
     }
   }
+  function handlePanelKeyDown(event: KeyboardEvent<HTMLElement>) {
+    if (event.target !== event.currentTarget) return;
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      onFocus(session.id);
+    }
+  }
   return (
-    <article className={`agent-monitor-panel agent-monitor-panel--${runtimeState.status}${isPrimary ? " agent-monitor-panel--primary" : ""}${isFocused ? " agent-monitor-panel--focused" : ""}`} onClick={() => onFocus(session.id)} tabIndex={0} aria-label={`Agent panel ${session.title}`}>
+    <article className={`agent-monitor-panel agent-monitor-panel--${runtimeState.status}${isPrimary ? " agent-monitor-panel--primary" : ""}${isFocused ? " agent-monitor-panel--focused" : ""}`} onClick={() => onFocus(session.id)} onKeyDown={handlePanelKeyDown} role="group" tabIndex={0} aria-label={`Agent panel ${session.title}`}>
       <header className="agent-monitor-panel-header">
         <div>
           <span className="agent-monitor-kicker">{isPrimary ? "Primary" : "Tiled agent"}</span>

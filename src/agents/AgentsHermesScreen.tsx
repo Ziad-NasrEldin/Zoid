@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Archive, BellDot, ChevronDown, ChevronRight, FileText, Folder, FolderTree, Maximize2, Minimize2, Plus, X } from "lucide-react";
-import type { CSSProperties, Dispatch, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode, SetStateAction } from "react";
+import type { CSSProperties, Dispatch, DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode, SetStateAction } from "react";
 import { flushSync } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { ChatComposer, type ChatComposerHandle } from "./ChatComposer";
@@ -19,7 +19,7 @@ import { createSession } from "./sessionState";
 import type { HermesChatSession } from "./sessionState";
 import { AgentMonitorPanel } from "./AgentMonitorPanel";
 import { buildContinuationBrief } from "./continuationBrief";
-import { AGENT_DASHBOARD_MAX_TILES, loadAgentDashboardState, saveAgentDashboardState, type AgentDashboardLayoutMode, type AgentDashboardStateV1 } from "./dashboardLayoutState";
+import { AGENT_DASHBOARD_MAX_TILES, applyDraggedSessionToDashboard, loadAgentDashboardState, saveAgentDashboardState, type AgentDashboardLayoutMode, type AgentDashboardStateV1 } from "./dashboardLayoutState";
 import { MAX_ACTIVE_AGENT_RUNS, listAgentRuns, useAgentRuntime, type AgentRunEvent } from "./useAgentRuntime";
 import { defaultHermesProfileSettings, loadHermesProfileSettings, saveHermesProfileSettings } from "./hermesProfileClient";
 import type { HermesProfileSettings } from "./hermesProfileClient";
@@ -61,6 +61,7 @@ const FILE_MANAGER_MIN_WIDTH = 240;
 const FILE_MANAGER_MAX_WIDTH = 520;
 const FILE_MANAGER_DEFAULT_WIDTH = 336;
 const FILE_MANAGER_WIDTH_STORAGE_KEY = "zoid25:hermes-file-manager-width";
+const SESSION_DASHBOARD_DRAG_TYPE = "application/x-zoid-hermes-session";
 const SESSIONS_RAIL_MORPH_TIMING: KeyframeAnimationOptions = {
   duration: 540,
   easing: "cubic-bezier(0.16, 1, 0.3, 1)",
@@ -230,6 +231,7 @@ const COMMAND_PANEL_COPY: Record<HermesCommandPanel, { title: string; body: stri
 };
 
 type QueuedHermesPrompt = { sessionId: string; content: string; kind: "prompt" | "slash" };
+type DashboardPointerDragState = { sessionId: string; startX: number; startY: number; isDragging: boolean };
 
 export function AgentsHermesScreen({ repositories = [], sessions, activeSessionId, isAgentsWorkspaceOpen = true, onSessionsChange, onActiveSessionIdChange, onArchiveSession, onRepositoryOperationComplete }: AgentsHermesScreenProps) {
   const [cliStatus, setCliStatus] = useState<HermesCliStatus | null>(null);
@@ -262,6 +264,7 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
   const queuedHermesPromptsRef = useRef<QueuedHermesPrompt[]>([]);
   const claimedInitialPromptKeysRef = useRef<Set<string>>(new Set());
   const [fileManagerOpen, setFileManagerOpen] = useState(false);
+  const [fileManagerVisible, setFileManagerVisible] = useState(false);
   const [fileManagerWidth, setFileManagerWidth] = useState(getInitialFileManagerWidth);
   const [fileManagerRootPath, setFileManagerRootPath] = useState<string | null>(null);
   const [fileManagerListings, setFileManagerListings] = useState<Record<string, FileManagerDirectoryListing>>({});
@@ -272,6 +275,7 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
   const messageListRef = useRef<HTMLDivElement>(null);
   const sessionsListRef = useRef<HTMLDivElement>(null);
   const chatWorkspaceRef = useRef<HTMLDivElement>(null);
+  const chatDashboardDropRef = useRef<HTMLDivElement>(null);
   const activeCommandPanelRef = useRef<HTMLElement>(null);
   const pendingConfirmationRef = useRef<HTMLElement>(null);
   const sessionsRef = useRef(sessions);
@@ -279,12 +283,20 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
   const isAgentsWorkspaceOpenRef = useRef(isAgentsWorkspaceOpen);
   const sessionsRailMorphAnimationsRef = useRef<Animation[]>([]);
   const pendingNewSessionActivationRef = useRef<string | null>(null);
+  const dashboardPointerDragRef = useRef<DashboardPointerDragState | null>(null);
+  const suppressNextSessionClickRef = useRef(false);
+  const activeDashboardDragSessionIdRef = useRef<string | null>(null);
+  const dashboardStateRef = useRef<AgentDashboardStateV1 | null>(null);
   const [showSessionsOverflowCue, setShowSessionsOverflowCue] = useState(false);
   const [dashboardState, setDashboardState] = useState<AgentDashboardStateV1>(() => loadAgentDashboardState(sessions.map((session) => session.id)));
   const [expandedModeSessionId, setExpandedModeSessionId] = useState<string | null>(null);
+  const [draggedDashboardSessionId, setDraggedDashboardSessionId] = useState<string | null>(null);
+  const [isChatDropArmed, setIsChatDropArmed] = useState(false);
+  const [dashboardDropCue, setDashboardDropCue] = useState("Drop to split chat");
   const runtime = useAgentRuntime();
 
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
+  useEffect(() => { dashboardStateRef.current = dashboardState; }, [dashboardState]);
   useEffect(() => {
     setDashboardState((current) => loadAgentDashboardState(sessions.map((session) => session.id), { getItem: () => JSON.stringify(current), setItem: () => undefined, removeItem: () => undefined, clear: () => undefined, key: () => null, length: 0 }));
   }, [sessions]);
@@ -514,6 +526,13 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
     onSessionsChange((current) => current.map((session) => session.id === sessionId ? updater(session) : session));
   }
 
+  function clearActiveHermesRunIfCurrent(sessionId: string, assistantId: string) {
+    const activeRun = activeHermesRunsRef.current.get(sessionId);
+    if (activeRun?.assistantId !== assistantId) return false;
+    activeHermesRunsRef.current.delete(sessionId);
+    return true;
+  }
+
   useEffect(() => {
     let cancelled = false;
     void listAgentRuns().then((runs) => {
@@ -576,6 +595,10 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
   }, [runtime]);
 
   function openSession(sessionId: string) {
+    if (suppressNextSessionClickRef.current) {
+      suppressNextSessionClickRef.current = false;
+      return;
+    }
     onSessionsChange((current) => current.map((session) => session.id === sessionId ? clearSessionNeedsReply(session) : session));
     onActiveSessionIdChange(sessionId);
   }
@@ -659,6 +682,15 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
     });
   }
 
+  useEffect(() => {
+    if (fileManagerOpen) {
+      setFileManagerVisible(true);
+      return;
+    }
+    const timeout = window.setTimeout(() => setFileManagerVisible(false), 420);
+    return () => window.clearTimeout(timeout);
+  }, [fileManagerOpen]);
+
   function handleFolderToggle(entry: FileManagerEntry) {
     if (entry.kind !== "directory") return;
     if (expandedFilePaths.has(entry.path)) {
@@ -720,7 +752,7 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
                   {itemContent}
                 </div>
               )}
-              {isDirectory && isExpanded ? renderFileManagerEntries(entry.path, depth + 1) : null}
+              {isDirectory && isExpanded ? <div className="file-manager-branch">{renderFileManagerEntries(entry.path, depth + 1)}</div> : null}
             </li>
           );
         })}
@@ -1078,7 +1110,7 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
     } finally {
       setLastPromptElapsedMs(Date.now() - promptStartedAt);
       setLastPromptStartedAt(null);
-      activeHermesRunsRef.current.delete(sendingSessionId);
+      clearActiveHermesRunIfCurrent(sendingSessionId, assistantId);
       runtime.markSessionRunFinished(sendingSessionId, "idle", undefined, assistantId);
       setIsSending(activeHermesRunsRef.current.size > 0);
       runNextQueuedPrompt(sendingSessionId);
@@ -1114,7 +1146,7 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
     } finally {
       setLastPromptElapsedMs(Date.now() - promptStartedAt);
       setLastPromptStartedAt(null);
-      activeHermesRunsRef.current.delete(pending.sessionId);
+      clearActiveHermesRunIfCurrent(pending.sessionId, pending.assistantId);
       runtime.markSessionRunFinished(pending.sessionId, "idle", undefined, pending.assistantId);
       setIsSending(activeHermesRunsRef.current.size > 0);
       runNextQueuedPrompt(pending.sessionId);
@@ -1131,7 +1163,7 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
       const stopped = await cancelHermesCliRun(run.sessionId, stopRunId);
       if (!stopped) return;
       activeHermesRunsRef.current.set(run.sessionId, { sessionId: run.sessionId, assistantId: stopRunId, stopCopy });
-      activeHermesRunsRef.current.delete(run.sessionId);
+      clearActiveHermesRunIfCurrent(run.sessionId, stopRunId);
       runtime.markSessionRunFinished(run.sessionId, "interrupted", "User stopped the active run.", stopRunId);
       setIsSending(activeHermesRunsRef.current.size > 0);
       updateSession(run.sessionId, (session) => ({
@@ -1278,7 +1310,7 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
     } finally {
       setLastPromptElapsedMs(Date.now() - promptStartedAt);
       setLastPromptStartedAt(null);
-      activeHermesRunsRef.current.delete(sendingSessionId);
+      clearActiveHermesRunIfCurrent(sendingSessionId, assistantId);
       runtime.markSessionRunFinished(sendingSessionId, finalRuntimeStatus, finalRuntimeError, assistantId);
       setIsSending(activeHermesRunsRef.current.size > 0);
       runNextQueuedPrompt(sendingSessionId);
@@ -1424,6 +1456,132 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
     patchDashboard((current) => ({ ...current, layoutMode }));
   }
 
+  function draggedSessionIdFromEvent(event: ReactDragEvent<HTMLElement>) {
+    return activeDashboardDragSessionIdRef.current || event.dataTransfer.getData(SESSION_DASHBOARD_DRAG_TYPE) || event.dataTransfer.getData("text/plain") || draggedDashboardSessionId;
+  }
+
+  function canDropSessionOnDashboard(sessionId: string | null) {
+    return dashboardDropStatus(sessionId).canDrop;
+  }
+
+  function dashboardDropStatus(sessionId: string | null) {
+    const validSessions = sessionsRef.current;
+    const currentDashboard = dashboardStateRef.current ?? dashboardState;
+    const currentTiles = currentDashboard.tiledSessionIds.filter((id) => validSessions.some((session) => session.id === id));
+    if (!sessionId || !validSessions.some((session) => session.id === sessionId)) return { canDrop: false, cue: "Drag a session icon" };
+    if (currentTiles.includes(sessionId)) return { canDrop: false, cue: "Already tiled" };
+    if (currentTiles.length >= AGENT_DASHBOARD_MAX_TILES) return { canDrop: false, cue: "Max 4 panels" };
+    if (currentTiles.length === 0 && activeSessionIdRef.current === sessionId) return { canDrop: false, cue: "Drag another session" };
+    return { canDrop: true, cue: "Drop to split chat" };
+  }
+
+  function applySessionDropToDashboard(sessionId: string | null) {
+    const dropStatus = dashboardDropStatus(sessionId);
+    setDashboardDropCue(dropStatus.cue);
+    if (!dropStatus.canDrop) return;
+    setExpandedModeSessionId(null);
+    setIsChatDropArmed(false);
+    setDraggedDashboardSessionId(null);
+    activeDashboardDragSessionIdRef.current = null;
+    patchDashboard((current) => applyDraggedSessionToDashboard(current, sessionId as string, activeSessionIdRef.current, sessionsRef.current.map((session) => session.id)));
+  }
+
+  function handleSessionIconDragStart(event: ReactDragEvent<HTMLElement>, session: HermesChatSession) {
+    event.stopPropagation();
+    activeDashboardDragSessionIdRef.current = session.id;
+    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setData(SESSION_DASHBOARD_DRAG_TYPE, session.id);
+    event.dataTransfer.setData("text/plain", session.id);
+    setDashboardDropCue(dashboardDropStatus(session.id).cue);
+    setDraggedDashboardSessionId(session.id);
+    setIsChatDropArmed(false);
+  }
+
+  function handleSessionIconPointerDown(event: ReactPointerEvent<HTMLElement>, session: HermesChatSession) {
+    if (event.button !== 0) return;
+    activeDashboardDragSessionIdRef.current = session.id;
+    setDashboardDropCue(dashboardDropStatus(session.id).cue);
+    dashboardPointerDragRef.current = { sessionId: session.id, startX: event.clientX, startY: event.clientY, isDragging: false };
+  }
+
+  function handleSessionIconDragEnd() {
+    dashboardPointerDragRef.current = null;
+    activeDashboardDragSessionIdRef.current = null;
+    setDraggedDashboardSessionId(null);
+    setIsChatDropArmed(false);
+  }
+
+  function handleChatDashboardDragOver(event: ReactDragEvent<HTMLElement>) {
+    const dropStatus = dashboardDropStatus(draggedSessionIdFromEvent(event));
+    if (!activeDashboardDragSessionIdRef.current && !dropStatus.canDrop) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = dropStatus.canDrop ? "copy" : "none";
+    setDashboardDropCue(dropStatus.cue);
+    setIsChatDropArmed(true);
+  }
+
+  function handleChatDashboardDragLeave(event: ReactDragEvent<HTMLElement>) {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+    setIsChatDropArmed(false);
+  }
+
+  function handleChatDashboardDrop(event: ReactDragEvent<HTMLElement>) {
+    const sessionId = draggedSessionIdFromEvent(event);
+    if (!canDropSessionOnDashboard(sessionId)) return;
+    event.preventDefault();
+    applySessionDropToDashboard(sessionId);
+  }
+
+  useEffect(() => {
+    function pointerIsInsideDashboard(event: PointerEvent) {
+      const rect = chatDashboardDropRef.current?.getBoundingClientRect();
+      return Boolean(rect && event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom);
+    }
+
+    function finishPointerDrag() {
+      dashboardPointerDragRef.current = null;
+      activeDashboardDragSessionIdRef.current = null;
+      setDraggedDashboardSessionId(null);
+      setIsChatDropArmed(false);
+    }
+
+    function handleWindowPointerMove(event: PointerEvent) {
+      const dragState = dashboardPointerDragRef.current;
+      if (!dragState) return;
+      const movedFarEnough = Math.hypot(event.clientX - dragState.startX, event.clientY - dragState.startY) > 6;
+      if (!dragState.isDragging && !movedFarEnough) return;
+      if (!dragState.isDragging) {
+        dragState.isDragging = true;
+        activeDashboardDragSessionIdRef.current = dragState.sessionId;
+        suppressNextSessionClickRef.current = true;
+        setDraggedDashboardSessionId(dragState.sessionId);
+      }
+      event.preventDefault();
+      const overDashboard = pointerIsInsideDashboard(event);
+      setDashboardDropCue(dashboardDropStatus(dragState.sessionId).cue);
+      setIsChatDropArmed(overDashboard);
+    }
+
+    function handleWindowPointerUp(event: PointerEvent) {
+      const dragState = dashboardPointerDragRef.current;
+      if (!dragState) return;
+      if (dragState.isDragging) {
+        suppressNextSessionClickRef.current = true;
+        if (pointerIsInsideDashboard(event)) applySessionDropToDashboard(dragState.sessionId);
+      }
+      finishPointerDrag();
+    }
+
+    window.addEventListener("pointermove", handleWindowPointerMove, { passive: false });
+    window.addEventListener("pointerup", handleWindowPointerUp);
+    window.addEventListener("pointercancel", finishPointerDrag);
+    return () => {
+      window.removeEventListener("pointermove", handleWindowPointerMove);
+      window.removeEventListener("pointerup", handleWindowPointerUp);
+      window.removeEventListener("pointercancel", finishPointerDrag);
+    };
+  }, []);
+
   return (
     <section aria-label="Hermes chat" className="hermes-chat-shell hermes-genm agents-sumi-e">
       <header className="hermes-topbar hermes-topbar--status-only">
@@ -1468,7 +1626,7 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
         </div>
       </header>
 
-      <div className={fileManagerOpen ? "chat-workspace chat-workspace--file-manager-open" : "chat-workspace"} ref={chatWorkspaceRef} style={chatWorkspaceStyle}>
+      <div className={fileManagerVisible ? "chat-workspace chat-workspace--file-manager-open" : "chat-workspace"} ref={chatWorkspaceRef} style={chatWorkspaceStyle}>
         <aside className={isSessionsRailCompact ? "sessions-rail sessions-rail--compact" : "sessions-rail"} aria-label="Opened Hermes sessions" data-session-rail-morph-panel>
           <div className="sessions-rail-header">
             <span className="sessions-rail-title">Sessions</span>
@@ -1526,7 +1684,16 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
                       title={isSessionsRailCompact ? session.title : "Double-click or right-click to rename"}
                       type="button"
                     >
-                      <span className="session-tab-icon session-tab-portrait" aria-hidden="true" title={sessionPortrait.name} />
+                      <span
+                        aria-hidden="true"
+                        className="session-tab-icon session-tab-portrait session-tab-drag-handle"
+                        data-dashboard-drag-session={session.id}
+                        draggable
+                        onDragEnd={handleSessionIconDragEnd}
+                        onDragStart={(event) => handleSessionIconDragStart(event, session)}
+                        onPointerDown={(event) => handleSessionIconPointerDown(event, session)}
+                        title={`${sessionPortrait.name} · drag to split chat`}
+                      />
                       <span className="session-tab-title">{session.title}</span>
                       <span className="session-tab-meta">{repositoryLabel(sessionRepository)}</span>
                     </button>
@@ -1576,7 +1743,14 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
           ) : null}
         </aside>
 
-        <div className="chat-main-pane chat-main-pane--dashboard">
+        <div
+          className={isChatDropArmed ? "chat-main-pane chat-main-pane--dashboard chat-main-pane--drop-armed" : "chat-main-pane chat-main-pane--dashboard"}
+          data-drop-cue={dashboardDropCue}
+          onDragLeave={handleChatDashboardDragLeave}
+          onDragOver={handleChatDashboardDragOver}
+          onDrop={handleChatDashboardDrop}
+          ref={chatDashboardDropRef}
+        >
           <div className="agent-monitor-bar" aria-label="Agent monitor controls">
             <div className="agent-monitor-status-cluster" aria-label="Agent dashboard status">
               <span><b>{dashboardState.tiledSessionIds.length}</b> tiled</span>
@@ -1627,7 +1801,7 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
               </div>
             </div>
           ) : (
-            <div className={`agent-monitor-grid agent-monitor-grid--${dashboardState.layoutMode} agent-monitor-grid--count-${dashboardVisibleSessions.length}`}>
+            <div className={`agent-monitor-grid agent-monitor-grid--${dashboardState.layoutMode} agent-monitor-grid--count-${dashboardVisibleSessions.length}${draggedDashboardSessionId ? " agent-monitor-grid--drag-active" : ""}`}>
               {dashboardVisibleSessions.map((session) => {
                 const panelRuntime = runtime.getSessionRuntime(session.id);
                 const isPanelRunning = panelRuntime.status === "running" || panelRuntime.status === "needs-input";
@@ -1659,8 +1833,8 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
             </div>
           )}
         </div>
-        {fileManagerOpen ? (
-          <aside className="file-manager-sidebar" aria-label="macOS Finder file manager">
+        {fileManagerVisible ? (
+          <aside className={`file-manager-sidebar ${fileManagerOpen ? "file-manager-sidebar--open" : "file-manager-sidebar--closed"}`} aria-hidden={!fileManagerOpen} aria-label="macOS Finder file manager" inert={!fileManagerOpen}>
             <button
               aria-label="Drag to resize Finder sidebar"
               aria-orientation="vertical"
