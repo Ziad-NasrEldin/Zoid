@@ -21,6 +21,15 @@ src-tauri/target/
 *.sqlite-*
 *.db
 
+# Local-only workdocs / agent planning artifacts — never push to GitHub
+.local-workdocs/
+.hermes
+.hermes/
+CONTEXT.md
+reports/
+docs/superpowers/plans/
+.codegraph/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
