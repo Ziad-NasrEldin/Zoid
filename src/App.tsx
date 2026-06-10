@@ -538,9 +538,10 @@ function SettingsArchive({ archivedSessions, onRestoreSession, onDeleteArchivedS
       <label className="profile-field profile-number-field" key={key}>
         <span>{label}</span>
         <input
+          inputMode="numeric"
           min={min}
           onChange={(event) => updateNumberSetting(key, event.target.valueAsNumber)}
-          step={100}
+          step={1}
           type="number"
           value={settings[key]}
         />

@@ -651,6 +651,8 @@ for (const requiredCompleteProfileSurface of [
   "profile-memory-budget-card",
   "renderNumberField(\"memoryCharLimit\"",
   "renderNumberField(\"userCharLimit\"",
+  "step={1}",
+  "inputMode=\"numeric\"",
   "accessMode",
   "approvalMode",
   "gatewayPlatforms",

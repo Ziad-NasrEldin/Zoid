@@ -9035,6 +9035,8 @@ telegram:
             hermes_soul: "new soul".to_string(),
             preferences: "User profile".to_string(),
             hermes_memory: "Memory".to_string(),
+            memory_char_limit: 2800,
+            user_char_limit: 1700,
             ..loaded
         })
         .unwrap();
@@ -9066,6 +9068,14 @@ telegram:
         assert_eq!(
             yaml_get_string(&saved_yaml, &["agent", "system_prompt"]).as_deref(),
             Some("new soul")
+        );
+        assert_eq!(
+            yaml_get_u64(&saved_yaml, &["memory", "memory_char_limit"]),
+            Some(2800)
+        );
+        assert_eq!(
+            yaml_get_u64(&saved_yaml, &["memory", "user_char_limit"]),
+            Some(1700)
         );
         assert_eq!(
             yaml_get_bool(&saved_yaml, &["checkpoints", "enabled"]),
