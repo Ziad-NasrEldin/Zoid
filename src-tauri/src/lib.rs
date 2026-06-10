@@ -5761,6 +5761,94 @@ fn read_json_file(path: &Path) -> Result<serde_json::Value, String> {
     serde_json::from_str(&content).map_err(|error| format!("Failed to parse {}: {error}", path.display()))
 }
 
+fn json_string_at(value: &serde_json::Value, pointer: &str) -> Option<String> {
+    value.pointer(pointer).and_then(|item| item.as_str()).map(ToString::to_string)
+}
+
+fn mavoid_status_blocker(status: &serde_json::Value) -> Option<String> {
+    json_string(status, "current_blocker")
+        .or_else(|| json_string_at(status, "/proof_post/not_posted_reason"))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn mavoid_file_modified_iso(path: &Path) -> Option<String> {
+    fs::metadata(path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| format!("{}", duration.as_secs()))
+}
+
+fn parse_mavoid_review_verdict(report_text: &str) -> Option<String> {
+    report_text.lines().find_map(|line| {
+        let value = line.trim().strip_prefix("Verdict:")?.trim();
+        if value.contains("APPROVED") {
+            Some("APPROVED".to_string())
+        } else if value.contains("REQUEST_CHANGES") {
+            Some("REQUEST_CHANGES".to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn parse_mavoid_required_fixes(manifest: &serde_json::Value, report_text: Option<&str>) -> Vec<String> {
+    let mut fixes = manifest.get("required_fixes")
+        .and_then(|value| value.as_array())
+        .map(|items| items.iter().filter_map(|item| item.as_str().map(|value| value.trim().to_string())).filter(|value| !value.is_empty()).collect::<Vec<_>>())
+        .unwrap_or_default();
+    if fixes.is_empty() {
+        if let Some(report_text) = report_text {
+            for line in report_text.lines() {
+                let trimmed = line.trim();
+                if let Some(value) = trimmed.strip_prefix("Required fix:").or_else(|| trimmed.strip_prefix("Required fixes:")) {
+                    let value = value.trim().trim_matches('-').trim();
+                    if !value.is_empty() && !value.eq_ignore_ascii_case("none") {
+                        fixes.push(value.to_string());
+                    }
+                }
+            }
+        }
+    }
+    fixes
+}
+
+fn mavoid_public_media_assets(
+    manifest: &serde_json::Value,
+    image: &Path,
+) -> Vec<MavoidMediaAsset> {
+    let mut urls = Vec::<(String, String)>::new();
+    if let Some(items) = manifest.get("public_media_urls").and_then(|value| value.as_object()) {
+        for (provider, url) in items {
+            if let Some(url) = url.as_str() {
+                urls.push((provider.to_string(), url.to_string()));
+            }
+        }
+    }
+    if urls.is_empty() {
+        if let Some(url) = json_string(manifest, "preferred_public_media_url") {
+            urls.push(("public-url".to_string(), url));
+        }
+    }
+    if urls.is_empty() {
+        urls.push(("local".to_string(), image.to_string_lossy().to_string()));
+    }
+
+    urls.into_iter().map(|(provider, url)| MavoidMediaAsset {
+        path: image.to_string_lossy().to_string(),
+        public_url: Some(url.clone()),
+        content_type: Some("image/png".to_string()),
+        bytes: fs::metadata(image).ok().map(|item| item.len()),
+        width: Some(1080),
+        height: Some(1350),
+        validated_at: json_string(manifest, "updated_at"),
+        provider: Some(provider),
+        temporary: !url.contains("mavoid") && (url.contains("catbox") || url.contains("uguu") || url.contains("tmpfiles")),
+        validation_status: if url.starts_with("https://") { "valid" } else { "unchecked" }.to_string(),
+    }).collect()
+}
+
 fn mavoid_empty_counts() -> MavoidSocialCounts {
     MavoidSocialCounts { total_posts: 0, needs_review: 0, ready_to_schedule: 0, scheduled_verified: 0, posted: 0, blocked: 0 }
 }
@@ -5778,13 +5866,14 @@ fn mavoid_unknown_buffer_health(message: Option<String>) -> MavoidBufferHealth {
 }
 
 fn mavoid_health_from_status(status: &serde_json::Value) -> MavoidBufferHealth {
-    let blocker = json_string(status, "current_blocker").unwrap_or_default();
-    let rate_limited = blocker.contains("RATE_LIMIT_EXCEEDED") || blocker.contains("429");
+    let blocker = mavoid_status_blocker(status).unwrap_or_default();
+    let blocker_lower = blocker.to_lowercase();
+    let rate_limited = blocker_lower.contains("rate_limit") || blocker_lower.contains("rate limit") || blocker.contains("429");
     MavoidBufferHealth {
         ok: !rate_limited && blocker.is_empty(),
         http_status: if blocker.contains("429") { Some(429) } else { None },
         rate_limited,
-        rate_limit_window: if blocker.contains("24h") { Some("24h".to_string()) } else { None },
+        rate_limit_window: if blocker_lower.contains("24h") || blocker_lower.contains("24 hours") { Some("24h".to_string()) } else { None },
         credentials_present: MavoidCredentialPresence { buffer_access_token: false, buffer_organization_id: false },
         last_checked_at: json_string(status, "created_at"),
         message: if blocker.is_empty() { None } else { Some(blocker) },
@@ -5816,37 +5905,66 @@ fn mavoid_automation_from_list(status: &serde_json::Value, list: Option<&Automat
 fn mavoid_post_from_manifest(path: &Path) -> Result<MavoidSocialPost, String> {
     let manifest = read_json_file(path)?;
     let parent = path.parent().unwrap_or_else(|| Path::new(""));
+    let workspace = mavoid_social_workspace_path();
+    let status_json = read_json_file(&workspace.join("STATUS.json")).unwrap_or_else(|_| serde_json::json!({}));
     let id = parent.file_name().and_then(|name| name.to_str()).unwrap_or("mavoid-post").to_string();
     let caption = json_string(&manifest, "caption").unwrap_or_default();
     let image = json_string(&manifest, "image")
         .map(PathBuf::from)
         .filter(|candidate| candidate.exists())
         .unwrap_or_else(|| parent.join("mavoid-buffer-proof-2026-06-09.png"));
-    let preferred_url = json_string(&manifest, "preferred_public_media_url");
     let platforms = manifest.get("platforms").and_then(|value| value.as_array()).map(|items| {
         items.iter().filter_map(|item| item.as_str().map(ToString::to_string)).collect::<Vec<_>>()
     }).filter(|items| !items.is_empty()).unwrap_or_else(|| vec!["instagram".to_string(), "facebook".to_string(), "linkedin".to_string()]);
-    let verdict = json_string(&manifest, "review_verdict").unwrap_or_else(|| "MISSING".to_string());
     let review_path = parent.join("review-report.md");
-    let status = if json_string(&manifest, "status").unwrap_or_default().contains("rate_limit") { "rate_limited" } else if verdict == "APPROVED" { "media_hosted" } else { "review_requested" };
-    let mut reports = vec![MavoidReportRef { label: "Manifest".to_string(), path: path.to_string_lossy().to_string(), kind: "generation".to_string(), created_at: None }];
+    let review_text = if review_path.exists() { fs::read_to_string(&review_path).ok() } else { None };
+    let verdict = review_text.as_deref().and_then(parse_mavoid_review_verdict).or_else(|| json_string(&manifest, "review_verdict")).unwrap_or_else(|| "MISSING".to_string());
+    let manifest_status = json_string(&manifest, "status").unwrap_or_default();
+    let provider_blocker = mavoid_status_blocker(&status_json);
+    let provider_blocker_lower = provider_blocker.as_deref().unwrap_or_default().to_lowercase();
+    let status = if manifest_status.contains("rate_limit") || provider_blocker_lower.contains("rate limit") || provider_blocker_lower.contains("rate_limit") || provider_blocker_lower.contains("429") {
+        "rate_limited"
+    } else if verdict == "APPROVED" {
+        "media_hosted"
+    } else {
+        "review_requested"
+    };
+    let mut reports = vec![MavoidReportRef { label: "Manifest".to_string(), path: path.to_string_lossy().to_string(), kind: "generation".to_string(), created_at: json_string(&manifest, "created_at").or_else(|| mavoid_file_modified_iso(path)) }];
     if review_path.exists() {
-        reports.push(MavoidReportRef { label: "Review report".to_string(), path: review_path.to_string_lossy().to_string(), kind: "review".to_string(), created_at: None });
+        reports.push(MavoidReportRef { label: "Review report".to_string(), path: review_path.to_string_lossy().to_string(), kind: "review".to_string(), created_at: json_string(&manifest, "updated_at").or_else(|| mavoid_file_modified_iso(&review_path)) });
     }
+    if workspace.join("STATUS.json").exists() {
+        reports.push(MavoidReportRef { label: "Runtime status".to_string(), path: workspace.join("STATUS.json").to_string_lossy().to_string(), kind: "monitor".to_string(), created_at: json_string(&status_json, "created_at") });
+    }
+
+    let mut events = vec![
+        MavoidSocialEvent { timestamp: json_string(&manifest, "created_at").unwrap_or_else(now_millis_string), actor: "hermes".to_string(), event_type: "manifest_created".to_string(), message: "Post manifest was created in the local MaVoid social runtime.".to_string(), severity: "info".to_string(), evidence_path: Some(path.to_string_lossy().to_string()) },
+        MavoidSocialEvent { timestamp: json_string(&manifest, "updated_at").unwrap_or_else(now_millis_string), actor: "hermes".to_string(), event_type: format!("review_{}", verdict.to_lowercase()), message: format!("Review verdict read from manifest{}: {verdict}.", if review_path.exists() { " and review-report.md" } else { "" }), severity: if verdict == "APPROVED" { "success".to_string() } else { "warning".to_string() }, evidence_path: if review_path.exists() { Some(review_path.to_string_lossy().to_string()) } else { Some(path.to_string_lossy().to_string()) } },
+    ];
+    if json_string(&manifest, "preferred_public_media_url").is_some() || manifest.get("public_media_urls").is_some() {
+        events.push(MavoidSocialEvent { timestamp: json_string(&manifest, "updated_at").unwrap_or_else(now_millis_string), actor: "hermes".to_string(), event_type: "public_media_urls_ready".to_string(), message: "Public HTTPS media URLs are present for validation/opening.".to_string(), severity: "success".to_string(), evidence_path: Some(path.to_string_lossy().to_string()) });
+    }
+    if let Some(blocker) = provider_blocker.clone() {
+        events.push(MavoidSocialEvent { timestamp: json_string(&status_json, "created_at").unwrap_or_else(now_millis_string), actor: "buffer".to_string(), event_type: "provider_blocker".to_string(), message: blocker, severity: "warning".to_string(), evidence_path: Some(workspace.join("STATUS.json").to_string_lossy().to_string()) });
+    }
+
+    let required_fixes = parse_mavoid_required_fixes(&manifest, review_text.as_deref());
+    let approved_at = if verdict == "APPROVED" { json_string(&manifest, "approved_at").or_else(|| json_string(&manifest, "updated_at")) } else { None };
+
     Ok(MavoidSocialPost {
         id,
-        post_date: "2026-06-09".to_string(),
-        slot_type: "manual_campaign".to_string(),
-        title: "Buffer pipeline proof".to_string(),
+        post_date: json_string(&manifest, "post_date").unwrap_or_else(|| "2026-06-09".to_string()),
+        slot_type: json_string(&manifest, "slot_type").unwrap_or_else(|| "manual_campaign".to_string()),
+        title: json_string(&manifest, "title").unwrap_or_else(|| "Buffer pipeline proof".to_string()),
         topic_or_news_item: json_string(&manifest, "purpose").unwrap_or_else(|| "Buffer migration proof".to_string()),
         caption,
         platforms: platforms.clone(),
         status: status.to_string(),
-        review: Some(MavoidReviewReport { verdict, reviewer: json_string(&manifest, "reviewer"), report_path: if review_path.exists() { Some(review_path.to_string_lossy().to_string()) } else { None }, required_fixes: Vec::new(), approved_at: None }),
-        media_assets: vec![MavoidMediaAsset { path: image.to_string_lossy().to_string(), public_url: preferred_url, content_type: Some("image/png".to_string()), bytes: fs::metadata(&image).ok().map(|item| item.len()), width: Some(1080), height: Some(1350), validated_at: json_string(&manifest, "updated_at"), provider: Some("public-url".to_string()), temporary: true, validation_status: "valid".to_string() }],
-        buffer_posts: platforms.into_iter().map(|platform| MavoidBufferPost { buffer_id: None, platform, channel_id: None, channel_display_name: None, scheduled_at_utc: None, scheduled_at_local: None, state: "not_created".to_string(), read_back_verified_at: None, published_url: None, last_error_code: Some("RATE_LIMIT_EXCEEDED".to_string()), last_error_message: Some("Buffer rate limit 24h".to_string()) }).collect(),
+        review: Some(MavoidReviewReport { verdict, reviewer: json_string(&manifest, "reviewer"), report_path: if review_path.exists() { Some(review_path.to_string_lossy().to_string()) } else { None }, required_fixes, approved_at }),
+        media_assets: mavoid_public_media_assets(&manifest, &image),
+        buffer_posts: platforms.into_iter().map(|platform| MavoidBufferPost { buffer_id: None, platform, channel_id: None, channel_display_name: None, scheduled_at_utc: None, scheduled_at_local: None, state: "not_created".to_string(), read_back_verified_at: json_string(&status_json, "created_at"), published_url: None, last_error_code: provider_blocker.as_ref().filter(|blocker| blocker.contains("RATE_LIMIT") || blocker.contains("429")).map(|_| "RATE_LIMIT_EXCEEDED".to_string()), last_error_message: provider_blocker.clone() }).collect(),
         reports,
-        events: vec![MavoidSocialEvent { timestamp: json_string(&manifest, "updated_at").unwrap_or_else(now_millis_string), actor: "zoid".to_string(), event_type: "local_artifact_loaded".to_string(), message: "Loaded from MaVoid Buffer workspace.".to_string(), severity: "info".to_string(), evidence_path: Some(path.to_string_lossy().to_string()) }],
+        events,
     })
 }
 
@@ -5959,6 +6077,30 @@ fn mavoid_social_validate_media_url_inner(url: &str) -> Result<MavoidMediaValida
     let bytes = output.lines().find_map(|line| line.to_lowercase().strip_prefix("content-length:").and_then(|_| line.split_once(':').and_then(|(_, value)| value.trim().parse::<u64>().ok())));
     let image = content_type.as_deref().map(|value| value.starts_with("image/png") || value.starts_with("image/jpeg") || value.starts_with("image/webp")).unwrap_or(false);
     Ok(MavoidMediaValidation { url: url.to_string(), ok: success && status == Some(200) && image, http_status: status, content_type, bytes, message: if success && status == Some(200) && image { "Direct image URL is valid.".to_string() } else { "URL did not validate as a direct public image.".to_string() } })
+}
+
+fn mavoid_social_open_resource_inner(resource: &str) -> Result<(), String> {
+    let resource = resource.trim();
+    if resource.starts_with("https://") {
+        let mut command = Command::new("open");
+        command.arg(resource);
+        let (success, _stdout, stderr) = run_command_with_timeout(&mut command, Duration::from_secs(10))?;
+        return if success { Ok(()) } else { Err(format!("Failed to open media URL: {stderr}")) };
+    }
+
+    let path = PathBuf::from(resource);
+    if !path.exists() {
+        return Err(format!("Report or media path does not exist: {resource}"));
+    }
+    let canonical = path.canonicalize().map_err(|error| format!("Failed to resolve {resource}: {error}"))?;
+    let workspace = mavoid_social_workspace_path().canonicalize().map_err(|error| format!("Failed to resolve MaVoid social workspace: {error}"))?;
+    if !canonical.starts_with(&workspace) {
+        return Err("Only MaVoid social workspace reports/media can be opened from this panel.".to_string());
+    }
+    let mut command = Command::new("open");
+    command.arg(&canonical);
+    let (success, _stdout, stderr) = run_command_with_timeout(&mut command, Duration::from_secs(10))?;
+    if success { Ok(()) } else { Err(format!("Failed to open local report: {stderr}")) }
 }
 
 mod commands {
@@ -6285,6 +6427,11 @@ mod commands {
     }
 
     #[tauri::command]
+    pub async fn mavoid_social_open_resource(resource: String) -> Result<(), String> {
+        mavoid_social_open_resource_inner(&resource)
+    }
+
+    #[tauri::command]
     pub async fn load_hermes_profile_settings() -> Result<HermesProfileSettings, String> {
         load_hermes_profile_settings_inner()
     }
@@ -6374,6 +6521,7 @@ pub fn run() {
             commands::mavoid_social_run_buffer_health_check,
             commands::mavoid_social_manage_automation,
             commands::mavoid_social_validate_media_url,
+            commands::mavoid_social_open_resource,
             commands::load_hermes_profile_settings,
             commands::save_hermes_profile_settings,
             commands::warm_file_permissions,

@@ -24,3 +24,7 @@ export async function manageMavoidSocialAutomation(action: string): Promise<Mavo
 export async function validateMavoidMediaUrl(url: string): Promise<MavoidMediaValidation> {
   return invoke<MavoidMediaValidation>("mavoid_social_validate_media_url", { url });
 }
+
+export async function openMavoidSocialResource(resource: string): Promise<void> {
+  await invoke("mavoid_social_open_resource", { resource });
+}

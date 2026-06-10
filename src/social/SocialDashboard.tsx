@@ -1,7 +1,7 @@
 import { AlertTriangle, Bot, CalendarClock, CheckCircle2, ExternalLink, RefreshCw, ShieldCheck } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import { getMavoidSocialOverview, listMavoidSocialPosts, manageMavoidSocialAutomation, runMavoidBufferHealthCheck, validateMavoidMediaUrl } from "./socialClient";
-import { canRetryBufferSchedule, deriveMavoidSocialStatusLabel, formatPlatformList } from "./socialViewModel";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { getMavoidSocialOverview, listMavoidSocialPosts, manageMavoidSocialAutomation, openMavoidSocialResource, runMavoidBufferHealthCheck, validateMavoidMediaUrl } from "./socialClient";
+import { canRetryBufferSchedule, formatPlatformList } from "./socialViewModel";
 import type { MavoidSocialOverview, MavoidSocialPost } from "./types";
 
 type LoadState = "idle" | "loading" | "ready" | "error";
@@ -13,6 +13,40 @@ type RhythmStep = {
   state: string;
   detail: string;
 };
+
+type ScheduleDay = {
+  date: string;
+  label: string;
+  posts: MavoidSocialPost[];
+};
+
+const slotTimes: Record<MavoidSocialPost["slotType"], string> = {
+  ai_intel: "10:00",
+  enterprise_carousel: "18:00",
+  manual_campaign: "Planned",
+};
+
+function dateLabel(date: string): string {
+  const parsed = new Date(`${date}T12:00:00`);
+  if (Number.isNaN(parsed.getTime())) return date;
+  return parsed.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+}
+
+function addDays(date: string, days: number): string {
+  const parsed = new Date(`${date}T12:00:00`);
+  if (Number.isNaN(parsed.getTime())) return date;
+  parsed.setDate(parsed.getDate() + days);
+  return parsed.toISOString().slice(0, 10);
+}
+
+function scheduleDays(posts: MavoidSocialPost[]): ScheduleDay[] {
+  const sortedDates = posts.map((post) => post.postDate).filter(Boolean).sort();
+  const start = sortedDates[0] ?? new Date().toISOString().slice(0, 10);
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = addDays(start, index);
+    return { date, label: dateLabel(date), posts: posts.filter((post) => post.postDate === date) };
+  });
+}
 
 function bridgeErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -31,7 +65,9 @@ function neutralizeProviderCopy(value: string | null | undefined): string {
 }
 
 function displayStatus(value: string | null | undefined) {
-  return neutralizeProviderCopy(value?.replace(/_/g, " ") ?? "waiting");
+  const neutral = neutralizeProviderCopy(value?.replace(/_/g, " ") ?? "waiting").trim();
+  if (/^rate limited$/i.test(neutral)) return "Rate-limited";
+  return neutral;
 }
 
 function formatBytes(bytes: number | null | undefined): string {
@@ -41,9 +77,14 @@ function formatBytes(bytes: number | null | undefined): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function openExternal(url: string | null | undefined) {
+async function openExternal(url: string | null | undefined) {
   if (!url || !/^https:\/\//i.test(url)) return;
-  window.open(url, "_blank", "noopener,noreferrer");
+  await openMavoidSocialResource(url);
+}
+
+async function openResource(resource: string | null | undefined) {
+  if (!resource) return;
+  await openMavoidSocialResource(resource);
 }
 
 function canOpenExternal(url: string | null | undefined): boolean {
@@ -61,6 +102,19 @@ function safeLabel(value: string | null | undefined, fallback = "—") {
 function safePathLabel(path: string | null | undefined): string {
   if (!path) return "—";
   return canOpenExternal(path) ? path : "Local report path available";
+}
+
+function reportSourceLabel(path: string | null | undefined): string {
+  if (!path) return "No report file linked";
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts.slice(-2).join("/") || path;
+}
+
+function providerRefreshCadence(overview: MavoidSocialOverview | null): string {
+  if (!overview) return "Refresh reads local state now; provider checks run only on the button or Hermes monitor.";
+  const providerChecked = overview.bufferHealth.lastCheckedAt ?? "not checked by provider API in this view";
+  const next = overview.automation.cooldownNextRunAt ?? overview.automation.monitorNextRunAt;
+  return `Provider/API checked: ${providerChecked}. Local state refreshed: ${overview.updatedAt}. Next automatic check: ${next ?? "not scheduled"}. Use Check provider API for an immediate provider re-check.`;
 }
 
 function rhythmSteps(overview: MavoidSocialOverview | null, selectedPost: MavoidSocialPost | null): RhythmStep[] {
@@ -97,6 +151,7 @@ export function SocialDashboard() {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [activeSection, setActiveSection] = useState("social-summary");
 
   async function refresh() {
     setLoadState("loading");
@@ -118,6 +173,17 @@ export function SocialDashboard() {
   const selectedPost = useMemo(() => posts.find((post) => post.id === selectedPostId) ?? posts[0] ?? null, [posts, selectedPostId]);
   const retryState = overview && selectedPost ? canRetryBufferSchedule(overview, selectedPost) : { ok: false, reason: "No selected post." };
   const rhythm = useMemo(() => rhythmSteps(overview, selectedPost), [overview, selectedPost]);
+  const weekSchedule = useMemo(() => scheduleDays(posts), [posts]);
+  const summaryRef = useRef<HTMLElement | null>(null);
+  const scheduleRef = useRef<HTMLElement | null>(null);
+  const mediaRef = useRef<HTMLElement | null>(null);
+  const platformsRef = useRef<HTMLElement | null>(null);
+  const reportsRef = useRef<HTMLElement | null>(null);
+
+  function scrollToSection(ref: RefObject<HTMLElement | null>, sectionId: string) {
+    setActiveSection(sectionId);
+    ref.current?.scrollIntoView({ block: "start", behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  }
 
   async function runHealthCheck() {
     setBusyAction("health");
@@ -178,12 +244,6 @@ export function SocialDashboard() {
           <p className="social-reference-line">08:00 creator · 10:00 daily intel · 18:00 evening publish read-back</p>
         </div>
         <div className="social-ink-mark" aria-hidden="true"><span /><span /><span /></div>
-        <div className={`social-provider-card social-provider-card--${overview?.overallStatus ?? "unknown"}`}>
-          <ShieldCheck aria-hidden="true" size={20} />
-          <span>Provider read-back</span>
-          <strong>{overview ? deriveMavoidSocialStatusLabel(overview) : loadState}</strong>
-          <small>{neutralizeProviderCopy(overview?.activeBlocker) || "Provider state comes from the local social workspace."}</small>
-        </div>
       </header>
 
       <div className="social-rhythm-lane" aria-label="Daily automation rhythm">
@@ -209,15 +269,37 @@ export function SocialDashboard() {
         <button disabled={Boolean(busyAction)} onClick={() => automation(overview?.automation.creatorEnabled ? "pause_creator" : "resume_creator")} type="button">
           <CalendarClock aria-hidden="true" size={16} /> {overview?.automation.creatorEnabled ? "Pause creator" : "Resume creator"}
         </button>
-        <button disabled={Boolean(busyAction)} onClick={() => automation("pause_monitor")} type="button">
-          <CalendarClock aria-hidden="true" size={16} /> Pause monitor
-        </button>
-        <button disabled={Boolean(busyAction)} onClick={() => automation("resume_monitor")} type="button">
-          <CalendarClock aria-hidden="true" size={16} /> Resume monitor
-        </button>
+        {overview?.automation.monitorEnabled ? (
+          <button disabled={Boolean(busyAction)} onClick={() => automation("pause_monitor")} type="button">
+            <CalendarClock aria-hidden="true" size={16} /> Pause monitor
+          </button>
+        ) : (
+          <button disabled={Boolean(busyAction)} onClick={() => automation("resume_monitor")} type="button">
+            <CalendarClock aria-hidden="true" size={16} /> Resume monitor
+          </button>
+        )}
         <button disabled={!selectedPostHasSafeMedia || Boolean(busyAction)} onClick={validateSelectedMedia} type="button"><ShieldCheck aria-hidden="true" size={16} /> Validate media</button>
-        <button disabled={!canOpenExternal(overview?.latestReportPath)} onClick={() => openExternal(overview?.latestReportPath)} type="button"><ExternalLink aria-hidden="true" size={16} /> Latest report</button>
+        {overview?.latestReportPath ? <button onClick={() => void openResource(overview.latestReportPath)} type="button"><ExternalLink aria-hidden="true" size={16} /> Latest report</button> : <span className="social-latest-report-metadata">Latest report: {safePathLabel(overview?.latestReportPath)}</span>}
       </div>
+
+      <section className="social-panel social-schedule-calendar" aria-label="Week schedule" id="social-calendar" ref={scheduleRef}>
+        <div className="social-panel-heading"><span>Week schedule</span><strong>{posts.length}</strong><small>Loaded 7-day schedule from the first planned post in local state.</small></div>
+        <div className="social-calendar-grid">
+          {weekSchedule.map((day) => (
+            <article className="social-calendar-day" key={day.date}>
+              <time dateTime={day.date}>{day.label}</time>
+              {day.posts.length ? day.posts.map((post) => (
+                <button className={post.id === selectedPost?.id ? "social-calendar-card active" : "social-calendar-card"} key={post.id} onClick={() => setSelectedPostId(post.id)} type="button">
+                  <span>{slotTimes[post.slotType]} · {displayStatus(post.status)}</span>
+                  <strong>{neutralizeProviderCopy(post.title)}</strong>
+                  <small>{post.id}</small>
+                  <small>{formatPlatformList(post)} · {post.mediaAssets.length} creative{post.mediaAssets.length === 1 ? "" : "s"}</small>
+                </button>
+              )) : <p className="social-calendar-empty">No posts</p>}
+            </article>
+          ))}
+        </div>
+      </section>
 
       <div className="social-grid">
         <aside className="social-panel social-post-list" aria-label="Posts">
@@ -232,29 +314,30 @@ export function SocialDashboard() {
           {posts.length === 0 && loadState !== "loading" ? <p className="social-empty">No local social posts found yet.</p> : null}
         </aside>
 
-        <main className="social-panel social-detail" aria-label="Selected post detail">
+        <main className="social-panel social-detail social-detail-workbench" aria-label="Selected post detail">
           {selectedPost ? (
             <>
-              <nav className="social-section-tabs" aria-label="Content dashboard sections">
-                <span>Overview</span><span>Queue</span><span>Post detail</span><span>Media</span><span>Reports</span>
+              <nav className="social-section-tabs" aria-label="Jump within selected post detail">
+                <button aria-controls="social-summary" aria-current={activeSection === "social-summary" ? "true" : undefined} onClick={() => scrollToSection(summaryRef, "social-summary")} type="button">Summary</button>
+                <button aria-controls="social-media" aria-current={activeSection === "social-media" ? "true" : undefined} onClick={() => scrollToSection(mediaRef, "social-media")} type="button">Media</button>
+                <button aria-controls="social-platforms" aria-current={activeSection === "social-platforms" ? "true" : undefined} onClick={() => scrollToSection(platformsRef, "social-platforms")} type="button">Platforms</button>
+                <button aria-controls="social-reports" aria-current={activeSection === "social-reports" ? "true" : undefined} onClick={() => scrollToSection(reportsRef, "social-reports")} type="button">Reports</button>
               </nav>
-              <div className="social-detail-heading"><span>{selectedPost.postDate} · {selectedPost.slotType.replace(/_/g, " ")}</span><h3>{neutralizeProviderCopy(selectedPost.title)}</h3><small>{neutralizeProviderCopy(selectedPost.topicOrNewsItem)}</small></div>
-              <p className="social-caption">{neutralizeProviderCopy(selectedPost.caption)}</p>
-              <div className="social-gate" role="status"><AlertTriangle aria-hidden="true" size={18} /> {retryState.ok ? "Schedule/retry available after confirmation." : `Schedule/retry locked: ${retryState.reason}`}</div>
-              <div className="social-action-row">
-                <button disabled={!retryState.ok} onClick={() => window.confirm("Retry provider scheduling for this approved post?") && setMessage("Schedule retry must be executed through the guarded backend action.")} type="button">Retry schedule</button>
-                <button disabled type="button" title="Evidence is mandatory before resolving a post manually.">Manual resolution requires evidence</button>
-                <button disabled={!canOpenExternal(selectedPost.review?.reportPath)} onClick={() => openExternal(selectedPost.review?.reportPath)} type="button">Open review report</button>
-              </div>
 
-              <section className="social-detail-section" aria-label="Design previews">
+              <section className="social-detail-summary social-detail-hero-card" id="social-summary" ref={summaryRef}>
+                <div className="social-detail-heading"><span>{selectedPost.postDate} · {selectedPost.slotType.replace(/_/g, " ")}</span><h3>{neutralizeProviderCopy(selectedPost.title)}</h3><small>{neutralizeProviderCopy(selectedPost.topicOrNewsItem)}</small></div>
+                <p className="social-caption">{neutralizeProviderCopy(selectedPost.caption)}</p>
+                <div className="social-gate" role="status"><AlertTriangle aria-hidden="true" size={18} /> {retryState.ok ? "Schedule/retry gates are clear; guarded backend retry is not exposed in this UI yet." : `Schedule/retry locked: ${retryState.reason}`}</div>
+              </section>
+
+              <section className="social-detail-section social-media-strip" aria-label="Design previews" id="social-media" ref={mediaRef}>
                 <div className="social-panel-heading"><span>Design preview</span><strong>{selectedPost.mediaAssets.length}</strong><small>Generated visual assets, not text-only fallbacks.</small></div>
-                <div className="social-media-gallery">
+                <div className="social-media-gallery social-media-gallery--compact">
                   {selectedPost.mediaAssets.map((asset, index) => {
                     const source = canOpenExternal(asset.publicUrl) ? asset.publicUrl : null;
                     return (
                       <article className="social-media-card" key={`${asset.path}-${asset.publicUrl ?? "local"}`}>
-                        <div className="social-media-preview">
+                        <div className="social-media-preview social-media-thumb">
                           {source ? <img alt={`${neutralizeValue(selectedPost.title)} design ${index + 1}`} loading="lazy" src={source} /> : <div className="social-media-fallback">Local-only asset metadata; preview requires a validated public HTTPS image URL.</div>}
                         </div>
                         <span>{asset.validationStatus} · {asset.provider ?? "local"}</span>
@@ -262,7 +345,7 @@ export function SocialDashboard() {
                         <small>{asset.contentType ?? "unknown type"} · {asset.width ?? "?"}×{asset.height ?? "?"} · {formatBytes(asset.bytes)} · checked {safeLabel(asset.validatedAt)}</small>
                         {asset.temporary ? <small className="social-warning">Temporary media host — replace with durable owned media before production scheduling.</small> : null}
                         <div className="social-action-row">
-                          <button disabled={!source} onClick={() => openExternal(asset.publicUrl)} type="button">Open public media URL</button>
+                          <button disabled={!source} onClick={() => void openExternal(asset.publicUrl)} type="button">Open media URL</button>
                           <button disabled={!source} onClick={() => validateMediaUrl(asset.publicUrl)} type="button">Validate media</button>
                         </div>
                       </article>
@@ -271,49 +354,62 @@ export function SocialDashboard() {
                 </div>
               </section>
 
-              <section className="social-detail-section" aria-label="Review report">
-                <div className="social-panel-heading"><span>Review</span><strong>{selectedPost.review?.verdict ?? "missing"}</strong><small>{safeLabel(selectedPost.review?.reviewer, "No reviewer recorded")}</small></div>
-                <dl className="social-kv"><dt>Approved at</dt><dd>{safeLabel(selectedPost.review?.approvedAt)}</dd><dt>Report path</dt><dd>{safePathLabel(selectedPost.review?.reportPath)}</dd><dt>Required fixes</dt><dd>{selectedPost.review?.requiredFixes.length ? selectedPost.review.requiredFixes.join(" · ") : "No open required fixes"}</dd></dl>
+              <section className="social-detail-section social-detail-proof-grid" aria-label="Review and platform proof">
+                <article className="social-proof-card" aria-label="Review report">
+                  <div className="social-panel-heading"><span>Review</span><strong>{selectedPost.review?.verdict ?? "missing"}</strong><small>{safeLabel(selectedPost.review?.reviewer, "No reviewer recorded")}</small></div>
+                  <dl className="social-kv"><dt>Approved at</dt><dd>{safeLabel(selectedPost.review?.approvedAt)}</dd><dt>Required fixes</dt><dd>{selectedPost.review?.requiredFixes.length ? selectedPost.review.requiredFixes.join(" · ") : "Not parsed from source; open report for full review notes."}</dd></dl>
+                  <p className="social-action-note">Real source: {reportSourceLabel(selectedPost.review?.reportPath)} · verdict and approval state are read from the manifest/review file, not seeded UI text.</p>
+                  {selectedPost.review?.reportPath ? <div className="social-action-row"><button onClick={() => void openResource(selectedPost.review?.reportPath)} type="button">Open review report</button></div> : <p className="social-action-note">Review report: {safePathLabel(selectedPost.review?.reportPath)}</p>}
+                </article>
+
+                <article className="social-proof-card" aria-label="Provider platform state" id="social-platforms" ref={platformsRef}>
+                  <div className="social-panel-heading"><span>Platform state</span><strong>{selectedPost.bufferPosts.length}</strong><small>Read-back must exist before any completion claim.</small></div>
+                  <div className="social-platform-grid social-platform-grid--compact">
+                    {selectedPost.bufferPosts.map((item) => (
+                      <article className="social-platform-card" key={`${item.platform}-${item.bufferId ?? item.channelId ?? "pending"}`}>
+                        <span>{item.platform}</span><strong>{safeLabel(item.channelDisplayName, item.platform)}</strong>
+                        <small>State: {displayStatus(item.state)}</small>
+                        <small>Provider post id: {safeLabel(item.bufferId)}</small>
+                        <small>Read-back: {safeLabel(item.readBackVerifiedAt)}</small>
+                        {item.lastErrorCode ? <small className="social-warning">{item.lastErrorCode}: {neutralizeProviderCopy(item.lastErrorMessage)}</small> : null}
+                        {item.publishedUrl ? <button onClick={() => void openExternal(item.publishedUrl)} type="button">Open published URL</button> : null}
+                      </article>
+                    ))}
+                    {selectedPost.bufferPosts.length === 0 ? <p className="social-empty">No provider platform records yet.</p> : null}
+                  </div>
+                </article>
               </section>
 
-              <section className="social-detail-section" aria-label="Provider platform state">
-                <div className="social-panel-heading"><span>Platform state</span><strong>{selectedPost.bufferPosts.length}</strong><small>Read-back, channel, and provider IDs stay visible before any completion claim.</small></div>
-                <div className="social-platform-grid">
-                  {selectedPost.bufferPosts.map((item) => (
-                    <article className="social-platform-card" key={`${item.platform}-${item.bufferId ?? item.channelId ?? "pending"}`}>
-                      <span>{item.platform}</span><strong>{safeLabel(item.channelDisplayName, item.platform)}</strong>
-                      <small>State: {displayStatus(item.state)}</small>
-                      <small>Provider post id: {safeLabel(item.bufferId)}</small>
-                      <small>Channel: {safeLabel(item.channelId)}</small>
-                      <small>Local: {safeLabel(item.scheduledAtLocal)}</small>
-                      <small>UTC: {safeLabel(item.scheduledAtUtc)}</small>
-                      <small>Read-back: {safeLabel(item.readBackVerifiedAt)}</small>
-                      {item.lastErrorCode ? <small className="social-warning">{item.lastErrorCode}: {neutralizeProviderCopy(item.lastErrorMessage)}</small> : null}
-                      {item.publishedUrl ? <button onClick={() => openExternal(item.publishedUrl)} type="button">Open published URL</button> : null}
-                    </article>
-                  ))}
-                  {selectedPost.bufferPosts.length === 0 ? <p className="social-empty">No provider platform records yet.</p> : null}
-                </div>
-              </section>
-
-              <section className="social-detail-section" aria-label="Reports and event history">
-                <div className="social-panel-heading"><span>Reports + events</span><strong>{selectedPost.reports.length + selectedPost.events.length}</strong><small>Replayable audit trail with no secrets.</small></div>
-                <div className="social-report-list">
-                  {selectedPost.reports.map((report) => <button disabled={!canOpenExternal(report.path)} key={`${report.kind}-${report.path}`} onClick={() => openExternal(report.path)} type="button"><span>{safeLabel(report.kind)}</span><strong>{neutralizeValue(report.label)}</strong><small>{report.createdAt ?? safePathLabel(report.path)}</small></button>)}
-                  {selectedPost.reports.length === 0 ? <p className="social-empty">No reports exist for this post yet.</p> : null}
-                </div>
-                <ol className="social-event-list">
-                  {selectedPost.events.map((event) => <li key={`${event.timestamp}-${event.eventType}`}><time>{event.timestamp}</time><strong>{safeLabel(event.eventType.replace(/_/g, " "))}</strong><span>{neutralizeValue(event.message)}</span><small>{safeLabel(event.actor)} · {event.severity} · {safePathLabel(event.evidencePath)}</small></li>)}
-                  {selectedPost.events.length === 0 ? <li>No provider events or publishing history recorded yet.</li> : null}
-                </ol>
+              <section className="social-detail-section social-report-drawer" aria-label="Reports and event history" id="social-reports" ref={reportsRef}>
+                <details open>
+                  <summary><span>Reports + events</span><strong>{selectedPost.reports.length + selectedPost.events.length}</strong><small>Local artifacts and event history from the runtime workspace.</small></summary>
+                  <p className="social-action-note">{providerRefreshCadence(overview)}</p>
+                  <div className="social-report-list">
+                    {selectedPost.reports.map((report) => {
+                      const reportBody = <><span>{safeLabel(report.kind)}</span><strong>{neutralizeValue(report.label)}</strong><small>{report.createdAt ?? safePathLabel(report.path)}</small></>;
+                      return <button key={`${report.kind}-${report.path}`} onClick={() => void openResource(report.path)} type="button">{reportBody}</button>;
+                    })}
+                    {selectedPost.reports.length === 0 ? <p className="social-empty">No reports exist for this post yet.</p> : null}
+                  </div>
+                  <ol className="social-event-list">
+                    {selectedPost.events.map((event) => <li key={`${event.timestamp}-${event.eventType}`}><time>{event.timestamp}</time><strong>{safeLabel(event.eventType.replace(/_/g, " "))}</strong><span>{neutralizeValue(event.message)}</span><small>{safeLabel(event.actor)} · {event.severity} · {safePathLabel(event.evidencePath)}</small></li>)}
+                    {selectedPost.events.length === 0 ? <li>No provider events or publishing history recorded yet.</li> : null}
+                  </ol>
+                </details>
+                <p className="social-action-note">Manual resolution requires evidence and is intentionally not exposed as a disabled fake button.</p>
               </section>
             </>
           ) : <p>No post selected.</p>}
         </main>
 
-        <aside className="social-panel social-automation-panel" aria-label="Automation state">
-          <div className="social-panel-heading"><span>Hermes cron</span><strong>{overview?.automation.creatorState ?? "unknown"}</strong><small>creator {overview?.automation.creatorJobId ?? "—"}</small></div>
-          <dl className="social-kv"><dt>Creator next run</dt><dd>{overview?.automation.creatorNextRunAt ?? "—"}</dd><dt>Monitor state</dt><dd>{overview?.automation.monitorState ?? "unknown"}</dd><dt>Monitor job</dt><dd>{overview?.automation.monitorJobId ?? "—"}</dd><dt>Cooldown next run</dt><dd>{overview?.automation.cooldownNextRunAt ?? "—"}</dd><dt>Provider endpoint</dt><dd>{overview?.bufferEndpoint ? "configured" : "—"}</dd><dt>HTTP status</dt><dd>{overview?.bufferHealth.httpStatus ? `HTTP ${overview.bufferHealth.httpStatus}` : "—"}</dd><dt>Last probe</dt><dd>{overview?.bufferHealth.lastCheckedAt ?? "—"}</dd><dt>Credentials</dt><dd>{overview?.bufferHealth.credentialsPresent.bufferAccessToken ? "Access token present" : "Access token missing"} · {overview?.bufferHealth.credentialsPresent.bufferOrganizationId ? "Organization present" : "Organization missing"}</dd><dt>Latest report</dt><dd>{safePathLabel(overview?.latestReportPath)}</dd></dl>
+        <aside className="social-panel social-automation-panel social-automation-summary" aria-label="Automation state">
+          <div className="social-panel-heading"><span>Automation state</span><strong>{overview?.automation.creatorState ?? "unknown"}</strong><small>Only operational blockers and next actions.</small></div>
+          <div className="social-automation-cards" aria-label="Automation state summary">
+            <article><span>Creator</span><strong>{overview?.automation.creatorEnabled ? "Running" : "Paused"}</strong><small>Next: {overview?.automation.creatorNextRunAt ?? "—"}</small><small>ID: {overview?.automation.creatorJobId ?? "—"}</small></article>
+            <article><span>Monitor</span><strong>{overview?.automation.monitorState ?? "unknown"}</strong><small>Job: {overview?.automation.monitorJobId ?? "—"}</small></article>
+            <article><span>Cooldown</span><strong>{overview?.automation.cooldownNextRunAt ?? "None"}</strong><small>{overview?.bufferHealth.httpStatus ? `Last API: HTTP ${overview.bufferHealth.httpStatus}` : "API not checked"}</small></article>
+          </div>
+          <dl className="social-kv social-automation-health"><dt>External read-back</dt><dd>{overview?.bufferEndpoint ? "configured" : "not configured"}</dd><dt>Credentials</dt><dd>{overview?.bufferHealth.credentialsPresent.bufferAccessToken ? "Access token present" : "Access token missing"} · {overview?.bufferHealth.credentialsPresent.bufferOrganizationId ? "Organization present" : "Organization missing"}</dd><dt>Latest report</dt><dd>{safePathLabel(overview?.latestReportPath)}</dd></dl>
         </aside>
       </div>
     </section>
