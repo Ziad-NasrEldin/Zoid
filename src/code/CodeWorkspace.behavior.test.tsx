@@ -1,6 +1,5 @@
 import { strict as assert } from "node:assert";
 import { Window } from "happy-dom";
-import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { CodeWorkspace } from "./CodeWorkspace";
 import type { RepositoryOperationAction } from "./repositoryOperations";
@@ -10,7 +9,6 @@ const window = new Window({ url: "http://127.0.0.1:1420" }) as unknown as Window
 const document = window.document as Document;
 
 Object.assign(globalThis, {
-  IS_REACT_ACT_ENVIRONMENT: true,
   window,
   document,
   HTMLElement: window.HTMLElement,
@@ -24,6 +22,10 @@ Object.assign(globalThis, {
   requestAnimationFrame: window.requestAnimationFrame.bind(window),
   cancelAnimationFrame: window.cancelAnimationFrame.bind(window),
 });
+
+async function waitForReact() {
+  await new Promise((resolve) => window.setTimeout(resolve, 0));
+}
 
 const repository: CodeRepository = {
   id: "repo-1",
@@ -47,24 +49,22 @@ const anotherRepository: CodeRepository = {
 };
 
 async function click(button: HTMLButtonElement) {
-  await act(async () => {
-    button.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
-  });
+  button.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
+  await waitForReact();
 }
 
 async function renderCodeWorkspace(onRepositoryOperationStart: (repo: CodeRepository, action: RepositoryOperationAction) => void) {
   const container = document.createElement("div");
   document.body.replaceChildren(container);
   const root = createRoot(container);
-  await act(async () => {
-    root.render(
-      <CodeWorkspace
-        onRepositoriesChange={() => undefined}
-        onRepositoryOperationStart={onRepositoryOperationStart}
-        repositories={[repository, anotherRepository]}
-      />,
-    );
-  });
+  root.render(
+    <CodeWorkspace
+      onRepositoriesChange={() => undefined}
+      onRepositoryOperationStart={onRepositoryOperationStart}
+      repositories={[repository, anotherRepository]}
+    />,
+  );
+  await waitForReact();
   return { container, root };
 }
 
@@ -99,5 +99,6 @@ window.confirm = () => true;
 await click(productionButton);
 assert.deepEqual(startedActions, ["localhost", "production"], "confirmed production operation should start exactly once");
 
-await act(async () => root.unmount());
+root.unmount();
+await waitForReact();
 console.log("CodeWorkspace behavior tests passed");
