@@ -25,8 +25,9 @@ Access boundary:
 Scope:
 - ${repositoryLine(repository)}
 - Active Zoid session: ${activeSessionTitle || "current session"}.
-- Review every line of code written or changed for this task, including source, backend, UI, tests, styles, config, and generated wiring that affects behavior.
-- Start from git status and git diff. Include untracked files that are part of the implementation. If a file is too large or generated/vendor-only, state that boundary explicitly and review only the relevant integration points.
+- Review every changed or created file for this task line by line, including source, backend, UI, tests, styles, config, docs, migrations, and generated wiring that affects behavior.
+- Start from git status and git diff. Include untracked files that are part of the implementation. Do not skip generated files, migration files, config, tests, docs, or wiring files; if it changed or was created, inspect it and include a file-by-file verdict.
+- If a file is too large, generated, or vendor-like, still review it for consistency with the schema/diff/integration contract and state exactly what was inspected. Do not omit it from the verdict.
 
 Ruthless review rules:
 - Do not assume functionality. Verify whether each important path actually runs.
