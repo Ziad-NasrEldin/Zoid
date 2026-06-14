@@ -14,7 +14,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wait_timeout::ChildExt;
 
 const DEFAULT_HERMES_SESSION: &str = "most-recent-hermes-cli-session";
-const HERMES_TIMEOUT_SECONDS: u64 = 300;
+const HERMES_TIMEOUT_SECONDS: u64 = 43_200;
+const HERMES_TIMEOUT_ENV: &str = "ZOID_HERMES_TIMEOUT_SECONDS";
 const HERMES_CRON_TIMEOUT_SECONDS: u64 = 90;
 const GIT_TIMEOUT_SECONDS: u64 = 120;
 #[allow(dead_code)]
@@ -1694,6 +1695,14 @@ fn apply_managed_provider_inner(provider_id: &str) -> Result<ProviderApplyResult
 
 fn hermes_session_name() -> String {
     env::var("ZOID_HERMES_SESSION").unwrap_or_else(|_| DEFAULT_HERMES_SESSION.to_string())
+}
+
+fn hermes_timeout_seconds() -> u64 {
+    env::var(HERMES_TIMEOUT_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|seconds| *seconds >= 60)
+        .unwrap_or(HERMES_TIMEOUT_SECONDS)
 }
 
 fn candidate_hermes_paths() -> Vec<PathBuf> {
@@ -3669,7 +3678,7 @@ fn execute_hermes_slash_command_inner(
         &path,
         &args,
         repository_workdir.as_deref(),
-        Duration::from_secs(HERMES_TIMEOUT_SECONDS),
+        Duration::from_secs(hermes_timeout_seconds()),
     )?;
     let combined_output = [stdout.as_str(), stderr.as_str()]
         .into_iter()
@@ -5841,39 +5850,186 @@ fn parse_mavoid_required_fixes(manifest: &serde_json::Value, report_text: Option
     fixes
 }
 
+fn mavoid_json_strings(value: &serde_json::Value, pointer: &str) -> Vec<String> {
+    value.pointer(pointer)
+        .and_then(|item| item.as_array())
+        .map(|items| items.iter().filter_map(|item| item.as_str().map(ToString::to_string)).collect::<Vec<_>>())
+        .unwrap_or_default()
+}
+
+fn mavoid_slot_date(slot: Option<&str>, fallback: &str) -> String {
+    slot.and_then(|value| value.get(0..10)).unwrap_or(fallback).to_string()
+}
+
+fn mavoid_safe_stem(path: &str) -> String {
+    Path::new(path).file_name().and_then(|name| name.to_str()).unwrap_or("media.png").to_string()
+}
+
+fn mavoid_media_assets_from_urls(
+    paths: Vec<String>,
+    urls: Vec<String>,
+    manifest: &serde_json::Value,
+) -> Vec<MavoidMediaAsset> {
+    let mut assets = Vec::new();
+    let item_count = paths.len().max(urls.len()).max(1);
+    for index in 0..item_count {
+        let path = paths.get(index).cloned().unwrap_or_else(|| urls.get(index).map(|url| mavoid_safe_stem(url)).unwrap_or_else(|| "media.png".to_string()));
+        let url = urls.get(index).cloned();
+        let bytes = fs::metadata(&path).ok().map(|item| item.len());
+        assets.push(MavoidMediaAsset {
+            path,
+            public_url: url.clone(),
+            content_type: Some("image/png".to_string()),
+            bytes,
+            width: Some(1080),
+            height: Some(1350),
+            validated_at: json_string(manifest, "updated_at").or_else(|| json_string(manifest, "created_at")),
+            provider: url.as_ref().map(|value| if value.contains("r2.dev") { "cloudflare-r2".to_string() } else { "public-url".to_string() }),
+            temporary: url.as_ref().map(|value| !value.contains("r2.dev") && !value.contains("mavoid") && (value.contains("catbox") || value.contains("uguu") || value.contains("tmpfiles"))).unwrap_or(false),
+            validation_status: if url.as_ref().map(|value| value.starts_with("https://")).unwrap_or(false) { "valid" } else { "unchecked" }.to_string(),
+        });
+    }
+    assets
+}
+
 fn mavoid_public_media_assets(
     manifest: &serde_json::Value,
     image: &Path,
 ) -> Vec<MavoidMediaAsset> {
-    let mut urls = Vec::<(String, String)>::new();
+    let mut urls = Vec::<String>::new();
     if let Some(items) = manifest.get("public_media_urls").and_then(|value| value.as_object()) {
-        for (provider, url) in items {
+        for (_provider, url) in items {
             if let Some(url) = url.as_str() {
-                urls.push((provider.to_string(), url.to_string()));
+                urls.push(url.to_string());
             }
         }
     }
     if urls.is_empty() {
         if let Some(url) = json_string(manifest, "preferred_public_media_url") {
-            urls.push(("public-url".to_string(), url));
+            urls.push(url);
         }
     }
-    if urls.is_empty() {
-        urls.push(("local".to_string(), image.to_string_lossy().to_string()));
-    }
+    mavoid_media_assets_from_urls(vec![image.to_string_lossy().to_string()], urls, manifest)
+}
 
-    urls.into_iter().map(|(provider, url)| MavoidMediaAsset {
-        path: image.to_string_lossy().to_string(),
-        public_url: Some(url.clone()),
-        content_type: Some("image/png".to_string()),
-        bytes: fs::metadata(image).ok().map(|item| item.len()),
-        width: Some(1080),
-        height: Some(1350),
-        validated_at: json_string(manifest, "updated_at"),
-        provider: Some(provider),
-        temporary: !url.contains("mavoid") && (url.contains("catbox") || url.contains("uguu") || url.contains("tmpfiles")),
-        validation_status: if url.starts_with("https://") { "valid" } else { "unchecked" }.to_string(),
-    }).collect()
+fn mavoid_buffer_posts_from_manifest(manifest: &serde_json::Value, package: Option<&str>, platforms: &[String]) -> Vec<MavoidBufferPost> {
+    let read_back = json_string(manifest, "updated_at").or_else(|| json_string(manifest, "created_at"));
+    let mut posts = Vec::new();
+    if let Some(items) = manifest.get("buffer_posts").and_then(|value| value.as_array()) {
+        for item in items {
+            if package.is_some() && json_string(item, "package").as_deref() != package {
+                continue;
+            }
+            let platform = json_string(item, "service").or_else(|| json_string(item, "platform")).unwrap_or_else(|| "unknown".to_string());
+            posts.push(MavoidBufferPost {
+                buffer_id: json_string(item, "post_id").or_else(|| json_string(item, "buffer_id")),
+                platform,
+                channel_id: json_string(item, "channel_id"),
+                channel_display_name: json_string(item, "channel_display_name"),
+                scheduled_at_utc: json_string(item, "due_at").or_else(|| json_string(item, "scheduled_at_utc")),
+                scheduled_at_local: json_string(item, "scheduled_at_local"),
+                state: json_string(item, "status").or_else(|| json_string(item, "state")).unwrap_or_else(|| "unknown".to_string()),
+                read_back_verified_at: read_back.clone(),
+                published_url: json_string(item, "published_url"),
+                last_error_code: json_string(item, "last_error_code"),
+                last_error_message: json_string(item, "last_error_message"),
+            });
+        }
+    }
+    if posts.is_empty() {
+        return platforms.iter().map(|platform| MavoidBufferPost { buffer_id: None, platform: platform.clone(), channel_id: None, channel_display_name: None, scheduled_at_utc: None, scheduled_at_local: None, state: "not_created".to_string(), read_back_verified_at: read_back.clone(), published_url: None, last_error_code: None, last_error_message: None }).collect();
+    }
+    posts
+}
+
+fn mavoid_status_from_runtime(manifest: &serde_json::Value, verdict: &str, assets: &[MavoidMediaAsset], buffer_posts: &[MavoidBufferPost]) -> String {
+    if let Some(status) = json_string(manifest, "status") {
+        if status == "scheduled_verified" || status == "posted" || status == "rate_limited" || status == "buffer_failed" || status == "failed_closed" {
+            return status;
+        }
+    }
+    if !buffer_posts.is_empty() && buffer_posts.iter().all(|post| post.state == "scheduled" || post.state == "posted") {
+        return "scheduled_verified".to_string();
+    }
+    if buffer_posts.iter().any(|post| post.state == "failed") {
+        return "buffer_failed".to_string();
+    }
+    if verdict == "APPROVED" && assets.iter().any(|asset| asset.public_url.as_ref().map(|url| url.starts_with("https://")).unwrap_or(false)) {
+        return "media_hosted".to_string();
+    }
+    "review_requested".to_string()
+}
+
+fn mavoid_report_refs(path: &Path, manifest: &serde_json::Value, review_path: Option<PathBuf>, buffer_report_path: Option<PathBuf>) -> Vec<MavoidReportRef> {
+    let mut reports = vec![MavoidReportRef { label: "Manifest".to_string(), path: path.to_string_lossy().to_string(), kind: "generation".to_string(), created_at: json_string(manifest, "created_at").or_else(|| mavoid_file_modified_iso(path)) }];
+    if let Some(review_path) = review_path.filter(|path| path.exists()) {
+        reports.push(MavoidReportRef { label: "Review report".to_string(), path: review_path.to_string_lossy().to_string(), kind: "review".to_string(), created_at: json_string(manifest, "updated_at").or_else(|| mavoid_file_modified_iso(&review_path)) });
+    }
+    if let Some(buffer_report_path) = buffer_report_path.filter(|path| path.exists()) {
+        reports.push(MavoidReportRef { label: "Provider read-back".to_string(), path: buffer_report_path.to_string_lossy().to_string(), kind: "buffer".to_string(), created_at: json_string(manifest, "updated_at").or_else(|| mavoid_file_modified_iso(&buffer_report_path)) });
+    }
+    reports
+}
+
+fn mavoid_production_posts_from_manifest(path: &Path) -> Result<Option<Vec<MavoidSocialPost>>, String> {
+    let manifest = read_json_file(path)?;
+    let parent = path.parent().unwrap_or_else(|| Path::new(""));
+    let package_defs = [
+        ("ai_intel", "ai_intel", "AI Intel Brief", "/ai_intel/image", "/ai_intel/public_urls", "/ai_intel/caption", "/ai_intel/source", "/ai_intel/slot_local"),
+        ("enterprise_carousel", "enterprise_carousel", "Enterprise carousel", "/enterprise_carousel/images", "/enterprise_carousel/public_urls", "/enterprise_carousel/caption", "/enterprise_carousel/topic", "/enterprise_carousel/slot_local"),
+    ];
+    let review_path = json_string_at(&manifest, "/review/report").map(PathBuf::from);
+    let review_text = review_path.as_ref().and_then(|path| fs::read_to_string(path).ok());
+    let verdict = json_string_at(&manifest, "/review/verdict")
+        .or_else(|| review_text.as_deref().and_then(parse_mavoid_review_verdict))
+        .unwrap_or_else(|| "MISSING".to_string());
+    let buffer_report_path = parent.file_name().and_then(|name| name.to_str()).map(|id| mavoid_social_workspace_path().join("runtime/Buffer_Reports").join(format!("{id}-buffer-result.json")));
+    let mut posts = Vec::new();
+    for (package, slot_type, fallback_title, image_pointer, urls_pointer, caption_pointer, topic_pointer, slot_pointer) in package_defs {
+        if manifest.pointer(caption_pointer).is_none() && manifest.pointer(urls_pointer).is_none() && manifest.pointer(image_pointer).is_none() {
+            continue;
+        }
+        let image_paths = if slot_type == "enterprise_carousel" { mavoid_json_strings(&manifest, image_pointer) } else { json_string_at(&manifest, image_pointer).into_iter().collect::<Vec<_>>() };
+        let urls = mavoid_json_strings(&manifest, urls_pointer);
+        let assets = mavoid_media_assets_from_urls(image_paths, urls, &manifest);
+        let buffer_posts = mavoid_buffer_posts_from_manifest(&manifest, Some(package), &Vec::new());
+        let platforms = if buffer_posts.is_empty() {
+            vec!["instagram".to_string(), "facebook".to_string(), "linkedin".to_string()]
+        } else {
+            buffer_posts.iter().map(|post| post.platform.clone()).collect::<Vec<_>>()
+        };
+        let status = mavoid_status_from_runtime(&manifest, &verdict, &assets, &buffer_posts);
+        let slot_local = json_string_at(&manifest, slot_pointer);
+        let post_date = mavoid_slot_date(slot_local.as_deref(), parent.file_name().and_then(|name| name.to_str()).and_then(|value| value.get(0..10)).unwrap_or("2026-06-15"));
+        let title = if package == "ai_intel" {
+            format!("AI Intel Brief — {}", json_string_at(&manifest, topic_pointer).unwrap_or_else(|| "confirmed market signal".to_string()))
+        } else {
+            format!("Enterprise carousel — {}", json_string_at(&manifest, topic_pointer).unwrap_or_else(|| "operational systems".to_string()))
+        };
+        let mut events = vec![
+            MavoidSocialEvent { timestamp: json_string(&manifest, "created_at").unwrap_or_else(now_millis_string), actor: "hermes".to_string(), event_type: "manifest_created".to_string(), message: format!("{fallback_title} package was created in the MaVoid social runtime."), severity: "info".to_string(), evidence_path: Some(path.to_string_lossy().to_string()) },
+            MavoidSocialEvent { timestamp: json_string(&manifest, "updated_at").or_else(|| json_string(&manifest, "created_at")).unwrap_or_else(now_millis_string), actor: "hermes".to_string(), event_type: format!("review_{}", verdict.to_lowercase()), message: format!("Review verdict: {verdict}."), severity: if verdict == "APPROVED" { "success".to_string() } else { "warning".to_string() }, evidence_path: review_path.as_ref().map(|path| path.to_string_lossy().to_string()).or_else(|| Some(path.to_string_lossy().to_string())) },
+        ];
+        if buffer_posts.iter().any(|post| post.state == "scheduled" || post.state == "posted") {
+            events.push(MavoidSocialEvent { timestamp: json_string(&manifest, "updated_at").or_else(|| json_string(&manifest, "created_at")).unwrap_or_else(now_millis_string), actor: "buffer".to_string(), event_type: "provider_read_back_scheduled".to_string(), message: format!("{} provider posts read back as scheduled/posted.", buffer_posts.iter().filter(|post| post.state == "scheduled" || post.state == "posted").count()), severity: "success".to_string(), evidence_path: buffer_report_path.as_ref().map(|path| path.to_string_lossy().to_string()) });
+        }
+        posts.push(MavoidSocialPost {
+            id: format!("{}::{package}", parent.file_name().and_then(|name| name.to_str()).unwrap_or("mavoid-post")),
+            post_date,
+            slot_type: slot_type.to_string(),
+            title,
+            topic_or_news_item: json_string_at(&manifest, topic_pointer).unwrap_or_else(|| fallback_title.to_string()),
+            caption: json_string_at(&manifest, caption_pointer).unwrap_or_default(),
+            platforms,
+            status,
+            review: Some(MavoidReviewReport { verdict: verdict.clone(), reviewer: Some("mavoid-social-reviewer".to_string()), report_path: review_path.as_ref().map(|path| path.to_string_lossy().to_string()), required_fixes: parse_mavoid_required_fixes(&manifest, review_text.as_deref()), approved_at: if verdict == "APPROVED" { json_string(&manifest, "updated_at").or_else(|| json_string(&manifest, "created_at")) } else { None } }),
+            media_assets: assets,
+            buffer_posts,
+            reports: mavoid_report_refs(path, &manifest, review_path.clone(), buffer_report_path.clone()),
+            events,
+        });
+    }
+    if posts.is_empty() { Ok(None) } else { Ok(Some(posts)) }
 }
 
 fn mavoid_empty_counts() -> MavoidSocialCounts {
@@ -5997,18 +6153,25 @@ fn mavoid_post_from_manifest(path: &Path) -> Result<MavoidSocialPost, String> {
 
 fn mavoid_social_list_posts_inner() -> Result<Vec<MavoidSocialPost>, String> {
     let workspace = mavoid_social_workspace_path();
-    let artifacts = workspace.join("artifacts");
     let mut posts = Vec::new();
-    if artifacts.exists() {
-        for entry in fs::read_dir(&artifacts).map_err(|error| format!("Failed to scan {}: {error}", artifacts.display()))? {
-            let entry = entry.map_err(|error| format!("Failed to read artifact entry: {error}"))?;
+    for root in [workspace.join("artifacts"), workspace.join("runtime/Generated_Posts")] {
+        if !root.exists() {
+            continue;
+        }
+        for entry in fs::read_dir(&root).map_err(|error| format!("Failed to scan {}: {error}", root.display()))? {
+            let entry = entry.map_err(|error| format!("Failed to read social post entry: {error}"))?;
             let manifest = entry.path().join("manifest.json");
-            if manifest.exists() {
+            if !manifest.exists() {
+                continue;
+            }
+            if let Some(mut runtime_posts) = mavoid_production_posts_from_manifest(&manifest)? {
+                posts.append(&mut runtime_posts);
+            } else {
                 posts.push(mavoid_post_from_manifest(&manifest)?);
             }
         }
     }
-    posts.sort_by(|a, b| a.id.cmp(&b.id));
+    posts.sort_by(|a, b| a.post_date.cmp(&b.post_date).then_with(|| a.slot_type.cmp(&b.slot_type)).then_with(|| a.id.cmp(&b.id)));
     Ok(posts)
 }
 
@@ -6283,7 +6446,7 @@ mod commands {
 
         let (success, stdout, stderr) = run_hermes_command_for_session_with_cancel(
             &mut command,
-            Duration::from_secs(HERMES_TIMEOUT_SECONDS),
+            Duration::from_secs(hermes_timeout_seconds()),
             run_session_id,
             run_id,
             app_handle,
@@ -8314,6 +8477,26 @@ Some context #launch https://example.com",
     }
 
     #[test]
+    fn hermes_agent_timeout_defaults_to_long_code_runs_and_allows_env_override() {
+        let _guard = env_lock();
+        let previous = std::env::var(HERMES_TIMEOUT_ENV).ok();
+        std::env::remove_var(HERMES_TIMEOUT_ENV);
+        assert_eq!(hermes_timeout_seconds(), 43_200);
+
+        std::env::set_var(HERMES_TIMEOUT_ENV, "2400");
+        assert_eq!(hermes_timeout_seconds(), 2_400);
+
+        std::env::set_var(HERMES_TIMEOUT_ENV, "30");
+        assert_eq!(hermes_timeout_seconds(), 43_200);
+
+        if let Some(previous) = previous {
+            std::env::set_var(HERMES_TIMEOUT_ENV, previous);
+        } else {
+            std::env::remove_var(HERMES_TIMEOUT_ENV);
+        }
+    }
+
+    #[test]
     fn hermes_chat_args_resume_existing_session_after_first_prompt() {
         assert_eq!(
             hermes_chat_args("continue this", Some("session-123")),
@@ -9458,4 +9641,78 @@ exit 2
         }
         let _ = fs::remove_dir_all(&root);
     }
+
+    #[test]
+    fn mavoid_social_reads_runtime_generated_posts_and_buffer_readback() {
+        let _guard = env_lock();
+        let root = unique_temp_path("mavoid-social-runtime");
+        let generated = root.join("runtime/Generated_Posts/2026-06-15-production-test");
+        let reviews = root.join("runtime/Reviews/2026-06-15-production-test");
+        let reports = root.join("runtime/Buffer_Reports");
+        fs::create_dir_all(&generated).unwrap();
+        fs::create_dir_all(&reviews).unwrap();
+        fs::create_dir_all(&reports).unwrap();
+        fs::write(generated.join("ai.png"), b"png").unwrap();
+        fs::write(generated.join("slide-1.png"), b"png").unwrap();
+        fs::write(generated.join("slide-2.png"), b"png").unwrap();
+        let review_path = reviews.join("review-report.md");
+        fs::write(&review_path, "Verdict: APPROVED\n").unwrap();
+        fs::write(reports.join("2026-06-15-production-test-buffer-result.json"), "{\"ok\":true}").unwrap();
+        fs::write(root.join("STATUS.json"), "{\"created_at\":\"2026-06-14T14:00:00Z\"}").unwrap();
+        let manifest = serde_json::json!({
+            "created_at": "2026-06-14T14:02:21Z",
+            "updated_at": "2026-06-14T14:30:00Z",
+            "workflow": "production-test-two-posts",
+            "status": "scheduled_verified",
+            "ai_intel": {
+                "image": generated.join("ai.png").to_string_lossy(),
+                "caption": "AI Intel Brief caption",
+                "slot_local": "2026-06-15 10:00 Africa/Cairo",
+                "source": "EY via Google News RSS",
+                "public_urls": ["https://pub.example.r2.dev/mavoid-buffer/ai.png"]
+            },
+            "enterprise_carousel": {
+                "images": [generated.join("slide-1.png").to_string_lossy(), generated.join("slide-2.png").to_string_lossy()],
+                "caption": "Carousel caption",
+                "slot_local": "2026-06-15 18:00 Africa/Cairo",
+                "topic": "Approvals stuck in chat",
+                "public_urls": ["https://pub.example.r2.dev/mavoid-buffer/slide-1.png", "https://pub.example.r2.dev/mavoid-buffer/slide-2.png"]
+            },
+            "review": { "verdict": "APPROVED", "report": review_path.to_string_lossy() },
+            "buffer_posts": [
+                {"package":"ai_intel","service":"facebook","post_id":"fb-ai","status":"scheduled","due_at":"2026-06-15T07:00:00.000Z","channel_id":"fb"},
+                {"package":"ai_intel","service":"instagram","post_id":"ig-ai","status":"scheduled","due_at":"2026-06-15T07:00:00.000Z","channel_id":"ig"},
+                {"package":"enterprise_carousel","service":"facebook","post_id":"fb-car","status":"scheduled","due_at":"2026-06-15T15:00:00.000Z","channel_id":"fb"},
+                {"package":"enterprise_carousel","service":"instagram","post_id":"ig-car","status":"scheduled","due_at":"2026-06-15T15:00:00.000Z","channel_id":"ig"}
+            ]
+        });
+        fs::write(generated.join("manifest.json"), serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
+        let previous_workspace = std::env::var("ZOID_MAVOID_SOCIAL_WORKSPACE").ok();
+        std::env::set_var("ZOID_MAVOID_SOCIAL_WORKSPACE", &root);
+
+        let posts = mavoid_social_list_posts_inner().unwrap();
+        assert_eq!(posts.len(), 2);
+        let ai = posts.iter().find(|post| post.slot_type == "ai_intel").unwrap();
+        assert_eq!(ai.status, "scheduled_verified");
+        assert_eq!(ai.post_date, "2026-06-15");
+        assert_eq!(ai.media_assets.len(), 1);
+        assert_eq!(ai.media_assets[0].provider.as_deref(), Some("cloudflare-r2"));
+        assert_eq!(ai.buffer_posts.len(), 2);
+        assert!(ai.buffer_posts.iter().all(|post| post.state == "scheduled"));
+        assert!(ai.reports.iter().any(|report| report.kind == "buffer"));
+        let carousel = posts.iter().find(|post| post.slot_type == "enterprise_carousel").unwrap();
+        assert_eq!(carousel.media_assets.len(), 2);
+        assert!(carousel.title.contains("Approvals stuck in chat"));
+        let overview = mavoid_social_overview_with_health(None).unwrap();
+        assert_eq!(overview.counts.scheduled_verified, 2);
+        assert_eq!(overview.overall_status, "healthy");
+
+        if let Some(previous_workspace) = previous_workspace {
+            std::env::set_var("ZOID_MAVOID_SOCIAL_WORKSPACE", previous_workspace);
+        } else {
+            std::env::remove_var("ZOID_MAVOID_SOCIAL_WORKSPACE");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
 }
