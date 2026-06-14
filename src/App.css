@@ -514,10 +514,11 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   justify-content: space-between;
   gap: 22px;
   min-width: 0;
-  border: 1px solid var(--kujo-ink);
+  border: 1px solid rgba(13,10,10,0.22);
+  border-bottom-color: rgba(13,10,10,0.12);
   padding: 22px;
   background: var(--kujo-paper);
-  box-shadow: 6px 6px 0 rgba(0,0,0,0.1);
+  box-shadow: 0 8px 24px rgba(13,10,10,0.045);
 }
 .hermes-topbar--status-only { min-height: 0; }
 .hermes-title-block { min-width: 180px; }
@@ -745,6 +746,12 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 }
 .chat-stage::before { content: ""; position: absolute; right: 9%; top: 12%; width: 31%; height: 46%; border: 1px solid rgba(0,0,0,0.22); background: rgba(255,255,255,0.32); transform: skewY(-8deg); pointer-events: none; }
 .chat-stage::after { content: ""; position: absolute; right: -8%; top: 52%; width: 54%; height: 1px; background: rgba(0,0,0,0.45); transform: rotate(-32deg); pointer-events: none; }
+.chat-stage--file-drop-armed { outline: 3px solid var(--kujo-blue); outline-offset: -8px; background: radial-gradient(circle at 50% 42%, rgba(47,107,255,0.12), transparent 46%), var(--kujo-blue-soft); }
+.chat-stage--file-drop-armed::before { content: "Drop files to attach"; position: absolute; inset: 22px; z-index: 8; display: grid; place-items: center; border: 1px dashed var(--kujo-blue); color: var(--kujo-blue); background: rgba(255,253,247,0.7); font-family: var(--font-display); font-size: 13px; font-weight: 900; letter-spacing: .12em; text-transform: uppercase; pointer-events: none; }
+.chat-focus-mode-button { position: absolute; top: 14px; right: 14px; z-index: 12; display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--kujo-ink); background: rgba(255,253,247,.92); color: var(--kujo-ink); padding: 7px 9px; font-family: var(--font-display); font-size: 10px; font-weight: 900; text-transform: uppercase; box-shadow: 3px 3px 0 rgba(0,0,0,.12); cursor: pointer; }
+.sessions-drag-trash { position: absolute; left: 50%; bottom: 12px; z-index: 8; display: inline-grid; place-items: center; width: 42px; height: 36px; border: 1px solid var(--kujo-red); color: var(--kujo-paper); background: var(--kujo-red); box-shadow: 4px 4px 0 rgba(0,0,0,.16); transform: translateX(-50%); cursor: copy; animation: sessions-overflow-cue-flow 1.2s ease-in-out infinite; }
+.sessions-drag-trash:hover, .sessions-drag-trash:focus-visible { filter: brightness(.95); }
+
 
 .repository-link-control { display: grid; gap: 8px; border-top: 1px solid rgba(0,0,0,0.2); padding-top: 12px; }
 .repository-link-control label { font-family: var(--font-display); font-size: 11px; font-weight: 900; text-transform: uppercase; }
@@ -781,7 +788,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .message-rollback-button { background: #f8efe0; }
 .message-copy-button--copied { background: var(--kujo-green); color: var(--kujo-paper); }
 .message-copy-button--failed { background: var(--kujo-red); color: var(--kujo-paper); }
-@media (prefers-reduced-motion: reduce) { .message-actions, .message-action-button { transition: none; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .message-actions, .message-action-button, .composer-snap-ghost { animation: none; transition: none; transform: none; opacity: 0; } }
 .message-error { margin-top: 10px !important; color: var(--kujo-red); font-weight: 800; }
 .message-status { justify-self: start; display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--kujo-ink); background: var(--kujo-paper); padding: 4px 7px; font-family: var(--font-display); font-size: 10px; font-weight: 900; }
 .message-status--streaming { color: var(--kujo-paper); background: var(--kujo-blue); animation: hermes-writing-pulse 1.4s ease-in-out infinite; }
@@ -817,7 +824,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .composer-attach, .composer-send { min-height: var(--composer-control-size); border: 1px solid var(--kujo-ink); background: var(--kujo-paper); font-family: var(--font-display); font-weight: 900; transition: transform 150ms ease, background 150ms ease, color 150ms ease, box-shadow 150ms ease; }
 .composer-attach { width: var(--composer-control-size); height: var(--composer-control-size); font-size: 22px; cursor: pointer; box-shadow: 3px 3px 0 rgba(0,0,0,0.12); }
 .composer-attach:hover { transform: translate(-1px, -1px); box-shadow: 5px 5px 0 rgba(0,0,0,0.14); }
-.composer-attach[aria-expanded="true"] { color: var(--kujo-paper); background: var(--kujo-ink); transform: rotate(45deg); }
+.composer-attach[aria-expanded="true"] { color: var(--kujo-paper); background: var(--kujo-ink); transform: rotate(135deg); }
 .composer-send { min-width: 104px; height: var(--composer-control-size); padding: 0 18px; color: var(--kujo-paper); background: var(--kujo-blue); cursor: pointer; box-shadow: 3px 3px 0 rgba(0,0,0,0.12); }
 .composer-send--hermes-command { color: var(--kujo-ink); background: var(--kujo-amber); box-shadow: 4px 4px 0 var(--kujo-blue); }
 .composer-send--stop { color: var(--kujo-paper); background: #b92f20; box-shadow: 4px 4px 0 rgba(185,47,32,0.24); }
@@ -831,6 +838,8 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .composer-input-wrap textarea { width: 100%; min-height: var(--composer-control-size); height: var(--composer-control-size); max-height: 132px; resize: none; overflow-y: hidden; border: 1px solid var(--kujo-ink); border-radius: 0; padding: 8px 14px; background: rgba(255,255,255,0.84); font-size: 15px; line-height: 1.35; outline: none; will-change: height; }
 .composer-input-wrap textarea[data-expanding="true"] { transition: height 220ms cubic-bezier(0.22, 1, 0.36, 1); }
 .composer-input-wrap textarea:focus { border-color: var(--kujo-blue); box-shadow: inset 0 0 0 2px var(--kujo-blue-soft), 0 0 0 2px rgba(47,107,255,0.12); }
+.composer-snap-ghost { position: absolute; z-index: 2; left: 14px; right: 14px; bottom: 10px; pointer-events: none; color: var(--kujo-ink); font-size: 15px; line-height: 1.35; white-space: pre-wrap; animation: composer-snap-disappear 760ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+@keyframes composer-snap-disappear { 0% { opacity: .82; filter: blur(0); clip-path: inset(0 0 0 0); transform: translate3d(0, 0, 0); } 48% { opacity: .64; filter: blur(.4px); clip-path: polygon(0 0, 100% 0, 96% 45%, 78% 40%, 69% 72%, 41% 63%, 28% 100%, 0 100%); } 100% { opacity: 0; filter: blur(2px); clip-path: polygon(4% 0, 100% 10%, 82% 38%, 96% 68%, 52% 58%, 38% 100%, 0 86%, 14% 42%); transform: translate3d(16px, -8px, 0) scale(.985); } }
 .composer-input-wrap--hermes-command textarea { border-color: var(--kujo-ink); background: linear-gradient(180deg, rgba(253,232,99,0.26), rgba(255,255,255,0.94)); box-shadow: inset 0 0 0 2px rgba(253,232,99,0.92), 0 0 0 3px rgba(47,107,255,0.16); }
 .chat-composer p { grid-column: 2 / -1; margin: -2px 0 0; font-size: 12px; font-weight: 800; }
 .composer-mode-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; border-left: 4px solid var(--kujo-amber); padding: 7px 9px; color: var(--kujo-ink); background: rgba(253,232,99,0.2); font-size: 12px; font-weight: 800; }
@@ -3754,7 +3763,8 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   text-transform: uppercase;
 }
 .social-hero h2 {
-  max-width: 720px;
+  max-width: 100%;
+  white-space: nowrap;
   margin: 0;
   color: var(--social-ink);
   font-family: var(--shell-serif-latin, trajan-pro-3, "Times New Roman", Baskerville, Georgia, serif);
@@ -3802,9 +3812,9 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .social-rhythm-step {
   position: relative;
   display: grid;
-  grid-template-columns: 68px minmax(0, 1fr);
-  gap: 10px;
-  min-height: 82px;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 8px;
+  min-height: 66px;
   border: 1px solid var(--social-pale-rule);
   padding: 12px;
   background: rgba(255,255,255,0.56);
@@ -3840,7 +3850,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 }
 .social-alert { box-shadow: inset 4px 0 0 var(--social-seal); }
 .social-status { box-shadow: inset 4px 0 0 var(--social-okay); }
-.social-toolbar { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 9px; }
+.social-toolbar { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, max-content)); justify-content: start; gap: 8px; }
 .social-toolbar button, .social-post-card {
   border: 1px solid var(--social-ink);
   border-radius: 0;
@@ -3880,13 +3890,21 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .social-latest-report-metadata { display: inline-flex; align-items: center; min-height: 42px; border: 1px dashed var(--social-pale-rule); padding: 9px 12px; color: var(--social-muted); background: rgba(255,255,255,0.42); font-size: 0.82rem; overflow-wrap: anywhere; }
 .social-schedule-calendar { position: relative; z-index: auto; display: grid; gap: 10px; min-width: 0; max-width: 100%; overflow: hidden; margin-bottom: clamp(10px, 1.4vw, 18px); }
 .social-calendar-grid { min-width: 0; overflow-x: auto; overflow-y: hidden; display: grid; grid-template-columns: repeat(7, minmax(140px, 1fr)); gap: 8px; padding-bottom: 6px; }
-.social-calendar-day { display: grid; align-content: start; gap: 8px; min-width: 0; min-height: 132px; border: 1px solid var(--social-pale-rule); background: rgba(255,255,255,0.5); padding: 10px; }
+.social-calendar-day { position: relative; display: grid; align-content: start; gap: 8px; min-width: 0; min-height: 132px; border: 1px solid var(--social-pale-rule); background: rgba(255,255,255,0.5); padding: 10px; }
+.social-calendar-day-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.social-calendar-quick-button { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--social-pale-rule); background: rgba(255,255,255,.68); padding: 4px 6px; color: var(--social-ink); font-size: .66rem; font-weight: 800; text-transform: uppercase; cursor: pointer; }
+.social-calendar-type-menu { position: absolute; top: 38px; left: 8px; right: 8px; z-index: 10; display: grid; gap: 6px; border: 1px solid var(--social-ink); background: rgba(255,253,247,.98); padding: 8px; box-shadow: 7px 7px 0 rgba(13,10,10,.14); }
+.social-calendar-type-menu button { display: grid; gap: 2px; border: 1px solid var(--social-pale-rule); background: transparent; padding: 7px; color: var(--social-ink); text-align: left; cursor: pointer; }
+.social-calendar-type-menu small { color: var(--social-muted); font-size: .72rem; }
 .social-calendar-day > time { color: var(--social-ink); font-family: var(--font-display, serif); font-size: 0.92rem; font-weight: 650; }
 .social-calendar-card { display: grid; gap: 4px; width: 100%; min-width: 0; min-height: 118px; border: 1px solid var(--social-rule); background: rgba(255,255,255,0.72); color: var(--social-ink); padding: 8px; text-align: left; cursor: pointer; }
 .social-calendar-card.active { border-color: var(--social-seal); box-shadow: inset 3px 0 0 var(--social-seal); background: var(--social-paper); }
 .social-calendar-card span { color: var(--social-seal); font-size: 0.62rem; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; }
 .social-calendar-card strong, .social-calendar-card small { overflow-wrap: anywhere; }
 .social-calendar-card small, .social-calendar-empty { color: var(--social-muted); font-size: 0.76rem; line-height: 1.3; }
+.social-platform-icons { display: inline-flex; align-items: center; gap: 5px; }
+.social-platform-icons em { font-style: normal; }
+.social-platform-icon { display: inline-grid; place-items: center; min-width: 20px; height: 20px; border: 1px solid var(--social-pale-rule); color: var(--social-seal); background: rgba(255,255,255,.62); font-size: .68rem; font-weight: 900; line-height: 1; }
 .social-calendar-empty { margin: 0; border: 1px dashed var(--social-pale-rule); padding: 8px; text-align: center; }
 .social-grid { position: relative; z-index: 1; display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: clamp(14px, 1.8vw, 22px); min-height: max-content; min-width: 0; }
 .social-panel {
@@ -3936,6 +3954,10 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .social-detail-hero-card { align-content: start; }
 .social-action-note { margin: 0; border: 1px dashed var(--social-pale-rule); padding: 10px 12px; color: var(--social-muted); background: rgba(255,255,255,0.46); }
 .social-action-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.social-action-row--icons { gap: 6px; }
+.social-action-row--icons button { display: inline-grid; place-items: center; width: 32px; min-width: 32px; height: 30px; padding: 0; }
+.social-asset-state { border: 1px solid var(--social-pale-rule); padding: 4px 6px; background: rgba(255,255,255,.58); }
+.social-asset-state--failed { color: var(--social-seal); }
 .social-action-row button, .social-platform-card button, .social-report-list button { border: 1px solid var(--social-ink); background: rgba(255,255,255,0.62); color: var(--social-ink); padding: 7px 9px; font-weight: 700; letter-spacing: 0.04em; }
 .social-action-row button:disabled { opacity: 0.54; cursor: not-allowed; }
 .social-detail-section { display: grid; gap: 10px; scroll-margin-top: 72px; }
@@ -3948,7 +3970,8 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .social-media-gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 10px; align-items: start; }
 .social-media-gallery--compact { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
 .social-media-card { display: grid; gap: 7px; min-width: 0; padding: 10px; border: 1px solid var(--social-pale-rule); background: rgba(255,255,255,0.58); }
-.social-media-preview { overflow: hidden; border: 1px solid var(--social-rule); background: linear-gradient(135deg, rgba(13,10,10,0.08), rgba(255,255,255,0.5)); aspect-ratio: 1 / 1; height: 126px; max-height: 126px; display: grid; place-items: center; }
+.social-media-preview { overflow: hidden; border: 1px solid var(--social-rule); background: linear-gradient(135deg, rgba(13,10,10,0.08), rgba(255,255,255,0.5)); aspect-ratio: 1 / 1; height: 126px; max-height: 126px; display: grid; place-items: center; padding: 0; cursor: zoom-in; }
+.social-media-preview:disabled { cursor: default; }
 .social-media-thumb { height: 126px; max-height: 126px; aspect-ratio: 1 / 1; }
 .social-media-preview img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .social-media-fallback { padding: 14px; color: var(--social-muted); text-align: center; }
@@ -4047,7 +4070,16 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .social-toolbar button { justify-content: center; }
 }
 @media (max-width: 760px) { .social-dashboard { padding: 18px; } }
-@media (prefers-reduced-motion: reduce) { .social-hero, .social-rhythm-lane, .social-alert, .social-status, .social-toolbar, .social-schedule-calendar { animation: none !important; } .social-toolbar button, .social-hero::after, .social-panel::before, .social-rhythm-step::before, .social-post-card::before, .social-panel, .social-alert, .social-status, .social-rhythm-step, .social-post-card, .social-calendar-card, .social-media-card, .social-platform-card, .social-gate, .social-caption, .social-empty, .social-toolbar button::before, .social-gate svg { transition: none !important; transform: none !important; } }
+.social-preview-backdrop { position: fixed; inset: 0; z-index: 900; display: grid; place-items: center; padding: 36px; background: radial-gradient(circle at 50% 50%, rgba(255,253,247,.2), rgba(13,10,10,.52)); backdrop-filter: blur(3px); animation: social-preview-fade 180ms ease both; }
+.social-preview-lightbox, .social-redesign-modal { position: relative; border: 1px solid var(--social-ink); background: var(--social-paper); box-shadow: 18px 18px 0 rgba(13,10,10,.18); animation: social-preview-rise 240ms cubic-bezier(.16,1,.3,1) both; }
+.social-preview-lightbox { display: grid; max-width: min(88vw, 980px); max-height: 88vh; padding: 14px; }
+.social-preview-lightbox img { display: block; max-width: 100%; max-height: calc(88vh - 28px); object-fit: contain; }
+.social-preview-close { position: absolute; right: 10px; top: 10px; z-index: 2; display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--social-ink); color: var(--social-ink); background: rgba(255,253,247,.9); cursor: pointer; }
+.social-redesign-modal { display: grid; gap: 12px; width: min(520px, calc(100vw - 48px)); padding: 16px; }
+.social-redesign-modal textarea { min-height: 120px; border: 1px solid var(--social-ink); background: rgba(255,255,255,.72); padding: 10px; color: var(--social-ink); resize: vertical; }
+@keyframes social-preview-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes social-preview-rise { from { opacity: 0; transform: translate3d(0, 18px, 0) scale(.98); } to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); } }
+@media (prefers-reduced-motion: reduce) { .social-preview-backdrop, .social-preview-lightbox, .social-redesign-modal, .social-hero, .social-rhythm-lane, .social-alert, .social-status, .social-toolbar, .social-schedule-calendar { animation: none !important; } .social-toolbar button, .social-hero::after, .social-panel::before, .social-rhythm-step::before, .social-post-card::before, .social-panel, .social-alert, .social-status, .social-rhythm-step, .social-post-card, .social-calendar-card, .social-media-card, .social-platform-card, .social-gate, .social-caption, .social-empty, .social-toolbar button::before, .social-gate svg { transition: none !important; transform: none !important; } }
 
 /* Social dashboard hard redraw: single-flow non-overlap layout */
 .chat-main-pane--dashboard:has(.social-dashboard) {

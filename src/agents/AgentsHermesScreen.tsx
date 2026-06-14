@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Archive, BellDot, ChevronDown, ChevronRight, FileText, Folder, FolderTree, Maximize2, Minimize2, Plus, X } from "lucide-react";
+import { Archive, BellDot, ChevronDown, ChevronRight, FileText, Folder, FolderTree, Maximize2, Minimize2, Play, Plus, Trash2, X } from "lucide-react";
 import type { CSSProperties, Dispatch, DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode, SetStateAction } from "react";
 import { flushSync } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
@@ -325,6 +325,7 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
   const [expandedModeSessionId, setExpandedModeSessionId] = useState<string | null>(null);
   const [draggedDashboardSessionId, setDraggedDashboardSessionId] = useState<string | null>(null);
   const [isChatDropArmed, setIsChatDropArmed] = useState(false);
+  const [isFileDropArmed, setIsFileDropArmed] = useState(false);
   const [dashboardDropCue, setDashboardDropCue] = useState("Drop to split chat");
   const runtime = useAgentRuntime();
 
@@ -1105,6 +1106,28 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
     window.requestAnimationFrame(() => composerRef.current?.focusMessageField());
   }
 
+  function handleChatFileDragOver(event: ReactDragEvent<HTMLDivElement>) {
+    if (event.dataTransfer.types.includes("Files")) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      setIsFileDropArmed(true);
+    }
+  }
+
+  function handleChatFileDragLeave(event: ReactDragEvent<HTMLDivElement>) {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+    setIsFileDropArmed(false);
+  }
+
+  function handleChatFileDrop(event: ReactDragEvent<HTMLDivElement>) {
+    const files = Array.from(event.dataTransfer.files ?? []);
+    if (files.length === 0) return;
+    event.preventDefault();
+    setIsFileDropArmed(false);
+    composerRef.current?.addFiles(files);
+    window.requestAnimationFrame(() => composerRef.current?.focusMessageField());
+  }
+
   function appendCommandResult(sessionId: string, command: string, result: HermesSlashCommandExecution, assistantId: string) {
     if (result.kind === "new-session") {
       const content = result.content || "Started a new Zoid session.";
@@ -1646,6 +1669,11 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
     applySessionDropToDashboard(sessionId, dashboardDropInsertionIndexFromPoint(event.clientX, event.clientY, sessionId));
   }
 
+  function trashPointIsInside(clientX: number, clientY: number) {
+    const rect = sessionsListRef.current?.closest(".sessions-rail")?.querySelector<HTMLElement>(".sessions-drag-trash")?.getBoundingClientRect();
+    return Boolean(rect && clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom);
+  }
+
   useEffect(() => {
     function pointerIsInsideDashboard(event: PointerEvent) {
       const rect = chatDashboardDropRef.current?.getBoundingClientRect();
@@ -1681,7 +1709,11 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
       if (!dragState) return;
       if (dragState.isDragging) {
         suppressNextSessionClickRef.current = true;
-        if (pointerIsInsideDashboard(event)) applySessionDropToDashboard(dragState.sessionId, dashboardDropInsertionIndexFromPoint(event.clientX, event.clientY, dragState.sessionId));
+        if (trashPointIsInside(event.clientX, event.clientY)) {
+          onArchiveSession(dragState.sessionId);
+        } else if (pointerIsInsideDashboard(event)) {
+          applySessionDropToDashboard(dragState.sessionId, dashboardDropInsertionIndexFromPoint(event.clientX, event.clientY, dragState.sessionId));
+        }
       }
       finishPointerDrag();
     }
@@ -1876,7 +1908,7 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
                     <div className="session-row-controls">
                       {sessionRuntime.status !== "idle" ? <span className={`session-runtime-chip session-runtime-chip--${sessionRuntime.status}`}>{sessionRuntime.status}</span> : null}
                       {hasQueuedPrompts ? <span className="session-runtime-chip session-runtime-chip--queued">Q{sessionRuntime.queuedPrompts.length}</span> : null}
-                      <button className="session-continue-button" aria-label={`Continue ${session.title}`} disabled={isSessionRunning || connectionState !== "online"} onClick={() => void continueDashboardSession(session.id)} type="button">{isSessionRunning ? "Running" : "Continue"}</button>
+                      <button className="session-continue-button" aria-label={`Continue ${session.title}`} disabled={isSessionRunning || connectionState !== "online"} onClick={() => void continueDashboardSession(session.id)} title={isSessionRunning ? "Session is already running" : "Continue this session"} type="button"><Play size={13} strokeWidth={2.6} aria-hidden="true" /></button>
                       <button aria-label={`Archive session ${session.title}`} className="archive-session-button" onClick={() => onArchiveSession(session.id)} title="Archive session" type="button">
                         <Archive size={14} strokeWidth={2.4} aria-hidden="true" />
                       </button>
@@ -1886,6 +1918,18 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
               );
             })}
           </div>
+          {draggedDashboardSessionId ? (
+            <button
+              aria-label="Archive dragged session"
+              className="sessions-drag-trash"
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => { event.preventDefault(); const sessionId = draggedSessionIdFromEvent(event); if (sessionId) onArchiveSession(sessionId); handleSessionIconDragEnd(event); }}
+              title="Drop here to archive session"
+              type="button"
+            >
+              <Trash2 size={16} strokeWidth={2.6} aria-hidden="true" />
+            </button>
+          ) : null}
           {showSessionsOverflowCue ? (
             <button
               aria-label="More sessions below"
@@ -1938,7 +1982,7 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
           {expandedSession ? (
             <div className="agent-expanded-chat">
               <button type="button" onClick={() => setExpandedModeSessionId(null)}>Back to dashboard · {runningCount} running</button>
-              <div className="chat-stage" onPointerDown={handleChatStagePointerDown}>
+              <div className={isFileDropArmed ? "chat-stage chat-stage--file-drop-armed" : "chat-stage"} onDragLeave={handleChatFileDragLeave} onDragOver={handleChatFileDragOver} onDrop={handleChatFileDrop} onPointerDown={handleChatStagePointerDown}>
                 <div className="message-list" ref={messageListRef} role="log" aria-live="polite" aria-label="Hermes conversation messages">
                   {expandedSession.messages.map((message, index) => {
                     const userTurnsAfterMessage = expandedSession.messages.slice(index + 1).filter((item) => item.role === "user").length;
@@ -1948,7 +1992,8 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
               </div>
             </div>
           ) : dashboardVisibleSessions.length === 0 ? (
-            <div className="chat-stage" onPointerDown={handleChatStagePointerDown}>
+            <div className={isFileDropArmed ? "chat-stage chat-stage--file-drop-armed" : "chat-stage"} onDragLeave={handleChatFileDragLeave} onDragOver={handleChatFileDragOver} onDrop={handleChatFileDrop} onPointerDown={handleChatStagePointerDown}>
+              {activeSession ? <button className="chat-focus-mode-button" onClick={() => setExpandedModeSessionId(activeSession.id)} title="Expand current chat to focus mode" type="button"><Maximize2 size={15} aria-hidden="true" /><span>Focus</span></button> : null}
               <div className="message-list" ref={messageListRef} role="log" aria-live="polite" aria-label="Hermes conversation messages">
                 {messages.map((message, index) => {
                   const userTurnsAfterMessage = messages.slice(index + 1).filter((item) => item.role === "user").length;

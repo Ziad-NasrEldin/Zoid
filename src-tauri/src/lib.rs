@@ -601,6 +601,14 @@ pub struct MavoidMediaValidation {
     message: String,
 }
 
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MavoidSocialJobResult {
+    ok: bool,
+    message: String,
+    run_id: Option<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct HermesProfileSettings {
@@ -6241,6 +6249,54 @@ fn mavoid_social_run_buffer_health_check_inner() -> Result<MavoidSocialOverview,
     mavoid_social_overview_with_health(Some(health))
 }
 
+fn mavoid_social_enqueue_request(kind: &str, payload: serde_json::Value) -> Result<String, String> {
+    let workspace = mavoid_social_workspace_path();
+    let queue_dir = workspace.join("runtime/Zoid_Requests");
+    fs::create_dir_all(&queue_dir).map_err(|error| format!("Failed to create request queue {}: {error}", queue_dir.display()))?;
+    let run_id = format!("{}-{}", kind, now_millis_string());
+    let path = queue_dir.join(format!("{run_id}.json"));
+    let body = serde_json::json!({
+        "run_id": run_id,
+        "kind": kind,
+        "created_at": now_millis_string(),
+        "source": "zoid-social-dashboard",
+        "payload": payload,
+    });
+    fs::write(&path, serde_json::to_string_pretty(&body).map_err(|error| format!("Failed to serialize request: {error}"))?)
+        .map_err(|error| format!("Failed to write request {}: {error}", path.display()))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+fn mavoid_social_run_creator_job() -> Result<(), String> {
+    let _ = manage_hermes_cron_job_inner(MAVOID_CREATOR_JOB_ID, "run")?;
+    Ok(())
+}
+
+fn mavoid_social_start_generation_inner(date: &str, content_type: &str) -> Result<MavoidSocialJobResult, String> {
+    let content_type = content_type.trim();
+    if !matches!(content_type, "ai_intel" | "enterprise_carousel") {
+        return Err(format!("Unsupported content type: {content_type}"));
+    }
+    let date = date.trim();
+    if date.len() != 10 || !date.chars().all(|ch| ch.is_ascii_digit() || ch == '-') {
+        return Err("Generation date must be YYYY-MM-DD.".to_string());
+    }
+    let request_path = mavoid_social_enqueue_request("generate_post", serde_json::json!({ "date": date, "content_type": content_type }))?;
+    mavoid_social_run_creator_job()?;
+    Ok(MavoidSocialJobResult { ok: true, message: format!("Queued {content_type} generation for {date} and triggered the creator automation."), run_id: Some(request_path) })
+}
+
+fn mavoid_social_retry_design_inner(post_id: &str, media_path: &str, notes: &str) -> Result<MavoidSocialJobResult, String> {
+    let post_id = post_id.trim();
+    let media_path = media_path.trim();
+    if post_id.is_empty() || media_path.is_empty() {
+        return Err("Post id and media path are required for redesign.".to_string());
+    }
+    let request_path = mavoid_social_enqueue_request("retry_design", serde_json::json!({ "post_id": post_id, "media_path": media_path, "notes": notes.trim() }))?;
+    mavoid_social_run_creator_job()?;
+    Ok(MavoidSocialJobResult { ok: true, message: "Queued redesign request and triggered the designer/creator automation.".to_string(), run_id: Some(request_path) })
+}
+
 fn mavoid_social_manage_automation_inner(action: &str) -> Result<MavoidSocialOverview, String> {
     let (job_id, cron_action) = match action {
         "run_creator" => (MAVOID_CREATOR_JOB_ID, "run"),
@@ -6622,6 +6678,16 @@ mod commands {
     }
 
     #[tauri::command]
+    pub async fn mavoid_social_start_generation(date: String, content_type: String) -> Result<MavoidSocialJobResult, String> {
+        mavoid_social_start_generation_inner(&date, &content_type)
+    }
+
+    #[tauri::command]
+    pub async fn mavoid_social_retry_design(post_id: String, media_path: String, notes: String) -> Result<MavoidSocialJobResult, String> {
+        mavoid_social_retry_design_inner(&post_id, &media_path, &notes)
+    }
+
+    #[tauri::command]
     pub async fn load_hermes_profile_settings() -> Result<HermesProfileSettings, String> {
         load_hermes_profile_settings_inner()
     }
@@ -6712,6 +6778,8 @@ pub fn run() {
             commands::mavoid_social_manage_automation,
             commands::mavoid_social_validate_media_url,
             commands::mavoid_social_open_resource,
+            commands::mavoid_social_start_generation,
+            commands::mavoid_social_retry_design,
             commands::load_hermes_profile_settings,
             commands::save_hermes_profile_settings,
             commands::warm_file_permissions,

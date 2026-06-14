@@ -140,10 +140,12 @@ async function buildAttachmentContext(attachments: ComposerAttachment[]) {
 export type ChatComposerHandle = {
   focusMessageField: () => void;
   insertText: (text: string) => void;
+  addFiles: (files: File[]) => void;
 };
 
 export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(function ChatComposer({ ariaLabel = "Hermes message composer", disabled = false, disabledReason, isSending = false, canStop, contextUsedPercent = 1, inputLabel = "Message Hermes", modelLabel = "gpt-5.5", placeholder, temperature = 0.7, maxOutputTokens = 4096, slashCommands = [], slashCommandSource = "live", variant = "full", onSend, onStop }, ref) {
   const [value, setValue] = useState("");
+  const [snapGhost, setSnapGhost] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [activePanel, setActivePanel] = useState<ComposerPanel>(null);
   const [commandSearch, setCommandSearch] = useState("");
@@ -166,6 +168,16 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   const typingAudioContextRef = useRef<AudioContext | null>(null);
   const lastTypingSoundAtRef = useRef(0);
 
+  function appendFiles(files: File[]) {
+    if (files.length === 0) return;
+    setAttachments((current) => [
+      ...current,
+      ...files.map((file) => ({ id: `attachment-${crypto.randomUUID()}`, file, action: "context" as const, status: getAttachmentStatus(file) })),
+    ]);
+    setNotice({ tone: "success", text: `${files.length} file(s) attached. Choose how each file should be used before sending.` });
+    setActivePanel("attach");
+  }
+
   useImperativeHandle(ref, () => ({
     focusMessageField: () => {
       messageInputRef.current?.focus({ preventScroll: true });
@@ -174,6 +186,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
       setValue((current) => current ? `${current.trimEnd()} ${text}` : text);
       window.requestAnimationFrame(() => messageInputRef.current?.focus({ preventScroll: true }));
     },
+    addFiles: appendFiles,
   }), []);
 
   const trimmed = value.trim();
@@ -414,6 +427,10 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
       const attachmentContext = await buildAttachmentContext(attachments);
       const message = [trimmed, attachmentContext].filter(Boolean).join("\n\n");
       await onSend(message);
+      if (trimmed) {
+        setSnapGhost(trimmed);
+        window.setTimeout(() => setSnapGhost(null), 760);
+      }
       setValue("");
       setAttachments((current) => current.filter((attachment) => attachment.action === "upload"));
       setNotice(isSending ? { tone: "success", text: "Queued for the next Hermes turn." } : blockedActionableAttachments.length > 0 ? { tone: "warning", text: `${blockedActionableAttachments.length} blocked attachment(s) were not sent.` } : null);
@@ -476,15 +493,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   }
 
   function handleFilesSelected(event: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.target.files ?? []);
-    if (files.length > 0) {
-      setAttachments((current) => [
-        ...current,
-        ...files.map((file) => ({ id: `attachment-${crypto.randomUUID()}`, file, action: "context" as const, status: getAttachmentStatus(file) })),
-      ]);
-      setNotice({ tone: "success", text: `${files.length} file(s) attached. Choose how each file should be used before sending.` });
-      setActivePanel("attach");
-    }
+    appendFiles(Array.from(event.target.files ?? []));
     event.target.value = "";
     setMenuOpen(false);
   }
@@ -640,6 +649,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
           </div>
         ) : null}
         <label className={`composer-input-wrap${isHermesCommandDraft ? " composer-input-wrap--hermes-command" : ""}`}>
+          {snapGhost ? <span className="composer-snap-ghost" aria-hidden="true">{snapGhost}</span> : null}
           {variant === "panel" && !isHermesCommandDraft ? null : (
             <span className="composer-input-label-row">
               <span>{inputLabel}</span>

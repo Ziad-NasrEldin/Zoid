@@ -162,3 +162,9 @@ export type MavoidMediaValidation = {
   bytes: number | null;
   message: string;
 };
+
+export type MavoidSocialJobResult = {
+  ok: boolean;
+  message: string;
+  runId: string | null;
+};
