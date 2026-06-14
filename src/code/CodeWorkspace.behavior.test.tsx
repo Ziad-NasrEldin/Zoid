@@ -23,6 +23,8 @@ Object.assign(globalThis, {
   cancelAnimationFrame: window.cancelAnimationFrame.bind(window),
 });
 
+window.localStorage.clear();
+
 async function waitForReact() {
   await new Promise((resolve) => window.setTimeout(resolve, 0));
 }

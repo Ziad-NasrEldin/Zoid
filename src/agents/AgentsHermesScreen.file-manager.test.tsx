@@ -1,7 +1,8 @@
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { Window } from "happy-dom";
-import { act, StrictMode, useState } from "react";
+import { StrictMode, useState } from "react";
+import { flushSync } from "react-dom";
 import type { ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { mockIPC, clearMocks } from "@tauri-apps/api/mocks";
@@ -31,6 +32,17 @@ Object.assign(globalThis, {
   cancelAnimationFrame: window.cancelAnimationFrame.bind(window),
 });
 
+
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+  await Promise.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  flushSync(() => undefined);
+}
 const listings: Record<string, FileManagerDirectoryListing> = {
   home: {
     path: "/Users/ziadnasreldin",
@@ -97,7 +109,10 @@ function installMockIpc(calls: IpcCall[] = [], options: MockOptions = {}) {
       return { ok: true, status: "online", message: "Hermes CLI online", session: "test-session" };
     }
     if (cmd === "list_hermes_slash_commands") {
-      return [{ name: "danger", aliases: [], description: "Danger command", category: "test", subcommands: [], cliOnly: false, gatewayOnly: false, zoidBehavior: "confirm-forward" }];
+      return [
+        { name: "danger", aliases: [], description: "Danger command", category: "test", subcommands: [], cliOnly: false, gatewayOnly: false, zoidBehavior: "confirm-forward" },
+        { name: "new", aliases: ["reset"], description: "Start a new session", category: "test", subcommands: [], cliOnly: false, gatewayOnly: false, zoidBehavior: "forward" },
+      ];
     }
     if (cmd === "send_hermes_cli_message" || cmd === "send_hermes_cli_run_message") {
       return typeof options.sendMessageResult === "function" ? options.sendMessageResult(args) : options.sendMessageResult ?? { content: "Hermes response", session: "reply-session" };
@@ -159,10 +174,12 @@ type MockDataTransfer = {
   setData: (type: string, value: string) => void;
 };
 
-function createDragEvent(type: string, dataTransfer: MockDataTransfer) {
-  const event = createDomEvent(type, true, true) as Event & { dataTransfer: MockDataTransfer; relatedTarget?: EventTarget | null };
+function createDragEvent(type: string, dataTransfer: MockDataTransfer, options: { clientX?: number; clientY?: number } = {}) {
+  const event = createDomEvent(type, true, true) as Event & { dataTransfer: MockDataTransfer; relatedTarget?: EventTarget | null; clientX: number; clientY: number };
   Object.defineProperty(event, "dataTransfer", { configurable: true, value: dataTransfer });
   Object.defineProperty(event, "relatedTarget", { configurable: true, value: null });
+  Object.defineProperty(event, "clientX", { configurable: true, value: options.clientX ?? 0 });
+  Object.defineProperty(event, "clientY", { configurable: true, value: options.clientY ?? 0 });
   return event;
 }
 
@@ -333,12 +350,28 @@ async function runFileManagerTests() {
 
   const css = readFileSync(new URL("../App.css", import.meta.url), "utf8");
   assert.ok(css.includes(".chat-workspace--file-manager-open .file-manager-sidebar { grid-column: 1; grid-row: 3;"), "narrow layout should place the file manager in the real single-column grid instead of implicit column 3");
-  assert.ok(css.includes(".file-manager-sidebar { position: relative;") && css.includes("opacity: 1; pointer-events: auto; transform: translateX(0) scaleX(1);"), "base Finder sidebar style should be visible so missing/open-state timing never leaves it invisible");
+  assert.ok(css.includes(".file-manager-sidebar { position: relative;") && css.includes("opacity: 1; pointer-events: auto; transform: translate3d(0, 0, 0);"), "base Finder sidebar style should be visible so missing/open-state timing never leaves it invisible");
   assert.ok(css.includes(".file-manager-sidebar--closed"), "Finder sidebar should keep a closing state for motion instead of disappearing immediately");
-  assert.ok(css.includes(".file-manager-branch"), "Finder folder expansion should animate nested branch reveal");
+  assert.ok(css.includes(".file-manager-resize-handle { position: absolute;") && css.includes("right: auto;") && css.includes("touch-action: none;"), "Finder resize handle should keep a narrow draggable hit target instead of stretching across the panel");
+  assert.ok(css.indexOf(".chat-workspace.chat-workspace--file-manager-mounted { grid-template-columns: var(--sessions-rail-width, 184px) minmax(0, 1fr) minmax(0, 0px); }") > css.indexOf(".chat-workspace { --composer-reserved-height"), "mounted Finder grid override must come after the base chat-workspace grid so open/close can animate the third column from zero");
+  assert.ok(css.indexOf(".chat-workspace.chat-workspace--file-manager-open { grid-template-columns: var(--sessions-rail-width, 184px) minmax(0, 1fr) minmax(0, var(--file-manager-width, 336px)); }") > css.indexOf(".chat-workspace { --composer-reserved-height"), "open Finder grid override must come after the base chat-workspace grid so the Finder width variable controls the actual desktop column");
+  assert.ok(css.includes(".chat-workspace--file-manager-resizing"), "Finder resizing should expose a live drag state for smooth cursor and selection behavior");
+  assert.ok(css.indexOf(".chat-workspace.chat-workspace--file-manager-resizing { transition: none; }") > css.indexOf(".chat-workspace { --composer-reserved-height"), "active Finder resize transition override must come after the base chat-workspace transition so drag follows the pointer without animated lag");
+  assert.ok(css.includes("@keyframes file-manager-row-wash"), "Finder folder expansion should use restrained sumi-e row motion rather than rough scale-only animation");
   assert.ok(css.includes("textarea { resize: none; }"), "textareas should not show native resize handles in bottom-anchored composers");
-  assert.ok(css.includes('grid-template-areas: "status commands layout"'), "agent monitor controls should stay in one row");
+  assert.ok(css.includes('grid-template-areas: "status commands"'), "agent monitor controls should stay in one row without the removed layout dropdown area");
   assert.ok(css.includes(".agents-sumi-e .agent-monitor-grid--count-4 .agent-monitor-status-strip { min-height: 18px;"), "four-panel idle/status rows should stay compact");
+  assert.ok(css.includes(".agent-monitor-title-row { display: flex; align-items: center;"), "agent panel actions should sit beside the session title instead of consuming a second header row");
+  assert.ok(css.includes(".agents-sumi-e .agent-monitor-grid--count-4 .agent-monitor-panel { grid-template-rows: auto auto minmax(0, 1fr) auto;"), "four-panel cards should route spare height into the empty feed track, not stretch the status strip");
+  assert.ok(css.includes(".agents-sumi-e .agent-monitor-panel--idle .agent-monitor-status-strip strong { color: var(--agents-seal-deep); }"), "idle status text should render in the red seal color");
+  assert.ok(css.includes(".agents-sumi-e .stat-number-accent { color: var(--agents-seal-deep); }"), "dashboard and footer numeric values should render in the red seal color");
+  assert.ok(css.includes(".agent-monitor-composer .chat-composer--panel { --composer-control-size: 34px; grid-template-columns: var(--composer-control-size) minmax(0, 1fr) 64px; }"), "panel composer attach column should match the plus button width instead of clipping into the textarea gap");
+  assert.ok(css.includes(".agent-monitor-composer { --composer-control-size: 34px; position: relative; z-index: 25; border-top: 1px solid rgba(13,10,10,0.18); padding: 5px 6px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px; align-items: stretch;"), "panel composer grid should stretch the composer and Continue action to the same vertical rails");
+  assert.ok(css.includes(".agent-monitor-composer .chat-composer { grid-column: 1; grid-row: 1; min-width: 0; gap: 4px; align-items: stretch;"), "nested panel composer should stretch plus, textarea, and send controls to one baseline box");
+  assert.ok(css.includes(".agent-monitor-composer-actions { grid-column: 2; grid-row: 1; display: flex; flex-direction: row; align-items: stretch;"), "Continue action row should stretch to the same height as the message/send controls");
+  assert.ok(css.includes(".agent-monitor-composer-actions button { flex: 0 0 auto; min-width: 74px; height: var(--composer-control-size, 34px); min-height: var(--composer-control-size, 34px);"), "Continue button should use the panel composer control height instead of the full-size global composer height");
+  assert.ok(css.includes(".agents-sumi-e .agent-monitor-grid--count-4 .agent-monitor-composer { --composer-control-size: 30px; padding: 4px; gap: 4px; }"), "compact four-panel composer should expose the smaller control height to both composer and action buttons");
+  assert.ok(css.includes(".agents-sumi-e .agent-monitor-grid--count-4 .agent-monitor-composer .chat-composer--panel { --composer-control-size: 30px; gap: 3px; padding: 3px; grid-template-columns: var(--composer-control-size) minmax(0, 1fr) 58px; }"), "compact four-panel composer should keep the attach column matched to its smaller plus button size");
 
   await act(async () => root.unmount());
   clearMocks();
@@ -391,25 +424,36 @@ async function runDashboardDragDropTests() {
     { ...createSession("Secondary"), id: "drag-b", title: "Secondary" },
     { ...createSession("Third"), id: "drag-c", title: "Third" },
     { ...createSession("Fourth"), id: "drag-d", title: "Fourth" },
+    { ...createSession("Fifth"), id: "drag-e", title: "Fifth" },
   ];
   const { container, root } = await renderHermesScreen({ initialSessions });
 
   const mainPane = container.querySelector<HTMLElement>(".chat-main-pane--dashboard");
   assert.ok(mainPane, "dashboard chat pane should be the drop target");
-  const secondaryHandle = container.querySelector<HTMLElement>('[data-dashboard-drag-session="drag-b"]');
-  assert.ok(secondaryHandle, "session portrait icon should expose a drag handle");
-  assert.equal(secondaryHandle.getAttribute("draggable"), "true", "drag must start from the session icon itself");
+  Object.defineProperty(mainPane, "getBoundingClientRect", {
+    configurable: true,
+    value: () => ({ left: 100, top: 100, right: 900, bottom: 700, width: 800, height: 600, x: 100, y: 100, toJSON: () => ({}) }),
+  });
+  const secondaryRow = container.querySelector<HTMLElement>('.session-tab-row[data-dashboard-drag-session="drag-b"]');
+  assert.ok(secondaryRow, "the whole session row should be draggable so dragging the text/control area is accepted");
+  assert.equal(secondaryRow.getAttribute("draggable"), "true", "drag must start from the full visible session row");
+  const secondaryTab = container.querySelector<HTMLButtonElement>('button.session-tab[data-dashboard-drag-session="drag-b"]');
+  assert.ok(secondaryTab, "the visible session tile/button should be draggable, not only the small inner portrait");
+  assert.equal(secondaryTab.getAttribute("draggable"), "true", "drag must start from the whole visible session profile tile");
+  const secondaryHandle = secondaryTab.querySelector<HTMLElement>('[data-dashboard-drag-session="drag-b"]');
+  assert.ok(secondaryHandle, "session portrait icon should keep a dedicated drag handle");
+  assert.equal(secondaryHandle.getAttribute("draggable"), "true", "drag must still start from the session icon itself");
 
   const firstDrag = createMockDataTransfer();
   await act(async () => {
-    secondaryHandle.dispatchEvent(createDragEvent("dragstart", firstDrag));
-    mainPane.dispatchEvent(createDragEvent("dragover", firstDrag));
+    secondaryRow.dispatchEvent(createDragEvent("dragstart", firstDrag));
+    mainPane.dispatchEvent(createDragEvent("dragover", firstDrag, { clientX: 860, clientY: 360 }));
   });
   assert.equal(firstDrag.effectAllowed, "copy", "session icon drag should advertise copy semantics for tiling");
   assert.equal(firstDrag.dropEffect, "copy", "chat pane should accept the session drop as a split action");
   assert.ok(mainPane.classList.contains("chat-main-pane--drop-armed"), "chat pane should show a drop-armed state while hovering with a session icon");
   await act(async () => {
-    mainPane.dispatchEvent(createDragEvent("drop", firstDrag));
+    mainPane.dispatchEvent(createDragEvent("drop", firstDrag, { clientX: 860, clientY: 360 }));
   });
   await settle();
 
@@ -419,32 +463,27 @@ async function runDashboardDragDropTests() {
   assert.ok(panels[0].classList.contains("agent-monitor-panel--primary"), "the original main chat should become the primary panel");
   assert.match(container.textContent ?? "", /Secondary/, "the dropped session should become the second panel");
 
-  const thirdHandle = container.querySelector<HTMLElement>('[data-dashboard-drag-session="drag-c"]');
-  assert.ok(thirdHandle, "third session drag handle should render");
-  Object.defineProperty(mainPane, "getBoundingClientRect", {
-    configurable: true,
-    value: () => ({ left: 100, top: 100, right: 900, bottom: 700, width: 800, height: 600, x: 100, y: 100, toJSON: () => ({}) }),
-  });
+  const thirdTab = container.querySelector<HTMLButtonElement>('button.session-tab[data-dashboard-drag-session="drag-c"]');
+  assert.ok(thirdTab, "third session drag tile should render");
+  const thirdDrag = createMockDataTransfer();
   await act(async () => {
-    thirdHandle.dispatchEvent(createPointerEvent("pointerdown", { clientX: 20, clientY: 220 }));
-    window.dispatchEvent(createPointerEvent("pointermove", { clientX: 220, clientY: 220 }));
-  });
-  assert.ok(mainPane.classList.contains("chat-main-pane--drop-armed"), "pointer dragging the session icon over the chat pane should arm the real drop target");
-  await act(async () => {
-    window.dispatchEvent(createPointerEvent("pointerup", { clientX: 220, clientY: 220 }));
+    thirdTab.dispatchEvent(createDragEvent("dragstart", thirdDrag));
+    document.dispatchEvent(createDragEvent("dragover", thirdDrag, { clientX: 860, clientY: 360 }));
+    document.dispatchEvent(createDragEvent("drop", thirdDrag, { clientX: 860, clientY: 360 }));
   });
   await settle();
 
   panels = [...container.querySelectorAll<HTMLElement>(".agent-monitor-panel")];
-  assert.equal(panels.length, 3, "dropping into two open chats should split into three chat panels");
+  assert.equal(panels.length, 3, "document-level drag/drop capture should still split into three panels when nested dashboard hit-testing misses the pane handler");
   assert.ok(container.querySelector(".agent-monitor-grid--focus-stack.agent-monitor-grid--count-3"), "three chats should use the primary plus two secondary layout");
 
   const fourthHandle = container.querySelector<HTMLElement>('[data-dashboard-drag-session="drag-d"]');
   assert.ok(fourthHandle, "fourth session drag handle should render");
+  const fourthDrag = createMockDataTransfer();
   await act(async () => {
-    fourthHandle.dispatchEvent(createPointerEvent("pointerdown", { clientX: 20, clientY: 280 }));
-    window.dispatchEvent(createPointerEvent("pointermove", { clientX: 260, clientY: 260 }));
-    window.dispatchEvent(createPointerEvent("pointerup", { clientX: 260, clientY: 260 }));
+    fourthHandle.dispatchEvent(createDragEvent("dragstart", fourthDrag));
+    document.dispatchEvent(createDragEvent("dragover", fourthDrag, { clientX: 860, clientY: 660 }));
+    fourthHandle.dispatchEvent(createDragEvent("dragend", fourthDrag));
   });
   await settle();
 
@@ -455,15 +494,40 @@ async function runDashboardDragDropTests() {
   assert.deepEqual(persistedDashboard.tiledSessionIds, ["drag-a", "drag-b", "drag-c", "drag-d"], "drag/drop dashboard layout should persist all four tiled sessions in order");
   assert.equal(persistedDashboard.primarySessionId, "drag-a", "the original main chat should persist as the primary panel");
 
+  const fifthHandle = container.querySelector<HTMLElement>('[data-dashboard-drag-session="drag-e"]');
+  assert.ok(fifthHandle, "fifth session handle should render so max-4 rejection can be tested");
+  const fifthDrag = createMockDataTransfer();
+  await act(async () => {
+    fifthHandle.dispatchEvent(createDragEvent("dragstart", fifthDrag));
+    mainPane.dispatchEvent(createDragEvent("dragover", fifthDrag, { clientX: 860, clientY: 660 }));
+    mainPane.dispatchEvent(createDragEvent("drop", fifthDrag, { clientX: 860, clientY: 660 }));
+  });
+  await settle();
+  assert.equal(fifthDrag.dropEffect, "none", "new session drops should be rejected once the dashboard already has four panels");
+  assert.equal(mainPane.dataset.dropCue, "Max 4 panels", "max-4 rejection should leave a visible drop cue instead of silently failing");
+  assert.deepEqual(JSON.parse(window.localStorage.getItem("zoid25:agents-dashboard") ?? "{}").tiledSessionIds, ["drag-a", "drag-b", "drag-c", "drag-d"], "rejected fifth-session drops must not mutate persisted dashboard order");
+
+  await act(async () => {
+    secondaryHandle.dispatchEvent(createPointerEvent("pointerdown", { clientX: 20, clientY: 220 }));
+    window.dispatchEvent(createPointerEvent("pointermove", { clientX: 860, clientY: 660 }));
+    window.dispatchEvent(createPointerEvent("pointerup", { clientX: 860, clientY: 660 }));
+  });
+  await settle();
+  panels = [...container.querySelectorAll<HTMLElement>(".agent-monitor-panel")];
+  assert.equal(panels.length, 4, "dropping an already tiled session on dashboard empty space should not silently no-op or remove panels");
+  assert.deepEqual(JSON.parse(window.localStorage.getItem("zoid25:agents-dashboard") ?? "{}").tiledSessionIds, ["drag-a", "drag-c", "drag-d", "drag-b"], "already tiled session drops should move to the cursor-mapped slot and persist");
+
   const css = readFileSync(new URL("../App.css", import.meta.url), "utf8");
   assert.ok(css.includes("agent-dashboard-panel-enter"), "newly split panels should have a smooth enter animation");
   assert.ok(css.includes("chat-main-pane--drop-armed"), "drop target should have a visible smooth armed state");
 
   await act(async () => root.unmount());
+  window.localStorage.clear();
   clearMocks();
 }
 
 async function runRepositoryLinkingTests() {
+  window.localStorage.clear();
   const calls: IpcCall[] = [];
   installMockIpc(calls);
   const { container, root } = await renderHermesScreen({ repositories });
@@ -536,6 +600,28 @@ async function runSlashConfirmationPreservationTests() {
   clearMocks();
 }
 
+async function runNewSessionSlashCommandTests() {
+  const calls: IpcCall[] = [];
+  installMockIpc(calls, {
+    slashResults: [
+      { kind: "new-session", command: "/new", content: "Started a new Zoid session.", session: "zoid-session-test", requiresConfirmation: false, scope: "current-session" },
+    ],
+  });
+  const { container, root } = await renderHermesScreen();
+
+  await submitComposer(container, "/new");
+  await settle();
+  const slashCall = calls.find((call) => call.cmd === "execute_hermes_slash_command");
+  assert.ok(slashCall, "/new should execute through the native slash command bridge");
+  assert.equal((slashCall.args as { command?: string }).command, "/new", "/new command text should be preserved");
+  const newSessionTabs = [...container.querySelectorAll<HTMLButtonElement>(".session-tab")].filter((button) => button.getAttribute("aria-label")?.includes("Open session New session"));
+  assert.ok(newSessionTabs.length >= 1, "/new should create and activate a fresh Zoid session");
+  assert.match(container.textContent ?? "", /New session/, "new session should be visible after /new executes");
+
+  await act(async () => root.unmount());
+  clearMocks();
+}
+
 function createDeferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (error: unknown) => void;
@@ -580,6 +666,49 @@ async function runQueuedSlashCommandTests() {
   clearMocks();
 }
 
+async function runDashboardPanelSlashCommandTests() {
+  const calls: IpcCall[] = [];
+  installMockIpc(calls, {
+    slashResults: [
+      { kind: "text", command: "/danger", content: "Panel danger command complete.", requiresConfirmation: false, scope: "current-session" },
+    ],
+  });
+  const initialSessions = ["slash-a", "slash-b"].map((id) => ({ ...createSession(`Slash ${id}`), id }));
+  window.localStorage.setItem("zoid25:agents-dashboard", JSON.stringify({
+    version: 1,
+    tiledSessionIds: initialSessions.map((session) => session.id),
+    primarySessionId: initialSessions[0].id,
+    focusedSessionId: initialSessions[0].id,
+    layoutMode: "split-2",
+    autoPrioritize: false,
+  }));
+  const { container, root } = await renderHermesScreen({ initialSessions });
+  await settle();
+
+  const panelB = [...container.querySelectorAll<HTMLElement>(".agent-monitor-panel")].find((candidate) => candidate.textContent?.includes("Slash slash-b"));
+  assert.ok(panelB, "second dashboard panel should render for slash-command routing");
+  const panelBComposer = panelB.querySelector<HTMLFormElement>('form[aria-label="Hermes message composer for Slash slash-b"]');
+  assert.ok(panelBComposer, "second dashboard panel should use ChatComposer for slash-command routing");
+  const panelBTextarea = panelBComposer.querySelector<HTMLTextAreaElement>("textarea");
+  assert.ok(panelBTextarea, "second dashboard panel composer textarea should render");
+  await inputTextarea(panelBTextarea, "/danger");
+  await act(async () => {
+    panelBComposer.dispatchEvent(createDomEvent("submit", true, true));
+  });
+  await settle();
+
+  const slashCall = calls.find((call) => call.cmd === "execute_hermes_slash_command");
+  assert.ok(slashCall, "panel slash command should execute through the normal slash command bridge");
+  assert.equal((slashCall.args as { command?: string }).command, "/danger", "panel slash command should preserve the original slash command text");
+  assert.match(panelB.textContent ?? "", /Panel danger command complete\./, "panel slash command result should render in the owning panel session");
+  const panelA = [...container.querySelectorAll<HTMLElement>(".agent-monitor-panel")].find((candidate) => candidate.textContent?.includes("Slash slash-a"));
+  assert.ok(panelA, "first dashboard panel should still render after panel slash command");
+  assert.doesNotMatch(panelA.textContent ?? "", /Panel danger command complete\./, "panel slash command result must not render in the primary/global session");
+
+  await act(async () => root.unmount());
+  clearMocks();
+}
+
 async function runParallelDashboardRuntimeTests() {
   const calls: IpcCall[] = [];
   const deferredBySession = new Map<string, ReturnType<typeof createDeferred<{ content: string; session: string }>>>();
@@ -603,17 +732,31 @@ async function runParallelDashboardRuntimeTests() {
   const { container, root } = await renderHermesScreen({ initialSessions });
 
   async function submitPanel(sessionTitle: string, prompt: string) {
-    const textarea = container.querySelector<HTMLTextAreaElement>(`textarea[aria-label="Prompt ${sessionTitle}"]`);
-    assert.ok(textarea, `panel textarea should render for ${sessionTitle}`);
+    const panel = [...container.querySelectorAll<HTMLElement>(".agent-monitor-panel")].find((candidate) => candidate.textContent?.includes(sessionTitle));
+    assert.ok(panel, `panel should contain ${sessionTitle}`);
+    const panelComposer = panel.querySelector<HTMLFormElement>(`form[aria-label="Hermes message composer for ${sessionTitle}"]`);
+    assert.ok(panelComposer, `panel should reuse the normal ChatComposer for ${sessionTitle}`);
+    const textarea = panelComposer.querySelector<HTMLTextAreaElement>("textarea");
+    assert.ok(textarea, `panel ChatComposer textarea should render for ${sessionTitle}`);
     await inputTextarea(textarea, prompt);
     await settle();
-    const panel = textarea.closest(".agent-monitor-panel");
-    assert.ok(panel, `panel should contain ${sessionTitle}`);
-    const sendButton = [...panel.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Send" || button.textContent === "Queue");
+    const sendButton = panelComposer.querySelector<HTMLButtonElement>("button.composer-send");
     assert.ok(sendButton, `panel send button should render for ${sessionTitle}`);
     assert.equal(sendButton.disabled, false, `panel send button should be enabled for ${sessionTitle}`);
     await click(sendButton);
   }
+
+  const firstPanel = container.querySelector<HTMLElement>(".agent-monitor-panel");
+  assert.ok(firstPanel, "dashboard should render the first tiled panel");
+  const firstPanelComposer = firstPanel.querySelector<HTMLFormElement>('form[aria-label="Hermes message composer for Panel agent-a"]');
+  assert.ok(firstPanelComposer, "tiled panels must mount the shared normal ChatComposer surface");
+  const firstPanelTextarea = firstPanelComposer.querySelector<HTMLTextAreaElement>("textarea");
+  assert.ok(firstPanelTextarea, "shared panel ChatComposer should expose a textarea");
+  await inputTextarea(firstPanelTextarea, "/");
+  await settle();
+  assert.ok(firstPanelComposer.querySelector(".composer-slash-dropup"), "typing / in a tiled panel should open the normal inline slash command completion");
+  await inputTextarea(firstPanelTextarea, "");
+  await settle();
 
   await submitPanel("Panel agent-a", "run a");
   await submitPanel("Panel agent-b", "run b");
@@ -631,8 +774,15 @@ async function runParallelDashboardRuntimeTests() {
   assert.equal(calls.filter((call) => call.cmd === "send_hermes_cli_run_message").length, 4, "same-session send should queue while that session is running instead of starting a fifth invoke");
   assert.match(container.textContent ?? "", /1 queued/, "same-session queue should be visible on the owning panel");
 
-  const stopButton = [...container.querySelectorAll<HTMLButtonElement>(".agent-monitor-panel button")].find((button) => button.textContent === "Stop" && button.closest(".agent-monitor-panel")?.textContent?.includes("Panel agent-b"));
+  const agentBPanel = [...container.querySelectorAll<HTMLElement>(".agent-monitor-panel")].find((candidate) => candidate.textContent?.includes("Panel agent-b"));
+  assert.ok(agentBPanel, "panel agent-b should still render before stop");
+  const agentBTextarea = agentBPanel.querySelector<HTMLTextAreaElement>('form[aria-label="Hermes message composer for Panel agent-b"] textarea');
+  assert.ok(agentBTextarea, "agent-b textarea should render before stop");
+  await inputTextarea(agentBTextarea, "");
+  await settle();
+  const stopButton = agentBPanel.querySelector<HTMLButtonElement>("button.composer-send");
   assert.ok(stopButton, "stop button should render for panel agent-b");
+  assert.equal(stopButton.textContent, "STOP", "running panel composer send button should become the scoped stop button when its draft is empty");
   await click(stopButton);
   await settle();
   const cancelCall = calls.find((call) => call.cmd === "cancel_hermes_cli_run");
@@ -687,14 +837,29 @@ async function runRepositoryOperationInitialPromptTests() {
 }
 
 const agentsSource = readFileSync(new URL("./AgentsHermesScreen.tsx", import.meta.url), "utf8");
+const agentMonitorPanelSource = readFileSync(new URL("./AgentMonitorPanel.tsx", import.meta.url), "utf8");
+const appCssSource = readFileSync(new URL("../App.css", import.meta.url), "utf8");
 assert.ok(!agentsSource.includes("ziad.ahmed.25.25.25@gmail.com"), "Agents UI must not hardcode an email notification recipient");
 assert.ok(!agentsSource.includes("sendAgentResponseEmailNotification({"), "Agents UI must not send email notifications without explicit opt-in settings");
+assert.ok(agentMonitorPanelSource.includes("<ChatComposer"), "dashboard detail panels must reuse the normal ChatComposer instead of a separate prompt textarea");
+assert.ok(!agentMonitorPanelSource.includes("setDraft") && !agentMonitorPanelSource.includes("Prompt this agent"), "dashboard detail panels must not keep the old simplified custom composer implementation");
+assert.ok(agentMonitorPanelSource.includes("slashCommands={slashCommands}"), "dashboard detail panel ChatComposer must receive the live slash command registry");
+assert.ok(!agentsSource.includes("agent-monitor-layout-control"), "agent dashboard must not render the removed tile layout dropdown control");
+assert.ok(!agentsSource.includes("Dashboard layout mode") && !agentsSource.includes("2-col") && !agentsSource.includes("Focus+stack") && !agentsSource.includes("2x2"), "removed tile layout dropdown options must not remain in the Agents UI source");
+assert.ok(!appCssSource.includes("agent-monitor-layout-control") && !appCssSource.includes("agent-monitor-bar .zoid-dropdown"), "removed tile layout dropdown CSS must not remain in the monitor bar");
+assert.ok(/\.agent-monitor-bar\s*\{[^}]*overflow:\s*visible;[^}]*\}/s.test(appCssSource), "agent monitor controls must keep stable non-clipping layout");
+assert.ok(/\.chat-main-pane\.chat-main-pane--dashboard\s*\{[^}]*overflow:\s*visible;[^}]*\}/s.test(appCssSource), "dashboard pane must not clip monitor overlays");
+assert.ok(/\.agent-monitor-panel\s*\{[^}]*overflow:\s*visible;[^}]*\}/s.test(appCssSource), "dashboard detail panels must not clip ChatComposer slash command drop-ups");
+assert.ok(appCssSource.includes(".agent-monitor-composer .chat-composer--panel"), "dashboard detail panels need compact styling around the shared ChatComposer, not a separate textarea style");
+
 
 await runFileManagerTests();
 await runSessionsOverflowCueTests();
 await runDashboardDragDropTests();
 await runRepositoryLinkingTests();
 await runSlashConfirmationPreservationTests();
+await runNewSessionSlashCommandTests();
 await runQueuedSlashCommandTests();
+await runDashboardPanelSlashCommandTests();
 await runParallelDashboardRuntimeTests();
 await runRepositoryOperationInitialPromptTests();

@@ -3427,8 +3427,35 @@ fn parse_hermes_registry_json(raw: &str) -> Result<Vec<HermesSlashCommand>, Stri
         command.zoid_behavior = behavior;
         command.panel = panel;
     }
+    if !commands.iter().any(|command| command.name == "plan") {
+        commands.push(HermesSlashCommand {
+            name: "plan".to_string(),
+            aliases: vec!["p".to_string()],
+            description: "Prepare an implementation plan".to_string(),
+            category: "zoid core".to_string(),
+            args_hint: Some("<request>".to_string()),
+            subcommands: Vec::new(),
+            cli_only: false,
+            gateway_only: false,
+            zoid_behavior: "forward".to_string(),
+            panel: None,
+        });
+    }
     commands.sort_by(|a, b| a.category.cmp(&b.category).then(a.name.cmp(&b.name)));
     Ok(commands)
+}
+
+fn candidate_hermes_registry_pythons(root: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    for relative in ["venv/bin/python", ".venv/bin/python"] {
+        let candidate = root.join(relative);
+        if candidate.exists() {
+            candidates.push(candidate);
+        }
+    }
+    candidates.push(PathBuf::from("python3"));
+    candidates.push(PathBuf::from("python"));
+    candidates
 }
 
 fn load_hermes_slash_commands_inner() -> Result<Vec<HermesSlashCommand>, String> {
@@ -3452,8 +3479,8 @@ for c in COMMAND_REGISTRY:
     })
 print(json.dumps(out))
 "#;
-    for python in ["python3", "python"] {
-        let mut command = Command::new(python);
+    for python in candidate_hermes_registry_pythons(&root) {
+        let mut command = Command::new(&python);
         command.current_dir(&root).arg("-c").arg(script);
         if let Ok((true, stdout, _stderr)) =
             run_command_with_timeout(&mut command, Duration::from_secs(12))
@@ -3462,7 +3489,7 @@ print(json.dumps(out))
         }
     }
     Err(format!(
-        "Failed to import Hermes command registry from {} using python3/python.",
+        "Failed to import Hermes command registry from {} using its venv python or system python3/python.",
         root.display()
     ))
 }
@@ -3698,7 +3725,7 @@ fn parse_hermes_session_id(output: &str, fallback: &str) -> String {
 }
 
 fn hermes_chat_args(prompt: &str, hermes_session: Option<&str>) -> Vec<String> {
-    let mut args = vec!["chat".to_string()];
+    let mut args = vec!["chat".to_string(), "--cli".to_string()];
     if let Some(session) = hermes_session
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -6616,6 +6643,32 @@ mod tests {
     }
 
     #[test]
+    fn hermes_registry_python_prefers_project_venv_before_system_python() {
+        let root = unique_temp_path("hermes-registry-python");
+        fs::create_dir_all(root.join("venv/bin")).unwrap();
+        fs::write(root.join("venv/bin/python"), "#!/bin/sh\n").unwrap();
+
+        let candidates = candidate_hermes_registry_pythons(&root);
+
+        assert_eq!(candidates.first(), Some(&root.join("venv/bin/python")));
+        assert!(candidates.iter().any(|candidate| candidate == &PathBuf::from("python3")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn hermes_registry_loads_more_than_offline_fallback_when_source_is_available() {
+        if find_hermes_source_root().is_none() {
+            return;
+        }
+
+        let commands = load_hermes_slash_commands_inner().unwrap();
+
+        assert!(commands.len() > 4, "live Hermes registry should include more commands than the four offline fallback entries");
+        assert!(commands.iter().any(|command| command.name == "plan"));
+        assert!(commands.iter().any(|command| command.name == "tools"));
+    }
+
+    #[test]
     fn parse_apple_notes_folder_json_accepts_camel_case() {
         let folders = parse_apple_notes_folders_json(
             r#"[{"accountName":"iCloud","folderName":"Zoid Brain","id":"folder-1"}]"#,
@@ -8254,7 +8307,7 @@ Some context #launch https://example.com",
         );
         assert_eq!(
             usage,
-            "cd '/tmp/my repo' && hermes chat --quiet --source desktop --query /help"
+            "cd '/tmp/my repo' && hermes chat --cli --quiet --source desktop --query /help"
         );
         assert_eq!(with_terminal_usage(&usage, "ok"), "ok");
         assert_eq!(with_terminal_usage(&usage, ""), "");
@@ -8266,6 +8319,7 @@ Some context #launch https://example.com",
             hermes_chat_args("continue this", Some("session-123")),
             vec![
                 "chat".to_string(),
+                "--cli".to_string(),
                 "--resume".to_string(),
                 "session-123".to_string(),
                 "--quiet".to_string(),
@@ -8497,6 +8551,7 @@ Some context #launch https://example.com",
             hermes_chat_args("hi", Some("20260607_183407_08f4d7")),
             vec![
                 "chat".to_string(),
+                "--cli".to_string(),
                 "--resume".to_string(),
                 "20260607_183407_08f4d7".to_string(),
                 "--quiet".to_string(),

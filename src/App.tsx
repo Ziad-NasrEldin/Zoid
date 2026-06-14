@@ -130,12 +130,14 @@ const REPOSITORIES_STORAGE_KEY = "zoid25:code-repositories";
 const HERMES_SESSIONS_STORAGE_KEY = "zoid25:hermes-sessions";
 const HERMES_ARCHIVED_SESSIONS_STORAGE_KEY = "zoid25:hermes-archived-sessions";
 const SIDEBAR_MORPH_TIMING: KeyframeAnimationOptions = {
-  duration: 540,
-  easing: "cubic-bezier(0.16, 1, 0.3, 1)",
+  duration: 720,
+  easing: "cubic-bezier(0.22, 0.61, 0.36, 1)",
+  fill: "both",
 };
 const SIDEBAR_MORPH_EXIT_TIMING: KeyframeAnimationOptions = {
-  duration: 240,
-  easing: "cubic-bezier(0.25, 1, 0.5, 1)",
+  duration: 360,
+  easing: "cubic-bezier(0.22, 0.61, 0.36, 1)",
+  fill: "both",
 };
 
 type SidebarMorphSnapshot = {
@@ -608,7 +610,6 @@ function SettingsArchive({ archivedSessions, onRestoreSession, onDeleteArchivedS
   const memoryBudgetLimit = Math.max(1, settings.memoryCharLimit + settings.userCharLimit);
   const memoryFullness = Math.min(100, Math.round(((settings.hermesMemory.length + settings.preferences.length) / memoryBudgetLimit) * 100));
   const soulChars = settings.hermesSoul.length;
-  const usingBrowserProfileFallback = settings.storagePath.startsWith("zoid25:hermes-profile-settings");
 
   const identityFields: ProfileTextField[] = [
     { key: "userName", label: "Name", helper: "Shown to Zoid/Hermes as the human profile identity." },
@@ -663,12 +664,6 @@ function SettingsArchive({ archivedSessions, onRestoreSession, onDeleteArchivedS
           <p className="settings-reference-line">Hermes profile · memory · providers · archive</p>
         </div>
         <div className="settings-ink-mark" aria-hidden="true"><span /><span /><span /></div>
-        <div className="profile-hero-card" aria-label="Active profile summary">
-          <span>Active profile</span>
-          <strong title={settings.profile}>{settings.profile}</strong>
-          <small title={settings.storagePath}>{settings.storagePath}</small>
-          {usingBrowserProfileFallback ? <small>Browser fallback: profile text is stored in localStorage on this device and is not encrypted by Zoid.</small> : null}
-        </div>
       </header>
 
       <form className="profile-settings-panel profile-settings-panel--complete" onSubmit={handleSaveProfile} ref={settingsFormRef}>
@@ -860,6 +855,7 @@ function SettingsArchive({ archivedSessions, onRestoreSession, onDeleteArchivedS
 export default function App() {
   const shellRef = useRef<HTMLElement | null>(null);
   const sidebarMorphAnimationsRef = useRef<Animation[]>([]);
+  const sidebarMorphCleanupRef = useRef<number | null>(null);
   const [activeWorkspace, setActiveWorkspace] = useState<ActiveWorkspace>(getInitialWorkspace);
   const [repositories, setRepositories] = useState<CodeRepository[]>(getInitialRepositories);
   const [hermesSessions, setHermesSessions] = useState<HermesChatSession[]>(getInitialHermesSessions);
@@ -901,6 +897,12 @@ export default function App() {
   useEffect(() => {
     window.localStorage.setItem(REPOSITORY_OPERATION_RUNS_STORAGE_KEY, JSON.stringify(repositoryOperationRuns));
   }, [repositoryOperationRuns]);
+
+  useEffect(() => () => {
+    if (sidebarMorphCleanupRef.current !== null) window.clearTimeout(sidebarMorphCleanupRef.current);
+    sidebarMorphAnimationsRef.current.forEach((animation) => animation.cancel());
+    document.querySelectorAll("[data-sidebar-morph-clone]").forEach((clone) => clone.remove());
+  }, []);
 
   useEffect(() => {
     if (hermesSessions.length === 0) {
@@ -1055,12 +1057,17 @@ export default function App() {
   function handleSidebarMorphToggle() {
     const shell = shellRef.current;
     const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const nextCollapsed = !isSidebarCollapsed;
 
     if (!shell || prefersReducedMotion) {
-      setIsSidebarCollapsed((collapsed) => !collapsed);
+      setIsSidebarCollapsed(nextCollapsed);
       return;
     }
 
+    if (sidebarMorphCleanupRef.current !== null) {
+      window.clearTimeout(sidebarMorphCleanupRef.current);
+      sidebarMorphCleanupRef.current = null;
+    }
     sidebarMorphAnimationsRef.current.forEach((animation) => animation.cancel());
     sidebarMorphAnimationsRef.current = [];
     shell.querySelectorAll("[data-sidebar-morph-clone]").forEach((clone) => clone.remove());
@@ -1076,7 +1083,7 @@ export default function App() {
     shell.classList.add("sidebar-morphing");
 
     flushSync(() => {
-      setIsSidebarCollapsed((collapsed) => !collapsed);
+      setIsSidebarCollapsed(nextCollapsed);
     });
 
     const nextShellRect = shell.getBoundingClientRect();
@@ -1103,10 +1110,10 @@ export default function App() {
           panel.animate(
             [
               {
-                opacity: isSidebarCollapsed ? 0.16 : 0.94,
-                transform: `translate(${previousPanelRect.left - nextPanelRect.left}px, 0) scaleX(${previousPanelRect.width / Math.max(nextPanelRect.width, 1)})`,
+                opacity: nextCollapsed ? 0.94 : 0.16,
+                transform: `translate3d(${previousPanelRect.left - nextPanelRect.left}px, 0, 0) scaleX(${previousPanelRect.width / Math.max(nextPanelRect.width, 1)})`,
               },
-              { opacity: isSidebarCollapsed ? 1 : 0, transform: "translate(0, 0) scaleX(1)" },
+              { opacity: nextCollapsed ? 0 : 1, transform: "translate3d(0, 0, 0) scaleX(1)" },
             ],
             SIDEBAR_MORPH_TIMING,
           ),
@@ -1123,9 +1130,9 @@ export default function App() {
             [
               {
                 opacity: 0.9,
-                transform: `translate(${rect.left - nextRect.left}px, ${rect.top - nextRect.top}px) scale(${rect.width / Math.max(nextRect.width, 1)}, ${rect.height / Math.max(nextRect.height, 1)})`,
+                transform: `translate3d(${rect.left - nextRect.left}px, ${rect.top - nextRect.top}px, 0) scale(${rect.width / Math.max(nextRect.width, 1)}, ${rect.height / Math.max(nextRect.height, 1)})`,
               },
-              { opacity: 1, transform: "translate(0, 0) scale(1, 1)" },
+              { opacity: 1, transform: "translate3d(0, 0, 0) scale(1, 1)" },
             ],
             SIDEBAR_MORPH_TIMING,
           ),
@@ -1150,8 +1157,8 @@ export default function App() {
       document.body.appendChild(clone);
       const animation = clone.animate(
         [
-          { opacity: 1, transform: "translateX(0) scale(1)" },
-          { opacity: 0, transform: "translateX(-18px) scale(0.96)" },
+          { opacity: 1, transform: "translate3d(0, 0, 0) scale(1)" },
+          { opacity: 0, transform: `translate3d(${nextCollapsed ? -14 : 14}px, 0, 0) scale(0.97)` },
         ],
         SIDEBAR_MORPH_EXIT_TIMING,
       );
@@ -1164,15 +1171,20 @@ export default function App() {
       sidebarMorphAnimationsRef.current.push(
         element.animate(
           [
-            { opacity: 0, transform: "translateY(12px) scale(0.92)" },
-            { opacity: 1, transform: "translateY(0) scale(1)" },
+            { opacity: 0, transform: `translate3d(${nextCollapsed ? -8 : 8}px, 8px, 0) scale(0.94)` },
+            { opacity: 1, transform: "translate3d(0, 0, 0) scale(1)" },
           ],
-          { ...SIDEBAR_MORPH_TIMING, delay: 90, duration: 420 },
+          { ...SIDEBAR_MORPH_TIMING, delay: 80, duration: 460 },
         ),
       );
     });
 
-    window.setTimeout(() => shell.classList.remove("sidebar-morphing"), Number(SIDEBAR_MORPH_TIMING.duration));
+    sidebarMorphCleanupRef.current = window.setTimeout(() => {
+      sidebarMorphAnimationsRef.current.forEach((animation) => animation.cancel());
+      shell.classList.remove("sidebar-morphing");
+      sidebarMorphAnimationsRef.current = [];
+      sidebarMorphCleanupRef.current = null;
+    }, Number(SIDEBAR_MORPH_TIMING.duration) + 120);
   }
 
   const resolvedNavigationItems = navigationItems.map((item) =>

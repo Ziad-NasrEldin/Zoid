@@ -1,6 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { HermesSlashCommand, HermesSlashCommandExecution } from "./hermesCommands";
+import { fallbackHermesSlashCommands, type HermesSlashCommand, type HermesSlashCommandExecution } from "./hermesCommands";
 import type { HermesCliMessage, HermesCliResponse, HermesCliStatus } from "./types";
+
+export type HermesSlashCommandRegistry = {
+  commands: HermesSlashCommand[];
+  source: "live" | "fallback" | "unavailable";
+  error?: string;
+};
 
 export async function getHermesCliStatus(): Promise<HermesCliStatus> {
   try {
@@ -41,8 +47,18 @@ export function cancelHermesCliRun(sessionId?: string, runId?: string): Promise<
   return invoke<boolean>("cancel_hermes_cli_run", { sessionId, runId });
 }
 
-export function listHermesSlashCommands(): Promise<HermesSlashCommand[]> {
-  return invoke<HermesSlashCommand[]>("list_hermes_slash_commands");
+export async function listHermesSlashCommandRegistry(): Promise<HermesSlashCommandRegistry> {
+  try {
+    const commands = await invoke<HermesSlashCommand[]>("list_hermes_slash_commands");
+    if (commands.length > 0) return { commands, source: "live" };
+    return { commands: fallbackHermesSlashCommands, source: "fallback", error: "Hermes returned an empty slash-command registry." };
+  } catch (error) {
+    return { commands: fallbackHermesSlashCommands, source: "fallback", error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export async function listHermesSlashCommands(): Promise<HermesSlashCommand[]> {
+  return (await listHermesSlashCommandRegistry()).commands;
 }
 
 export function executeHermesSlashCommand(

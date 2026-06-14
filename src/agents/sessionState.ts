@@ -22,6 +22,8 @@ export type HermesChatSession = {
   messages: ChatMessage[];
   linkedRepositoryId?: string;
   hermesCliSessionId?: string;
+  modelName?: string;
+  reasoningEffort?: string;
   operationRunId?: string;
   operationAction?: RepositoryOperationAction;
   operationRepositoryId?: string;

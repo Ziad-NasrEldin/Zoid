@@ -13,6 +13,7 @@ assert.deepEqual(sanitizeAgentDashboardState({ version: 1, tiledSessionIds: ["a"
   autoPrioritize: true,
 }, "state is deduped, capped, and missing sessions are removed");
 assert.equal(sanitizeAgentDashboardState({ version: 1, tiledSessionIds: valid, layoutMode: "bad" }, valid).tiledSessionIds.length, AGENT_DASHBOARD_MAX_TILES, "tiles are capped at four");
+assert.equal(sanitizeAgentDashboardState({ version: 1, tiledSessionIds: ["a", "b"], layoutMode: "quad" }, valid).layoutMode, "split-2", "removed manual layout choices should be ignored and derived from tile count");
 
 assert.deepEqual(applyDraggedSessionToDashboard({ version: 1, tiledSessionIds: [], layoutMode: "auto", autoPrioritize: true }, "b", "a", valid), {
   version: 1,
@@ -26,6 +27,13 @@ assert.deepEqual(applyDraggedSessionToDashboard({ version: 1, tiledSessionIds: [
 assert.equal(applyDraggedSessionToDashboard({ version: 1, tiledSessionIds: ["a", "b"], primarySessionId: "a", focusedSessionId: "b", layoutMode: "split-2", autoPrioritize: false }, "c", "a", valid).layoutMode, "focus-stack", "three dropped chats use the primary-plus-secondary stack layout");
 assert.equal(applyDraggedSessionToDashboard({ version: 1, tiledSessionIds: ["a", "b", "c"], primarySessionId: "a", focusedSessionId: "c", layoutMode: "focus-stack", autoPrioritize: false }, "d", "a", valid).layoutMode, "quad", "dropping into three open chats grows to a four-panel quad");
 assert.deepEqual(applyDraggedSessionToDashboard({ version: 1, tiledSessionIds: ["a", "b", "c", "d"], primarySessionId: "a", focusedSessionId: "d", layoutMode: "quad", autoPrioritize: false }, "e", "a", valid).tiledSessionIds, ["a", "b", "c", "d"], "drag-drop never exceeds the supported four visible panels");
+assert.deepEqual(applyDraggedSessionToDashboard({ version: 1, tiledSessionIds: [], layoutMode: "auto", autoPrioritize: false }, "a", "a", valid, { insertAt: 0 }).tiledSessionIds, ["a"], "dropping the active single chat into empty dashboard space should still materialize a tile instead of no-oping");
+assert.deepEqual(applyDraggedSessionToDashboard({ version: 1, tiledSessionIds: [], layoutMode: "auto", autoPrioritize: false }, "b", "a", valid, { insertAt: 0 }).tiledSessionIds, ["b", "a"], "dropping a new session on the left side of a single chat should place it before the active chat");
+assert.deepEqual(applyDraggedSessionToDashboard({ version: 1, tiledSessionIds: [], layoutMode: "auto", autoPrioritize: false }, "b", "a", valid, { insertAt: 1 }).tiledSessionIds, ["a", "b"], "dropping a new session on the right side of a single chat should place it after the active chat");
+assert.deepEqual(applyDraggedSessionToDashboard({ version: 1, tiledSessionIds: ["a", "b"], primarySessionId: "a", focusedSessionId: "b", layoutMode: "split-2", autoPrioritize: false }, "c", "a", valid, { insertAt: 0 }).tiledSessionIds, ["c", "a", "b"], "two-window drops on the left side should insert before the left panel");
+assert.deepEqual(applyDraggedSessionToDashboard({ version: 1, tiledSessionIds: ["a", "b", "c"], primarySessionId: "a", focusedSessionId: "c", layoutMode: "focus-stack", autoPrioritize: false }, "d", "a", valid, { insertAt: 1 }).tiledSessionIds, ["a", "d", "b", "c"], "three-window drops should map cursor position into the four-panel order instead of only appending");
+assert.deepEqual(applyDraggedSessionToDashboard({ version: 1, tiledSessionIds: ["a", "b", "c"], primarySessionId: "a", focusedSessionId: "c", layoutMode: "focus-stack", autoPrioritize: false }, "d", "a", valid, { insertAt: 3 }).tiledSessionIds, ["a", "b", "c", "d"], "three-window bottom/right empty-area drops should append as the fourth panel");
+assert.deepEqual(applyDraggedSessionToDashboard({ version: 1, tiledSessionIds: ["a", "b", "c"], primarySessionId: "a", focusedSessionId: "c", layoutMode: "focus-stack", autoPrioritize: false }, "b", "a", valid, { insertAt: 3 }).tiledSessionIds, ["a", "c", "b"], "dropping an already tiled session on empty dashboard space should move/focus it instead of silently rejecting the drop");
 
 const storage = new Map<string, string>();
 const fakeStorage = {
@@ -39,4 +47,4 @@ const fakeStorage = {
 storage.set(AGENT_DASHBOARD_STORAGE_KEY, "not-json");
 assert.deepEqual(loadAgentDashboardState(valid, fakeStorage).tiledSessionIds, [], "corrupt localStorage falls back");
 saveAgentDashboardState({ version: 1, tiledSessionIds: ["a"], primarySessionId: "a", focusedSessionId: "a", layoutMode: "split-2", autoPrioritize: false }, fakeStorage);
-assert.equal(loadAgentDashboardState(valid, fakeStorage).layoutMode, "split-2", "saved state round-trips");
+assert.equal(loadAgentDashboardState(valid, fakeStorage).layoutMode, "auto", "saved manual layout mode is migrated back to automatic single-tile layout");

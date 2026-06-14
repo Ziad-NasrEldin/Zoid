@@ -1,8 +1,8 @@
-import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ChangeEvent, type FormEvent, type KeyboardEvent } from "react";
+import { forwardRef, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ChangeEvent, type FormEvent, type KeyboardEvent } from "react";
 import { GlobalDropdown } from "../ui/GlobalDropdown";
 import type { HermesSlashCommand } from "./hermesCommands";
-import { commandDisplayName, commandSearchText } from "./hermesCommands";
-import { commandNeedsArgs } from "./slashCommandParser";
+import { commandDisplayDescription, commandDisplayName, commandSearchText, sortSlashCommandsForSearch } from "./hermesCommands";
+import { commandNeedsArgs, commandNeedsRequiredArgs } from "./slashCommandParser";
 
 type ComposerAttachmentAction = "context" | "extract" | "upload";
 type ComposerPanel = "attach" | "slash" | "settings" | "usage" | null;
@@ -21,14 +21,20 @@ type ComposerNotice = {
 };
 
 type ChatComposerProps = {
+  ariaLabel?: string;
   disabled?: boolean;
   disabledReason?: string;
   isSending?: boolean;
+  canStop?: boolean;
   contextUsedPercent?: number;
+  inputLabel?: string;
   modelLabel?: string;
+  placeholder?: string;
   temperature?: number;
   maxOutputTokens?: number;
   slashCommands?: HermesSlashCommand[];
+  slashCommandSource?: "live" | "fallback" | "unavailable";
+  variant?: "full" | "panel";
   onSend: (message: string) => void | Promise<void>;
   onStop?: () => void | Promise<void>;
 };
@@ -39,8 +45,10 @@ const attachmentActionLabels: Record<ComposerAttachmentAction, string> = {
   upload: "Upload only",
 };
 
-const COMPOSER_MIN_HEIGHT = 44;
-const COMPOSER_MAX_HEIGHT = 132;
+const COMPOSER_HEIGHTS = {
+  full: { min: 44, max: 132 },
+  panel: { min: 34, max: 88 },
+} as const;
 const TYPING_SOUND_MIN_INTERVAL_MS = 160;
 const TYPING_SOUND_VOLUME = 0.0036;
 const TYPING_SOUND_CLICK_VOLUME = 0.0009;
@@ -91,6 +99,12 @@ export function getInlineSlashSearch(value: string) {
   return commandDraft.toLowerCase();
 }
 
+function exactInlineSlashCommand(value: string, commands: HermesSlashCommand[]) {
+  const search = getInlineSlashSearch(value);
+  if (!search) return null;
+  return commands.find((command) => command.name === search || command.aliases.includes(search)) ?? null;
+}
+
 async function buildAttachmentContext(attachments: ComposerAttachment[]) {
   const included = attachments.filter((attachment) => attachment.action !== "upload");
   if (included.length === 0) return "";
@@ -128,23 +142,26 @@ export type ChatComposerHandle = {
   insertText: (text: string) => void;
 };
 
-export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(function ChatComposer({ disabled = false, disabledReason, isSending = false, contextUsedPercent = 1, modelLabel = "gpt-5.5", temperature = 0.7, maxOutputTokens = 4096, slashCommands = [], onSend, onStop }, ref) {
+export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(function ChatComposer({ ariaLabel = "Hermes message composer", disabled = false, disabledReason, isSending = false, canStop, contextUsedPercent = 1, inputLabel = "Message Hermes", modelLabel = "gpt-5.5", placeholder, temperature = 0.7, maxOutputTokens = 4096, slashCommands = [], slashCommandSource = "live", variant = "full", onSend, onStop }, ref) {
   const [value, setValue] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
   const [activePanel, setActivePanel] = useState<ComposerPanel>(null);
   const [commandSearch, setCommandSearch] = useState("");
   const [highlightedSlashCommandIndex, setHighlightedSlashCommandIndex] = useState(0);
+  const [dismissedInlineSlashValue, setDismissedInlineSlashValue] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [sessionTemperature, setSessionTemperature] = useState(temperature);
   const [sessionMaxOutputTokens, setSessionMaxOutputTokens] = useState(maxOutputTokens);
   const [notice, setNotice] = useState<ComposerNotice | null>(null);
   const [slashPanelMaxHeight, setSlashPanelMaxHeight] = useState(560);
   const formRef = useRef<HTMLFormElement>(null);
+  const attachButtonRef = useRef<HTMLButtonElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messageInputRef = useRef<HTMLTextAreaElement>(null);
   const inlineSlashOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const previousComposerHeightRef = useRef(COMPOSER_MIN_HEIGHT);
-  const composerHeightRef = useRef(COMPOSER_MIN_HEIGHT);
+  const initialComposerHeight = COMPOSER_HEIGHTS[variant].min;
+  const previousComposerHeightRef = useRef<number>(initialComposerHeight);
+  const composerHeightRef = useRef<number>(initialComposerHeight);
   const expansionTransitionTimerRef = useRef<number | null>(null);
   const typingAudioContextRef = useRef<AudioContext | null>(null);
   const lastTypingSoundAtRef = useRef(0);
@@ -164,20 +181,35 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   const actionableAttachments = attachments.filter((attachment) => attachment.action !== "upload" && attachment.status === "ready");
   const blockedActionableAttachments = attachments.filter((attachment) => attachment.action !== "upload" && attachment.status !== "ready");
   const cannotSend = disabled || (trimmed.length === 0 && actionableAttachments.length === 0);
+  const canStopCurrentRun = canStop ?? isSending;
   const settingsWiringUnavailable = true;
   const filteredCommands = useMemo(() => {
     const search = commandSearch.trim().toLowerCase();
-    if (!search) return slashCommands;
-    return slashCommands.filter((command) => commandSearchText(command).includes(search));
+    const matches = search ? slashCommands.filter((command) => commandSearchText(command).includes(search)) : slashCommands;
+    return sortSlashCommandsForSearch(matches, search);
   }, [commandSearch, slashCommands]);
   const inlineSlashSearch = useMemo(() => getInlineSlashSearch(value), [value]);
   const inlineSlashCommands = useMemo(() => {
     if (inlineSlashSearch === null) return [];
-    return inlineSlashSearch
+    const matches = inlineSlashSearch
       ? slashCommands.filter((command) => commandSearchText(command).includes(inlineSlashSearch))
       : slashCommands;
+    return sortSlashCommandsForSearch(matches, inlineSlashSearch);
   }, [inlineSlashSearch, slashCommands]);
-  const inlineSlashOpen = inlineSlashSearch !== null && inlineSlashCommands.length > 0 && activePanel === null && !menuOpen;
+  const inlineSlashOpen = inlineSlashSearch !== null && activePanel === null && !menuOpen && dismissedInlineSlashValue !== value;
+  const inputPlaceholder = placeholder ?? (disabled ? "Hermes is offline. Draft here; Send unlocks when the CLI is reachable." : isSending ? "Hermes is responding. Draft the next message here; Send unlocks after the current response." : "Message Hermes or type hermes tools list...");
+  const composerInstanceId = useId().replace(/[^A-Za-z0-9_-]/g, "");
+  const slashDropupListId = `${composerInstanceId}-composer-slash-dropup-list`;
+  const slashOptionId = (index: number) => `${composerInstanceId}-composer-slash-option-${index}`;
+  const activeSlashOptionId = inlineSlashOpen && inlineSlashCommands[highlightedSlashCommandIndex] ? slashOptionId(highlightedSlashCommandIndex) : undefined;
+  const modeNoteId = `${composerInstanceId}-composer-mode-note`;
+  const statusNoteId = `${composerInstanceId}-composer-status-note`;
+
+  useEffect(() => {
+    const nextMinHeight = COMPOSER_HEIGHTS[variant].min;
+    previousComposerHeightRef.current = nextMinHeight;
+    composerHeightRef.current = nextMinHeight;
+  }, [variant]);
 
   useEffect(() => {
     setHighlightedSlashCommandIndex(0);
@@ -196,14 +228,47 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     inlineSlashOptionRefs.current[highlightedSlashCommandIndex]?.scrollIntoView({ block: "nearest" });
   }, [highlightedSlashCommandIndex, inlineSlashOpen]);
 
+  useEffect(() => {
+    if (!menuOpen && !activePanel && !inlineSlashOpen) return;
+
+    function closeForOutsideInteraction(event: PointerEvent | MouseEvent | FocusEvent) {
+      const form = formRef.current;
+      const target = event.target;
+      if (!form || !(target instanceof Node) || form.contains(target)) return;
+      setMenuOpen(false);
+      setActivePanel(null);
+      setDismissedInlineSlashValue((current) => inlineSlashOpen ? value : current);
+    }
+
+    function closeForEscape(event: globalThis.KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      if (!menuOpen && !activePanel) return;
+      event.preventDefault();
+      setMenuOpen(false);
+      setActivePanel(null);
+      window.requestAnimationFrame(() => attachButtonRef.current?.focus({ preventScroll: true }));
+    }
+
+    document.addEventListener("pointerdown", closeForOutsideInteraction, true);
+    document.addEventListener("focusin", closeForOutsideInteraction, true);
+    document.addEventListener("keydown", closeForEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeForOutsideInteraction, true);
+      document.removeEventListener("focusin", closeForOutsideInteraction, true);
+      document.removeEventListener("keydown", closeForEscape, true);
+    };
+  }, [activePanel, inlineSlashOpen, menuOpen, value]);
+
   useLayoutEffect(() => {
     const textarea = messageInputRef.current;
     if (!textarea) return;
 
     const previousHeight = previousComposerHeightRef.current;
     textarea.style.height = "auto";
-    const nextHeight = Math.min(Math.max(textarea.scrollHeight, COMPOSER_MIN_HEIGHT), COMPOSER_MAX_HEIGHT);
-    textarea.style.overflowY = nextHeight >= COMPOSER_MAX_HEIGHT ? "auto" : "hidden";
+    const heightBounds = COMPOSER_HEIGHTS[variant];
+    const measuredScrollHeight = value.length === 0 ? heightBounds.min : textarea.scrollHeight;
+    const nextHeight = Math.min(Math.max(measuredScrollHeight, heightBounds.min), heightBounds.max);
+    textarea.style.overflowY = nextHeight >= heightBounds.max ? "auto" : "hidden";
 
     if (nextHeight > previousHeight) {
       if (expansionTransitionTimerRef.current !== null) {
@@ -229,7 +294,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     previousComposerHeightRef.current = nextHeight;
     composerHeightRef.current = nextHeight;
     if (nextHeight !== previousHeight) textarea.dataset.composerHeight = String(composerHeightRef.current);
-  }, [value]);
+  }, [value, variant]);
 
   useEffect(() => () => {
     if (expansionTransitionTimerRef.current !== null) {
@@ -329,6 +394,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   function handleMessageChange(event: ChangeEvent<HTMLTextAreaElement> | FormEvent<HTMLTextAreaElement>) {
     const nextValue = event.currentTarget.value;
     setValue(nextValue);
+    setDismissedInlineSlashValue((current) => current === nextValue ? current : null);
     if (nextValue.startsWith("/")) {
       setMenuOpen(false);
       setActivePanel(null);
@@ -339,7 +405,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   async function submit() {
     if (cannotSend) {
       if (disabled) setNotice({ tone: "warning", text: disabledReason || "Hermes is not reachable yet. You can keep drafting, but Send is locked." });
-      if (isSending) setNotice({ tone: "info", text: "Hermes is still responding. Type a message to queue it, or press Ctrl/Cmd+C to stop the active run." });
+      if (isSending) setNotice({ tone: "info", text: canStopCurrentRun ? "Hermes is still responding. Type a message to queue it, or press Ctrl/Cmd+C to stop the active run." : "All agent slots are busy. Type a message to queue it for this session." });
       return;
     }
 
@@ -357,32 +423,50 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (shouldStopHermesFromCopyShortcut(isSending, event.key, event.metaKey, event.ctrlKey, event.currentTarget.selectionStart, event.currentTarget.selectionEnd)) {
+    if (shouldStopHermesFromCopyShortcut(canStopCurrentRun, event.key, event.metaKey, event.ctrlKey, event.currentTarget.selectionStart, event.currentTarget.selectionEnd)) {
       event.preventDefault();
       void onStop?.();
       return;
     }
     if (inlineSlashOpen) {
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        setHighlightedSlashCommandIndex((current) => (current + 1) % inlineSlashCommands.length);
-        return;
-      }
-      if (event.key === "ArrowUp") {
-        event.preventDefault();
-        setHighlightedSlashCommandIndex((current) => (current - 1 + inlineSlashCommands.length) % inlineSlashCommands.length);
-        return;
-      }
-      if (event.key === "Tab" || event.key === "Enter") {
-        event.preventDefault();
-        const command = inlineSlashCommands[highlightedSlashCommandIndex] ?? inlineSlashCommands[0];
-        if (command) insertCommand(command, false);
-        return;
-      }
       if (event.key === "Escape") {
         event.preventDefault();
-        setValue("");
+        setDismissedInlineSlashValue(value);
         return;
+      }
+      if (inlineSlashCommands.length === 0) {
+        if (event.key === "Tab" || event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          return;
+        }
+      } else {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          setHighlightedSlashCommandIndex((current) => (current + 1) % inlineSlashCommands.length);
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          setHighlightedSlashCommandIndex((current) => (current - 1 + inlineSlashCommands.length) % inlineSlashCommands.length);
+          return;
+        }
+        if (event.key === "Enter") {
+          const exactCommand = exactInlineSlashCommand(value, slashCommands);
+          event.preventDefault();
+          if (exactCommand && !commandNeedsRequiredArgs(exactCommand)) {
+            void submit();
+            return;
+          }
+          const command = inlineSlashCommands[highlightedSlashCommandIndex] ?? inlineSlashCommands[0];
+          if (command) insertCommand(command, false);
+          return;
+        }
+        if (event.key === "Tab") {
+          event.preventDefault();
+          const command = inlineSlashCommands[highlightedSlashCommandIndex] ?? inlineSlashCommands[0];
+          if (command) insertCommand(command, false);
+          return;
+        }
       }
     }
     if (event.key === "Enter" && !event.shiftKey) {
@@ -425,7 +509,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
       });
       return;
     }
-    setValue((current) => current ? `${current.trimEnd()} ${commandText}` : commandText);
+    setValue((current) => getInlineSlashSearch(current) !== null ? commandText : current ? `${current.trimEnd()} ${commandText}` : commandText);
+    setDismissedInlineSlashValue(null);
     setNotice({ tone: "success", text: `${displayName} inserted. Add details, then send.` });
     setActivePanel(null);
     setMenuOpen(false);
@@ -446,17 +531,19 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     }
   }
 
+  const commandRegistryIsFallback = slashCommandSource === "fallback";
+  const commandRegistryLabel = commandRegistryIsFallback ? "Offline command reference" : "Live native command registry";
   const composerActions = [
     { id: "attach", label: "Attach files", subtitle: "Any format. Text files can be read into context.", badge: attachments.length ? `${attachments.length} attached` : "Any format" },
-    { id: "slash", label: "Slash commands", subtitle: "Live native command registry.", badge: `${slashCommands.length} commands` },
+    { id: "slash", label: "Slash commands", subtitle: commandRegistryLabel, badge: commandRegistryIsFallback ? "offline" : `${slashCommands.length} commands` },
     { id: "settings", label: "Agent settings", subtitle: "View temperature, output, model, tools.", badge: "Requires wiring" },
     { id: "usage", label: "Session usage", subtitle: "Context, token estimates, cleanup actions.", badge: `${contextUsedPercent}% context` },
   ];
 
   return (
     <form
-      aria-label="Hermes message composer"
-      className="chat-composer"
+      aria-label={ariaLabel}
+      className={`chat-composer chat-composer--${variant}`}
       ref={formRef}
       onSubmit={(event) => {
         event.preventDefault();
@@ -464,7 +551,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
       }}
     >
       <div className="composer-actions-root">
-        <button aria-expanded={menuOpen} aria-haspopup="menu" className="composer-attach" onClick={() => { setMenuOpen((current) => !current); setActivePanel(null); }} title="Composer actions" type="button">
+        <button aria-expanded={menuOpen} aria-haspopup="menu" className="composer-attach" onClick={() => { setMenuOpen((current) => !current); setActivePanel(null); }} ref={attachButtonRef} title="Composer actions" type="button">
           +
         </button>
         <input aria-label="Attach files" className="composer-file-input" multiple onChange={handleFilesSelected} ref={fileInputRef} type="file" />
@@ -494,17 +581,17 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
 
       <div className="composer-input-column">
         {inlineSlashOpen ? (
-          <div className="composer-slash-dropup" role="listbox" aria-label="Available slash commands" aria-activedescendant={inlineSlashCommands[highlightedSlashCommandIndex] ? `composer-slash-option-${inlineSlashCommands[highlightedSlashCommandIndex].name}` : undefined}>
+          <div className="composer-slash-dropup" role="listbox" aria-label="Available slash commands" aria-activedescendant={activeSlashOptionId}>
             <div className="composer-slash-dropup-header">
               <strong>Slash commands</strong>
-              <span>{slashCommands.length} live Hermes commands · ↑↓ navigate · Tab inserts</span>
+              <span>{slashCommandSource === "fallback" ? "Offline command reference · ↑↓ navigate · Tab inserts" : `${slashCommands.length} live Hermes commands · ↑↓ navigate · Tab inserts`}</span>
             </div>
-            <div className="composer-slash-dropup-list" id="composer-slash-dropup-list">
+            <div className="composer-slash-dropup-list" id={slashDropupListId}>
               {inlineSlashCommands.map((command, index) => (
                 <button
                   aria-selected={index === highlightedSlashCommandIndex}
                   className={`composer-slash-dropup-option${index === highlightedSlashCommandIndex ? " composer-slash-dropup-option--active" : ""}`}
-                  id={`composer-slash-option-${command.name}`}
+                  id={slashOptionId(index)}
                   key={command.name}
                   onMouseDown={(event) => event.preventDefault()}
                   onMouseEnter={() => setHighlightedSlashCommandIndex(index)}
@@ -515,9 +602,15 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
                 >
                   <span className="slash-command-meta">{command.category}</span>
                   <strong>{commandDisplayName(command)} {command.argsHint ? <em>{command.argsHint}</em> : null}</strong>
-                  <small>{command.description}</small>
+                  <small>{commandDisplayDescription(command)}</small>
                 </button>
               ))}
+              {inlineSlashCommands.length === 0 ? (
+                <div className="composer-slash-empty" role="option" aria-selected="false">
+                  <strong>No command found</strong>
+                  <small>Keep typing to send as text, or press Escape to close completion.</small>
+                </div>
+              ) : null}
             </div>
           </div>
         ) : null}
@@ -547,46 +640,48 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
           </div>
         ) : null}
         <label className={`composer-input-wrap${isHermesCommandDraft ? " composer-input-wrap--hermes-command" : ""}`}>
-          <span className="composer-input-label-row">
-            <span>Message Hermes</span>
-            {isHermesCommandDraft ? <strong className="composer-mode-chip">Hermes CLI command</strong> : null}
-          </span>
+          {variant === "panel" && !isHermesCommandDraft ? null : (
+            <span className="composer-input-label-row">
+              <span>{inputLabel}</span>
+              {isHermesCommandDraft ? <strong className="composer-mode-chip">Hermes CLI command</strong> : null}
+            </span>
+          )}
           <textarea
-            aria-activedescendant={inlineSlashOpen && inlineSlashCommands[highlightedSlashCommandIndex] ? `composer-slash-option-${inlineSlashCommands[highlightedSlashCommandIndex].name}` : undefined}
-            aria-controls={inlineSlashOpen ? "composer-slash-dropup-list" : undefined}
+            aria-activedescendant={activeSlashOptionId}
+            aria-controls={inlineSlashOpen ? slashDropupListId : undefined}
             aria-expanded={inlineSlashOpen}
-            aria-describedby={[isHermesCommandDraft ? "composer-mode-note" : null, disabledReason || notice ? "composer-status-note" : null].filter(Boolean).join(" ") || undefined}
+            aria-describedby={[isHermesCommandDraft ? modeNoteId : null, disabledReason || notice ? statusNoteId : null].filter(Boolean).join(" ") || undefined}
             onChange={handleMessageChange}
             onInput={handleMessageChange}
             onKeyDown={handleKeyDown}
-            placeholder={disabled ? "Hermes is offline. Draft here; Send unlocks when the CLI is reachable." : isSending ? "Hermes is responding. Draft the next message here; Send unlocks after the current response." : "Message Hermes or type hermes tools list..."}
+            placeholder={inputPlaceholder}
             ref={messageInputRef}
             rows={1}
             value={value}
           />
         </label>
         {isHermesCommandDraft ? (
-          <div className="composer-mode-strip composer-mode-strip--hermes-command" id="composer-mode-note" role="status">
+          <div className="composer-mode-strip composer-mode-strip--hermes-command" id={modeNoteId} role="status">
             <strong>CLI mode armed</strong>
             <span>Zoid will run this through the Hermes CLI bridge without cluttering the chat transcript.</span>
           </div>
         ) : null}
       </div>
       <button
-        className={`composer-send${isHermesCommandDraft ? " composer-send--hermes-command" : ""}${isSending ? " composer-send--stop" : ""}`}
-        disabled={disabled || (!isSending && trimmed.length === 0 && actionableAttachments.length === 0)}
+        className={`composer-send${isHermesCommandDraft ? " composer-send--hermes-command" : ""}${canStopCurrentRun && trimmed.length === 0 && actionableAttachments.length === 0 ? " composer-send--stop" : ""}`}
+        disabled={disabled || (!canStopCurrentRun && trimmed.length === 0 && actionableAttachments.length === 0)}
         onClick={(event) => {
-          if (!isSending || trimmed.length > 0 || actionableAttachments.length > 0) return;
+          if (!canStopCurrentRun || trimmed.length > 0 || actionableAttachments.length > 0) return;
           event.preventDefault();
           void onStop?.();
         }}
-        title={isSending ? (trimmed.length > 0 || actionableAttachments.length > 0 ? "Queue this message. Press Ctrl/Cmd+C to stop the current run." : "Stop Hermes run (Ctrl/Cmd+C)") : undefined}
+        title={isSending ? (trimmed.length > 0 || actionableAttachments.length > 0 ? "Queue this message. Press Ctrl/Cmd+C to stop the current run." : canStopCurrentRun ? "Stop Hermes run (Ctrl/Cmd+C)" : "Waiting for another session to finish before this can run.") : undefined}
         type="submit"
       >
-        {isSending ? (trimmed.length > 0 || actionableAttachments.length > 0 ? "QUEUE" : "STOP") : disabled ? "LOCKED" : isHermesCommandDraft ? "RUN CLI" : "SEND"}
+        {isSending ? (trimmed.length > 0 || actionableAttachments.length > 0 ? "QUEUE" : canStopCurrentRun ? "STOP" : "WAIT") : disabled ? "LOCKED" : isHermesCommandDraft ? "RUN CLI" : "SEND"}
       </button>
       {(disabledReason || notice) ? (
-        <p className={`composer-status-note composer-status-note--${notice?.tone ?? "warning"}`} id="composer-status-note" role={notice?.tone === "error" ? "alert" : "status"}>
+        <p className={`composer-status-note composer-status-note--${notice?.tone ?? "warning"}`} id={statusNoteId} role={notice?.tone === "error" ? "alert" : "status"}>
           {notice?.text ?? disabledReason}
         </p>
       ) : null}
@@ -610,7 +705,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
         <div className="composer-deep-panel composer-deep-panel--slash" role="dialog" aria-label="Slash commands" style={{ "--composer-slash-panel-max-height": `${slashPanelMaxHeight}px` } as CSSProperties}>
           <div className="composer-panel-header"><strong>Slash commands</strong><button onClick={() => setActivePanel(null)} type="button">Close</button></div>
           <input aria-label="Search slash commands" onChange={(event) => setCommandSearch(event.target.value)} placeholder="Search commands…" value={commandSearch} />
-          <p className="composer-panel-helper">Based on Hermes Agent slash-command registry reference and pulled from the live command registry. Run <strong>/help</strong> for the full in-session reference. You can also type terminal-style commands such as <strong>hermes tools list</strong> or <strong>hermes cron list</strong>; Zoid runs the CLI bridge and keeps terminal plumbing out of the conversation.</p>
+          <p className="composer-panel-helper">{commandRegistryIsFallback ? "Offline command reference. Hermes registry is unavailable, so Zoid is showing only the small local core command list." : "Based on Hermes Agent slash-command registry reference and pulled from the live command registry."} Run <strong>/help</strong> for the full in-session reference. You can also type terminal-style commands such as <strong>hermes tools list</strong> or <strong>hermes cron list</strong>; Zoid runs the CLI bridge and keeps terminal plumbing out of the conversation.</p>
           <div className="slash-command-list">
             {filteredCommands.map((command) => (
               <button
@@ -627,7 +722,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
               >
                 <span className="slash-command-meta">{command.category}</span>
                 <strong>{commandDisplayName(command)} {command.argsHint ? <em>{command.argsHint}</em> : null}</strong>
-                <span>{command.description}</span>
+                <span>{commandDisplayDescription(command)}</span>
                 <small>{[command.aliases.length ? `Aliases: ${command.aliases.map((alias) => `/${alias}`).join(", ")}` : null, command.subcommands.length ? `Subcommands: ${command.subcommands.join(", ")}` : null, "Enter inserts · Cmd/Ctrl+Enter runs"].filter(Boolean).join(" · ")}</small>
               </button>
             ))}

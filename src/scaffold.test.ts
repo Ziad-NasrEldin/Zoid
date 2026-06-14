@@ -27,6 +27,7 @@ const globalDropdown = readFileSync(new URL("./ui/GlobalDropdown.tsx", import.me
 const codeWorkspace = readFileSync(new URL("./code/CodeWorkspace.tsx", import.meta.url), "utf8");
 const repositoryClient = readFileSync(new URL("./code/repositoryClient.ts", import.meta.url), "utf8");
 const repositoryOperations = readFileSync(new URL("./code/repositoryOperations.ts", import.meta.url), "utf8");
+const socialDashboard = readFileSync(new URL("./social/SocialDashboard.tsx", import.meta.url), "utf8");
 const agentNotifications = existsSync(new URL("./agents/agentNotifications.ts", import.meta.url)) ? readFileSync(new URL("./agents/agentNotifications.ts", import.meta.url), "utf8") : "";
 const agentMonitorPanel = readFileSync(new URL("./agents/AgentMonitorPanel.tsx", import.meta.url), "utf8");
 const ruthlessReviewerAgent = existsSync(new URL("./agents/ruthlessReviewerAgent.ts", import.meta.url)) ? readFileSync(new URL("./agents/ruthlessReviewerAgent.ts", import.meta.url), "utf8") : "";
@@ -254,7 +255,7 @@ if (/import \{[^}]*\b(?:Bot|CalendarDays|FolderKanban|Code2|Megaphone|Repeat2|Se
 for (const requiredModelQuickSwitch of [
   "chat-stats-model-section",
   "chat-stats-model-button",
-  "Reasoning {activeReasoningLabel}",
+  "Reasoning {renderNumberAccents(activeReasoningLabel)}",
   "aria-haspopup=\"dialog\"",
   "onClick={() => setActiveCommandPanel(\"model\")}",
   "grid-template-columns: minmax(0, 1fr) auto",
@@ -768,8 +769,14 @@ for (const requiredPermanentPermissionBehavior of [
   }
 }
 
-if (!css.includes(".profile-section") || !css.includes(".profile-toggle-grid") || !css.includes(".profile-hero-card")) {
-  throw new Error("Complete profile page needs dedicated section, toggle, and active-profile styling");
+if (!css.includes(".profile-section") || !css.includes(".profile-toggle-grid")) {
+  throw new Error("Complete profile page needs dedicated section and toggle styling");
+}
+
+for (const removedSummarySurface of ["profile-hero-card", "Active profile summary", "social-provider-card", "Provider read-back"]) {
+  if (app.includes(removedSummarySurface) || socialDashboard.includes(removedSummarySurface)) {
+    throw new Error(`Settings and social headers must not render removed summary cards: ${removedSummarySurface}`);
+  }
 }
 
 for (const requiredOrganizedSettingsSurface of [
@@ -951,9 +958,9 @@ for (const requiredComposerPolish of [
   "STOP",
   "Stop Hermes run (Ctrl/Cmd+C)",
   "composer-send--stop",
-  "COMPOSER_MIN_HEIGHT",
-  "COMPOSER_MAX_HEIGHT",
-  "Math.min(Math.max(textarea.scrollHeight, COMPOSER_MIN_HEIGHT), COMPOSER_MAX_HEIGHT)",
+  "COMPOSER_HEIGHTS",
+  "const heightBounds = COMPOSER_HEIGHTS[variant]",
+  "Math.min(Math.max(measuredScrollHeight, heightBounds.min), heightBounds.max)",
 ]) {
   if (!chatComposer.includes(requiredComposerPolish)) {
     throw new Error(`Composer textarea needs command mode and auto-height behavior: ${requiredComposerPolish}`);
@@ -981,6 +988,13 @@ for (const requiredComposerCss of [
   ".composer-mode-chip",
   ".composer-mode-strip",
   ".message-command-chip",
+  ".chat-composer { position: relative; z-index: 80;",
+  ".chat-composer:focus-within, .chat-composer:has(.composer-slash-dropup), .chat-composer:has(.composer-action-popover), .chat-composer:has(.composer-deep-panel) { z-index: 180; }",
+  ".composer-slash-dropup { position: absolute; z-index: 220;",
+  ".agent-monitor-composer .composer-slash-dropup { z-index: 240;",
+  ".agents-sumi-e .chat-workspace:has(.composer-slash-dropup),",
+  "z-index: 120;",
+  "overflow: visible;",
 ]) {
   if (!css.includes(requiredComposerCss)) {
     throw new Error(`Composer textarea needs aligned default height and smooth multiline expansion styling: ${requiredComposerCss}`);
@@ -1044,7 +1058,8 @@ for (const requiredHermesFeedbackPolish of [
   "button-label-jp",
   "書類",
   "Context</b>",
-  "Time</b>",
+  "Status</b>",
+  "Task</b>",
   "Model</b>",
   "Session</b>",
   ".agents-sumi-e .chat-stats-strip b",
@@ -1126,11 +1141,18 @@ for (const restoredSessionRailSurface of [
 }
 
 if (
-  !css.includes(".archive-session-button { display: inline-grid; place-items: center;") ||
+  !css.includes(".session-row-controls { display: flex; align-items: center;") ||
+  !css.includes(".session-tab-portrait--idle") ||
+  !css.includes(".sessions-rail--narrow .session-tab-row") ||
+  !css.includes(".sessions-rail--medium .session-row-controls") ||
+  !screen.includes("sessionRuntime.status !== \"idle\"") ||
+  !screen.includes("className={portraitClassName}") ||
+  !screen.includes("`session-tab-row--${sessionRuntime.status}`") ||
+  screen.includes(">Tile</button>") ||
   !/\.sessions-rail--compact \.session-tab \{[^}]*grid-template-columns: 1fr;[^}]*grid-template-rows: 1fr;[^}]*place-items: center;/.test(css) ||
   !/\.sessions-rail--compact \.session-tab-icon \{[^}]*grid-row: auto;[^}]*place-self: center;[^}]*width: 30px;[^}]*height: 30px;[^}]*border: 0;/.test(css)
 ) {
-  throw new Error("Sessions rail must use compact archive controls and one-box compact icons centered in their boxes");
+  throw new Error("Sessions rail must use adaptive card controls, remove Tile/Idle chrome, shade idle portraits, and keep compact icons centered");
 }
 
 if (!/\.sessions-rail--compact \.session-tab-icon\.session-tab-portrait \{[^}]*position: absolute;[^}]*inset: 0;[^}]*width: 100%;[^}]*height: 100%;[^}]*place-self: stretch;[^}]*backdrop-filter: none;/s.test(css)) {
@@ -1354,23 +1376,24 @@ if (!css.includes(".ink-rail { display: none; }") || !css.includes(".nav-list { 
 }
 
 for (const requiredMetric of [
-  "Context</b> {contextUsedPercent}%",
-  "{compressionCount} compressions",
-  "{formatElapsed(promptElapsed)}",
-  "Codex {CODEX_USAGE_TODAY} / {CODEX_USAGE_WEEKLY}",
-  "{activeModelLabel}",
+  "<b>Status</b> {renderNumberAccents(activeTaskStatus)} · <b>Task</b> {renderNumberAccents(formatElapsed(promptElapsed))} · <b>Session</b> {renderNumberAccents(formatElapsed(sessionElapsed))}",
+  "Context</b> <span className=\"stat-number-accent\">{contextUsedPercent}%</span>",
+  "<span className=\"stat-number-accent\">{compressionCount}</span> compressions",
+  "renderNumberAccents(activeModelLabel)",
+  "renderNumberAccents(activeReasoningLabel)",
+  "renderNumberAccents(`${CODEX_USAGE_TODAY} / ${CODEX_USAGE_WEEKLY}`)",
   "Change model and reasoning",
   "model-command-panel",
   "saveHermesProfileSettings",
-  "{cliStatus?.session ?? activeSession?.id ?? \"most-recent-hermes-cli-session\"}",
+  "Hermes ID</b> {renderNumberAccents(cliStatus?.session ?? activeSession?.id ?? \"most-recent-hermes-cli-session\")}",
 ]) {
   if (!screen.includes(requiredMetric)) {
     throw new Error(`Hermes stats strip is missing metric: ${requiredMetric}`);
   }
 }
 
-if (!screen.includes("<span><b>Time</b> {formatElapsed(promptElapsed)}</span>")) {
-  throw new Error("Elapsed time must occupy the second Hermes stats section");
+if (screen.includes("<span><b>Time</b> {formatElapsed(promptElapsed)}</span>")) {
+  throw new Error("Elapsed time must stay in the combined Status / Task / Session Hermes stats section");
 }
 
 if (screen.includes("<span>Repository:") || screen.includes("Session: {cliStatus?.session ?? activeSession?.id ?? \"most-recent-hermes-cli-session\"} · Elapsed:")) {
@@ -1545,9 +1568,15 @@ if (!backend.includes('Command::new') || !backend.includes('"hermes"')) {
   throw new Error("Backend must spawn the Hermes CLI, not call an HTTP API");
 }
 
-for (const requiredHermesCommandBridge of ["hermes_cli_args_from_prompt", "hermes_chat_args", "command_usage", "hermes tools list", "interactive. Use a non-interactive subcommand", "starts_with(\"--yolo=\")", "argument_started"]) {
+for (const requiredHermesCommandBridge of ["hermes_cli_args_from_prompt", "hermes_chat_args", "command_usage", "hermes chat --cli", "hermes tools list", "interactive. Use a non-interactive subcommand", "starts_with(\"--yolo=\")", "argument_started"]) {
   if (!backend.includes(requiredHermesCommandBridge)) {
     throw new Error(`Hermes command bridge must keep CLI execution wired: ${requiredHermesCommandBridge}`);
+  }
+}
+
+for (const requiredHermesStreamingGuard of ["stripHermesRunMetadata", "responseContent, status: \"sent\""]) {
+  if (!screen.includes(requiredHermesStreamingGuard)) {
+    throw new Error(`Hermes chat streaming must hide terminal metadata and replace metadata-only chunks: ${requiredHermesStreamingGuard}`);
   }
 }
 

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import type { HermesSlashCommand } from "./hermesCommands";
-import { commandDisplayName, commandSearchText } from "./hermesCommands";
+import { commandDisplayDescription, commandDisplayName, commandSearchText, sortSlashCommandsForSearch } from "./hermesCommands";
 
 export type CommandPaletteProps = {
   open: boolean;
@@ -27,8 +27,8 @@ export function CommandPalette({ open, commands, recentCommands, onClose, onRunC
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const filtered = useMemo(() => {
     const search = query.trim().toLowerCase();
-    if (!search) return commands;
-    return commands.filter((command) => commandSearchText(command).includes(search));
+    const matches = search ? commands.filter((command) => commandSearchText(command).includes(search)) : commands;
+    return sortSlashCommandsForSearch(matches, search);
   }, [commands, query]);
 
   useEffect(() => {
@@ -134,7 +134,7 @@ export function CommandPalette({ open, commands, recentCommands, onClose, onRunC
                 type="button"
               >
                 <strong>{display} {command.argsHint ? <em>{command.argsHint}</em> : null}</strong>
-                <span>{command.description}</span>
+                <span>{commandDisplayDescription(command)}</span>
                 <small>{[command.category, command.aliases.length ? `Aliases: ${command.aliases.map((alias) => `/${alias}`).join(", ")}` : null, command.subcommands.length ? `Subcommands: ${command.subcommands.join(", ")}` : null].filter(Boolean).join(" · ")}</small>
               </button>
             );

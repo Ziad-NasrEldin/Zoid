@@ -27,6 +27,7 @@ src-tauri/target/
 .hermes/
 CONTEXT.md
 reports/
+artifacts/
 docs/superpowers/plans/
 .codegraph/
 

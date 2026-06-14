@@ -28,3 +28,7 @@ export function parseSlashCommand(input: string, commands: HermesSlashCommand[])
 export function commandNeedsArgs(command: HermesSlashCommand) {
   return Boolean(command.argsHint || command.subcommands.length > 0);
 }
+
+export function commandNeedsRequiredArgs(command: HermesSlashCommand) {
+  return Boolean(command.argsHint?.trim().startsWith("<"));
+}

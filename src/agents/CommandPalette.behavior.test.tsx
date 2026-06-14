@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { Window } from "happy-dom";
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { CommandPalette } from "./CommandPalette";
 import type { HermesSlashCommand } from "./hermesCommands";
@@ -25,6 +25,17 @@ const HTMLElementConstructor = (window as any).HTMLElement as { prototype: { scr
 const EventConstructor = (window as any).Event as new (type: string, init?: EventInit) => Event;
 if (!HTMLElementConstructor.prototype.scrollIntoView) {
   HTMLElementConstructor.prototype.scrollIntoView = () => undefined;
+}
+
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+  await Promise.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  flushSync(() => undefined);
 }
 
 const commands: HermesSlashCommand[] = [
