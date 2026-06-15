@@ -1,7 +1,6 @@
 import { strict as assert } from "node:assert";
 import { Window } from "happy-dom";
-import { useState } from "react";
-import { flushSync } from "react-dom";
+import { act as reactAct, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { GlobalDropdown } from "./GlobalDropdown";
 
@@ -23,14 +22,11 @@ Object.assign(globalThis, {
 
 
 async function act(callback: () => void | Promise<void>) {
-  let result: void | Promise<void> = undefined;
-  flushSync(() => {
-    result = callback();
+  await reactAct(async () => {
+    await callback();
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
-  await result;
-  await Promise.resolve();
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  flushSync(() => undefined);
 }
 async function click(element: Element) {
   await act(async () => {

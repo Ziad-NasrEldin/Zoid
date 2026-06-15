@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
+import { act as reactAct } from "react";
 import { Window } from "happy-dom";
-import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { SocialDashboard } from "./SocialDashboard";
@@ -79,12 +79,11 @@ async function settle() {
 }
 
 async function act(callback: () => unknown | Promise<unknown>) {
-  let result: unknown | Promise<unknown>;
-  flushSync(() => {
-    result = callback();
+  await reactAct(async () => {
+    await callback();
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
-  await result;
-  await settle();
 }
 
 async function click(element: Element) {

@@ -1,6 +1,8 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { SESSION_AGENT_AVATARS, chooseUniqueSessionAgentAvatarId } from "./agents/sessionPortraits";
 
+const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { scripts?: Record<string, string> };
+const npmrc = existsSync(new URL("../.npmrc", import.meta.url)) ? readFileSync(new URL("../.npmrc", import.meta.url), "utf8") : "";
 const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
 const css = readFileSync(new URL("./App.css", import.meta.url), "utf8");
 const main = readFileSync(new URL("./main.tsx", import.meta.url), "utf8");
@@ -34,6 +36,16 @@ const ruthlessReviewerAgent = existsSync(new URL("./agents/ruthlessReviewerAgent
 const brainWorkspace = existsSync(new URL("./brain/BrainWorkspace.tsx", import.meta.url)) ? readFileSync(new URL("./brain/BrainWorkspace.tsx", import.meta.url), "utf8") : "";
 const brainClient = existsSync(new URL("./brain/brainClient.ts", import.meta.url)) ? readFileSync(new URL("./brain/brainClient.ts", import.meta.url), "utf8") : "";
 const brainTypes = existsSync(new URL("./brain/types.ts", import.meta.url)) ? readFileSync(new URL("./brain/types.ts", import.meta.url), "utf8") : "";
+if (!npmrc.split(/\r?\n/).some((line) => line.trim() === "include=dev")) {
+  throw new Error("Local npm installs must include devDependencies even when the parent shell exports NODE_ENV=production");
+}
+for (const [scriptName, expectedMode] of Object.entries({ dev: "development", "tauri:dev": "development", "test:frontend": "test", test: "test" })) {
+  const script = packageJson.scripts?.[scriptName] ?? "";
+  if (!script.includes(`NODE_ENV=${expectedMode}`)) {
+    throw new Error(`${scriptName} must pin NODE_ENV=${expectedMode} so ambient production shells do not omit React/dev test behavior`);
+  }
+}
+
 if (!/<LazyAgentsHermesScreen[\s\S]{0,520}repositories=\{repositories\}[\s\S]{0,160}sessions=\{hermesSessions\}/.test(app)) {
   throw new Error("Agents screen must receive repository catalog plus chat sessions, not a global linked repository selection");
 }

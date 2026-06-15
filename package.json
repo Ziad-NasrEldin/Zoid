@@ -4,15 +4,15 @@
   "version": "0.25.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
+    "dev": "NODE_ENV=development vite --host 127.0.0.1 --port 1420 --strictPort",
+    "build": "NODE_ENV=production tsc && NODE_ENV=production vite build",
+    "preview": "NODE_ENV=production vite preview",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build",
+    "tauri:dev": "NODE_ENV=development tauri dev",
+    "tauri:build": "NODE_ENV=production tauri build",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --lib --bins -- --test-threads=1",
-    "test:frontend": "tsx src/scaffold.test.ts && tsx src/code/repositoryOperations.test.ts && tsx src/code/CodeWorkspace.behavior.test.tsx && tsx src/content/contentWorkspace.test.ts && tsx src/social/socialViewModel.test.ts && tsx src/social/SocialDashboard.behavior.test.tsx && tsx src/ui/GlobalDropdown.behavior.test.tsx && tsx src/brain/BrainWorkspace.behavior.test.tsx && tsx src/automations/AutomationsWorkspace.behavior.test.tsx && tsx src/agents/ChatComposer.slash.test.tsx && tsx src/agents/ChatComposer.behavior.test.tsx && tsx src/agents/CommandPalette.behavior.test.tsx && tsx src/agents/dashboardLayoutState.test.ts && tsx src/agents/continuationBrief.test.ts && tsx src/agents/AgentsHermesScreen.file-manager.test.tsx && tsx src/agents/ruthlessReviewerAgent.behavior.test.ts",
-    "test": "npm run test:frontend && npm run test:rust"
+    "test:frontend": "NODE_ENV=test tsx src/scaffold.test.ts && NODE_ENV=test tsx src/code/repositoryOperations.test.ts && NODE_ENV=test tsx src/code/CodeWorkspace.behavior.test.tsx && NODE_ENV=test tsx src/content/contentWorkspace.test.ts && NODE_ENV=test tsx src/social/socialViewModel.test.ts && NODE_ENV=test tsx src/social/SocialDashboard.behavior.test.tsx && NODE_ENV=test tsx src/ui/GlobalDropdown.behavior.test.tsx && NODE_ENV=test tsx src/brain/BrainWorkspace.behavior.test.tsx && NODE_ENV=test tsx src/automations/AutomationsWorkspace.behavior.test.tsx && NODE_ENV=test tsx src/agents/ChatComposer.slash.test.tsx && NODE_ENV=test tsx src/agents/ChatComposer.behavior.test.tsx && NODE_ENV=test tsx src/agents/CommandPalette.behavior.test.tsx && NODE_ENV=test tsx src/agents/dashboardLayoutState.test.ts && NODE_ENV=test tsx src/agents/continuationBrief.test.ts && NODE_ENV=test tsx src/agents/AgentsHermesScreen.file-manager.test.tsx && NODE_ENV=test tsx src/agents/ruthlessReviewerAgent.behavior.test.ts",
+    "test": "NODE_ENV=test npm run test:frontend && npm run test:rust"
   },
   "dependencies": {
     "@tauri-apps/api": "latest",
