@@ -473,16 +473,25 @@ export function SocialDashboard() {
             <article className="social-calendar-day" key={day.date}>
               <div className="social-calendar-day-header">
                 <time dateTime={day.date}>{day.label}</time>
-                <button aria-expanded={quickMenuDate === day.date} aria-haspopup="menu" className="social-calendar-quick-button" onClick={() => setQuickMenuDate((current) => current === day.date ? null : day.date)} title={`Generate or schedule content for ${day.label}`} type="button"><Wand2 size={14} aria-hidden="true" /> Generate</button>
+                <button aria-expanded={quickMenuDate === day.date} aria-haspopup="dialog" className="social-calendar-quick-button" onClick={() => setQuickMenuDate((current) => current === day.date ? null : day.date)} title={`Generate or schedule content for ${day.label}`} type="button"><Wand2 size={14} aria-hidden="true" /> Generate</button>
               </div>
               {quickMenuDate === day.date ? (
-                <div className="social-calendar-type-menu" role="menu">
-                  <button aria-label={`Close generation menu for ${day.label}`} className="social-calendar-type-menu-close" onClick={() => setQuickMenuDate(null)} role="menuitem" title="Close generation menu" type="button"><X size={14} aria-hidden="true" /></button>
-                  {contentTypes.map((type) => (
-                    <button disabled={Boolean(busyAction)} key={type.id} onClick={() => void generateForDate(day.date, type)} role="menuitem" title={type.description} type="button">
-                      <strong>{type.label}</strong><small>{type.description}</small>
-                    </button>
-                  ))}
+                <div aria-label={`Generate content for ${day.label}`} className="social-calendar-type-menu" role="dialog">
+                  <div className="social-calendar-type-menu-header">
+                    <div>
+                      <span>Quick generation</span>
+                      <strong>{day.label}</strong>
+                    </div>
+                    <button aria-label={`Close generation menu for ${day.label}`} className="social-calendar-type-menu-close" onClick={() => setQuickMenuDate(null)} title="Close generation menu" type="button"><X size={14} aria-hidden="true" /></button>
+                  </div>
+                  <p className="social-calendar-type-menu-note">Choose the format Zoid should draft for this slot.</p>
+                  <div className="social-calendar-type-menu-options">
+                    {contentTypes.map((type) => (
+                      <button className="social-calendar-type-option" disabled={Boolean(busyAction)} key={type.id} onClick={() => void generateForDate(day.date, type)} title={type.description} type="button">
+                        <strong>{type.label}</strong><small>{type.description}</small>
+                      </button>
+                    ))}
+                  </div>
                 </div>
               ) : null}
               {day.posts.length ? day.posts.map((post) => (
