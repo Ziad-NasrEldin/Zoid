@@ -28,12 +28,24 @@ src-tauri/target/
 CONTEXT.md
 reports/
 artifacts/
+Docs/proofs/
+docs/proofs/
+Docs/plans/
+docs/plans/
+Docs/decisions/
+docs/decisions/
+Docs/implementation-plans/
+docs/implementation-plans/
 docs/superpowers/plans/
+*.proof.png
+*.proof.jpg
+*.proof.jpeg
+*.proof.webp
 .codegraph/
 
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
+# Editor / agent-local directories and files
+.vscode/
+.impecabble/
 .idea
 .DS_Store
 *.suo
