@@ -832,6 +832,42 @@ async function runRepositoryOperationInitialPromptTests() {
   clearMocks();
 }
 
+async function runFocusWorkspaceTests() {
+  installMockIpc();
+  const { container, root } = await renderHermesScreen({ repositories });
+
+  const focusButton = container.querySelector<HTMLButtonElement>(".chat-stage .chat-focus-mode-button");
+  assert.ok(focusButton, "chat stage should render a Focus button");
+  await click(focusButton);
+
+  const shell = container.querySelector<HTMLElement>(".hermes-chat-shell");
+  assert.equal(shell?.dataset.hermesFocusWorkspace, "true", "Focus should promote Hermes to full-screen workspace state");
+  assert.ok(container.querySelector(".chat-workspace--focus-mode"), "focus workspace should mark the workspace grid");
+  assert.ok(container.querySelector(".sessions-rail--focus-mode.sessions-rail--compact"), "focus workspace should force sessions into a thin icon rail");
+  assert.equal(container.querySelector(".sessions-rail--focus-mode .sessions-rail-morph-button"), null, "focus workspace should hide the normal rail morph button instead of rendering a no-op control");
+  assert.ok(container.querySelector(".sessions-rail--focus-mode .session-row-controls--focus"), "focus workspace should preserve compact session controls/status in the rail");
+  assert.ok(container.querySelector(".sessions-rail--focus-mode .session-continue-button"), "focus rail should retain a continue affordance");
+  assert.ok(container.querySelector(".sessions-rail--focus-mode .archive-session-button"), "focus rail should retain archive access");
+  assert.ok(container.querySelector(".chat-main-pane--focus-mode"), "focus workspace should expand the main chat pane");
+  assert.ok(container.querySelector(".chat-stage--focus-mode"), "focus workspace should render the expanded chat stage");
+  assert.ok(container.querySelector(".focus-workspace-strip .repository-link-control--focus-strip"), "focus workspace should keep repository selection in the workspace strip");
+  assert.ok(container.querySelector(".chat-workspace--focus-mode .chat-composer"), "focus workspace should preserve the normal composer in the focused workspace");
+
+  const filesButton = container.querySelector<HTMLButtonElement>(".file-manager-toggle-button");
+  assert.ok(filesButton, "focus workspace should retain the Files panel toggle");
+  await click(filesButton);
+  assert.ok(container.querySelector(".chat-workspace--focus-mode.chat-workspace--file-manager-open"), "Files panel should still slide in while focused");
+
+  const exitButton = container.querySelector<HTMLButtonElement>(".chat-focus-mode-button--active");
+  assert.ok(exitButton, "focus workspace should render an Exit focus toggle");
+  await click(exitButton);
+  assert.ok(shell?.dataset.hermesFocusWorkspace !== "true", "Exit focus should restore normal layout state");
+  assert.ok(!container.querySelector(".chat-workspace--focus-mode"), "normal layout should not keep focus workspace classes");
+
+  await act(async () => root.unmount());
+  clearMocks();
+}
+
 const agentsSource = readFileSync(new URL("./AgentsHermesScreen.tsx", import.meta.url), "utf8");
 const agentMonitorPanelSource = readFileSync(new URL("./AgentMonitorPanel.tsx", import.meta.url), "utf8");
 const appCssSource = readFileSync(new URL("../App.css", import.meta.url), "utf8");
@@ -850,6 +886,7 @@ assert.ok(appCssSource.includes(".agent-monitor-composer .chat-composer--panel")
 
 
 await runFileManagerTests();
+await runFocusWorkspaceTests();
 await runSessionsOverflowCueTests();
 await runDashboardDragDropTests();
 await runRepositoryLinkingTests();

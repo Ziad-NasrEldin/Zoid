@@ -62,6 +62,14 @@ assert.match(canRetryBufferSchedule(overview, approvedPost).reason, /rate-limite
 const healthyOverview = { ...overview, overallStatus: "ready_to_schedule" as const, bufferHealth: { ...overview.bufferHealth, ok: true, httpStatus: 200, rateLimited: false, rateLimitWindow: null } };
 assert.equal(canRetryBufferSchedule(healthyOverview, approvedPost).ok, true, "approved post with valid media can retry when Buffer is healthy");
 
+const verifiedProviderPost = {
+  ...approvedPost,
+  bufferPosts: [{ ...approvedPost.bufferPosts[0], bufferId: "buf-verified-1", state: "scheduled" as const, readBackVerifiedAt: "2026-06-09T13:00:00Z" }],
+};
+const verifiedProviderRetry = canRetryBufferSchedule(healthyOverview, verifiedProviderPost);
+assert.equal(verifiedProviderRetry.ok, false, "retry must stay blocked when provider state already exists, even after read-back verification");
+assert.match(verifiedProviderRetry.reason, /duplicate provider posts/i, "provider-state blocker should explain duplicate prevention");
+
 const unapproved = { ...approvedPost, review: { ...approvedPost.review!, verdict: "REQUEST_CHANGES" as const }, status: "request_changes" as const };
 assert.equal(canRetryBufferSchedule(healthyOverview, unapproved).ok, false, "retry must be blocked without reviewer approval");
 

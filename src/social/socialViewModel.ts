@@ -46,7 +46,7 @@ export function canRetryBufferSchedule(overview: MavoidSocialOverview, post: Mav
     return { ok: false, reason: "A valid public direct media URL is required before scheduling." };
   }
   if (post.bufferPosts.some((bufferPost) => bufferPost.state === "scheduled" || bufferPost.state === "posted")) {
-    return { ok: false, reason: "This post already has provider state and must be verified before retrying." };
+    return { ok: false, reason: "This post already has provider state. Verify read-back for status clarity, but do not retry scheduling because duplicate provider posts could be created." };
   }
   return { ok: true, reason: "Ready to retry scheduling." };
 }

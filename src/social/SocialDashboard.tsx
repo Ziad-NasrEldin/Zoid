@@ -27,14 +27,19 @@ type ContentType = {
 };
 
 type PreviewAsset = {
-  src: string;
-  alt: string;
+  index: number;
 };
 
 type RedesignTarget = {
   postId: string;
   mediaPath: string;
   label: string;
+} | null;
+
+type ProviderVerificationTarget = {
+  postId: string;
+  mediaUrl: string | null;
+  detailsResource: string | null;
 } | null;
 
 const slotTimes: Record<MavoidSocialPost["slotType"], string> = {
@@ -149,6 +154,18 @@ function readableDateTime(value: string | null | undefined): string {
   return `${day}, ${time} Cairo`;
 }
 
+function hasUnverifiedProviderState(post: MavoidSocialPost | null): boolean {
+  return post?.bufferPosts.some((item) => (item.state === "scheduled" || item.state === "posted") && !item.readBackVerifiedAt) ?? false;
+}
+
+function providerDetailsResource(post: MavoidSocialPost | null): string | null {
+  if (!post) return null;
+  return post.bufferPosts.find((item) => canOpenExternal(item.publishedUrl))?.publishedUrl
+    ?? post.reports.find((report) => report.kind === "buffer" || report.kind === "monitor")?.path
+    ?? post.review?.reportPath
+    ?? null;
+}
+
 function platformIconList(post: MavoidSocialPost) {
   return post.platforms.map((platform) => (
     <span className="social-platform-icon" aria-label={platformLabels[platform] ?? platform} key={platform} title={platformLabels[platform] ?? platform}>{platformIcons[platform] ?? platform.slice(0, 1).toUpperCase()}</span>
@@ -183,6 +200,7 @@ export function SocialDashboard() {
   const [quickMenuDate, setQuickMenuDate] = useState<string | null>(null);
   const [previewAsset, setPreviewAsset] = useState<PreviewAsset | null>(null);
   const [redesignTarget, setRedesignTarget] = useState<RedesignTarget>(null);
+  const [providerVerificationTarget, setProviderVerificationTarget] = useState<ProviderVerificationTarget>(null);
   const [redesignNotes, setRedesignNotes] = useState("");
   const [assetStates, setAssetStates] = useState<Record<string, string>>({});
 
@@ -204,15 +222,16 @@ export function SocialDashboard() {
   useEffect(() => { void refresh(); }, []);
 
   useEffect(() => {
-    if (!previewAsset && !redesignTarget) return;
+    if (!previewAsset && !redesignTarget && !providerVerificationTarget) return;
     function handleEscape(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
       setPreviewAsset(null);
       setRedesignTarget(null);
+      setProviderVerificationTarget(null);
     }
     window.addEventListener("keydown", handleEscape);
     return () => window.removeEventListener("keydown", handleEscape);
-  }, [previewAsset, redesignTarget]);
+  }, [previewAsset, redesignTarget, providerVerificationTarget]);
 
   const selectedPost = useMemo(() => posts.find((post) => post.id === selectedPostId) ?? posts[0] ?? null, [posts, selectedPostId]);
   const retryState = overview && selectedPost ? canRetryBufferSchedule(overview, selectedPost) : { ok: false, reason: "No selected post." };
@@ -255,6 +274,12 @@ export function SocialDashboard() {
   }
 
   async function validateMediaUrl(url: string | null | undefined) {
+    if (hasUnverifiedProviderState(selectedPost)) {
+      setProviderVerificationTarget({ postId: selectedPost?.id ?? "", mediaUrl: url ?? null, detailsResource: providerDetailsResource(selectedPost) });
+      setMessage(null);
+      setError(null);
+      return;
+    }
     if (!url) {
       setMessage("No public media URL is available to validate.");
       return;
@@ -273,6 +298,35 @@ export function SocialDashboard() {
 
   async function validateSelectedMedia() {
     await validateMediaUrl(selectedPost?.mediaAssets.find((asset) => canOpenExternal(asset.publicUrl))?.publicUrl);
+  }
+
+  async function verifyProviderState() {
+    if (!providerVerificationTarget) return;
+    setBusyAction("verify_provider_state");
+    setMessage(null);
+    setError(null);
+    try {
+      await runMavoidBufferHealthCheck();
+      const [nextOverview, nextPosts] = await Promise.all([getMavoidSocialOverview(), listMavoidSocialPosts()]);
+      setOverview(nextOverview);
+      setPosts(nextPosts);
+      const latestPost = nextPosts.find((post) => post.id === providerVerificationTarget.postId) ?? selectedPost;
+      if (!hasUnverifiedProviderState(latestPost)) {
+        const mediaUrl = providerVerificationTarget.mediaUrl;
+        setProviderVerificationTarget(null);
+        setMessage("Provider state verified for read-back. Schedule retry remains locked while provider records already exist, so duplicates are not created.");
+        if (mediaUrl) {
+          const result = await validateMavoidMediaUrl(mediaUrl);
+          setMessage(`Provider state verified for read-back. Schedule retry remains locked while provider records already exist. Media validation: ${result.ok ? "valid" : "blocked"} · HTTP ${result.httpStatus ?? "—"} · ${result.contentType ?? "unknown type"}`);
+        }
+      } else {
+        setMessage("Provider health check finished, but this post still has unverified provider state in local read-back. Refresh after the provider report updates before retrying schedule actions.");
+      }
+    } catch (err) {
+      setError(bridgeErrorMessage(err));
+    } finally {
+      setBusyAction(null);
+    }
   }
 
   async function generateForDate(date: string, contentType: ContentType) {
@@ -310,6 +364,36 @@ export function SocialDashboard() {
   }
 
   const selectedPostHasSafeMedia = selectedPost?.mediaAssets.some((asset) => canOpenExternal(asset.publicUrl)) ?? false;
+  const selectedPostNeedsProviderVerification = hasUnverifiedProviderState(selectedPost);
+  const validateActionLabel = selectedPostNeedsProviderVerification ? "Verify provider state" : "Validate";
+  const validateActionTitle = selectedPostHasSafeMedia
+    ? selectedPostNeedsProviderVerification
+      ? "Verify provider read-back before validating media or retrying schedule actions."
+      : "Validate the selected post's first public HTTPS media URL."
+    : "No public HTTPS media URL is available on the selected post.";
+  const selectedPreviewAssets = useMemo(() => (selectedPost?.mediaAssets ?? [])
+    .map((asset, index) => ({ asset, index, source: canOpenExternal(asset.publicUrl) ? asset.publicUrl : null, alt: `${neutralizeValue(selectedPost?.title)} design ${index + 1}` }))
+    .filter((entry) => entry.source), [selectedPost]);
+  const activePreviewIndex = previewAsset ? selectedPreviewAssets.findIndex((entry) => entry.index === previewAsset.index) : -1;
+  const activePreview = activePreviewIndex >= 0 ? selectedPreviewAssets[activePreviewIndex] : null;
+  const hasPreviewNavigation = selectedPreviewAssets.length > 1;
+
+  function openPreview(index: number) {
+    setPreviewAsset({ index });
+  }
+
+  function movePreview(direction: -1 | 1) {
+    if (!selectedPreviewAssets.length || activePreviewIndex < 0) return;
+    const nextIndex = (activePreviewIndex + direction + selectedPreviewAssets.length) % selectedPreviewAssets.length;
+    setPreviewAsset({ index: selectedPreviewAssets[nextIndex].index });
+  }
+
+  function replacePreviewMedia() {
+    if (!selectedPost || !activePreview) return;
+    setRedesignTarget({ postId: selectedPost.id, mediaPath: activePreview.asset.path, label: `Design ${activePreview.index + 1}` });
+    setRedesignNotes("");
+    setPreviewAsset(null);
+  }
 
   return (
     <section className="social-dashboard social-ink-command social-sumi-e" aria-label="MaVoid social operations dashboard">
@@ -339,23 +423,40 @@ export function SocialDashboard() {
       {message ? <div className="social-status" role="status"><CheckCircle2 aria-hidden="true" size={18} /> {message}</div> : null}
 
       <div className="social-toolbar" aria-label="Dashboard actions">
-        <button disabled={loadState === "loading"} onClick={refresh} title={loadState === "loading" ? "Refreshing local social state." : "Reload posts, automation, and provider read-back from local state."} type="button"><RefreshCw aria-hidden="true" size={16} /> Refresh read-back</button>
-        <button disabled={busyAction === "health"} onClick={runHealthCheck} type="button" title={overview?.bufferHealth.rateLimited ? "Provider is cooling down; this performs one intentional health read-back." : "Run the real provider health check now."}><ExternalLink aria-hidden="true" size={16} /> Check provider API</button>
-        <button disabled={Boolean(busyAction)} onClick={() => window.confirm("Run the 08:00 creator now? This can create new post artifacts.") && automation("run_creator")} title={busyAction ? "Another dashboard action is running." : "Run the real 08:00 creator automation now."} type="button"><Bot aria-hidden="true" size={16} /> Run 8:00 creator</button>
-        <button disabled={Boolean(busyAction)} onClick={() => automation(overview?.automation.creatorEnabled ? "pause_creator" : "resume_creator")} title={busyAction ? "Another dashboard action is running." : overview?.automation.creatorEnabled ? "Pause the creator automation." : "Resume the creator automation."} type="button">
-          <CalendarClock aria-hidden="true" size={16} /> {overview?.automation.creatorEnabled ? "Pause creator" : "Resume creator"}
-        </button>
-        {overview?.automation.monitorEnabled ? (
-          <button disabled={Boolean(busyAction)} onClick={() => automation("pause_monitor")} title={busyAction ? "Another dashboard action is running." : "Pause the publishing monitor automation."} type="button">
-            <CalendarClock aria-hidden="true" size={16} /> Pause monitor
-          </button>
-        ) : (
-          <button disabled={Boolean(busyAction)} onClick={() => automation("resume_monitor")} title={busyAction ? "Another dashboard action is running." : "Resume the publishing monitor automation."} type="button">
-            <CalendarClock aria-hidden="true" size={16} /> Resume monitor
-          </button>
-        )}
-        <button disabled={!selectedPostHasSafeMedia || Boolean(busyAction)} onClick={validateSelectedMedia} title={selectedPostHasSafeMedia ? "Validate the selected post's first public HTTPS media URL." : "No public HTTPS media URL is available on the selected post."} type="button"><ShieldCheck aria-hidden="true" size={16} /> Validate media</button>
-        {overview?.latestReportPath ? <button onClick={() => void openResource(overview.latestReportPath)} title="Open the latest local report artifact." type="button"><ExternalLink aria-hidden="true" size={16} /> Latest report</button> : <span className="social-latest-report-metadata">Latest report: {safePathLabel(overview?.latestReportPath)}</span>}
+        <div className="social-toolbar-group social-toolbar-group--primary" aria-label="Primary workflow actions">
+          <span className="social-toolbar-group-label">Primary workflow</span>
+          <button disabled={Boolean(busyAction)} onClick={() => window.confirm("Run the 08:00 creator now? This can create new post artifacts.") && automation("run_creator")} title={busyAction ? "Another dashboard action is running." : "Generate the next 08:00 creator artifacts now."} type="button"><Bot aria-hidden="true" size={16} /> Generate</button>
+          <button disabled={!selectedPostHasSafeMedia || Boolean(busyAction)} onClick={validateSelectedMedia} title={validateActionTitle} type="button"><ShieldCheck aria-hidden="true" size={16} /> {validateActionLabel}</button>
+          {overview?.automation.monitorEnabled ? (
+            <button disabled={Boolean(busyAction)} onClick={() => automation("pause_monitor")} title={busyAction ? "Another dashboard action is running." : "Pause the publishing monitor automation."} type="button">
+              <CalendarClock aria-hidden="true" size={16} /> Pause monitor
+            </button>
+          ) : (
+            <button disabled={Boolean(busyAction)} onClick={() => automation("resume_monitor")} title={busyAction ? "Another dashboard action is running." : "Resume the publishing monitor automation."} type="button">
+              <CalendarClock aria-hidden="true" size={16} /> Resume monitor
+            </button>
+          )}
+        </div>
+        <details className="social-toolbar-more">
+          <summary>More</summary>
+          <div className="social-toolbar-more-grid">
+            <div className="social-toolbar-group" aria-label="Review and asset actions">
+              <span className="social-toolbar-group-label">Review + assets</span>
+              <button onClick={() => scrollToSection(mediaRef, "social-media")} title="Jump to the selected post design previews." type="button"><ExternalLink aria-hidden="true" size={16} /> Preview</button>
+              <button disabled={!selectedPostHasSafeMedia || Boolean(busyAction)} onClick={validateSelectedMedia} title={validateActionTitle} type="button"><ShieldCheck aria-hidden="true" size={16} /> {selectedPostNeedsProviderVerification ? "Verify provider" : "Media"}</button>
+              {selectedPost?.review?.reportPath ? <button onClick={() => void openResource(selectedPost.review?.reportPath)} title="Open the selected post review approval report." type="button"><ExternalLink aria-hidden="true" size={16} /> Approvals</button> : <span className="social-latest-report-metadata">Approvals: {safePathLabel(selectedPost?.review?.reportPath)}</span>}
+            </div>
+            <div className="social-toolbar-group" aria-label="Utility actions">
+              <span className="social-toolbar-group-label">Utilities</span>
+              <button disabled={loadState === "loading"} onClick={refresh} title={loadState === "loading" ? "Refreshing local social state." : "Reload posts, automation, and provider read-back from local state."} type="button"><RefreshCw aria-hidden="true" size={16} /> Refresh</button>
+              <button disabled={Boolean(busyAction)} onClick={() => automation(overview?.automation.creatorEnabled ? "pause_creator" : "resume_creator")} title={busyAction ? "Another dashboard action is running." : overview?.automation.creatorEnabled ? "Pause the creator automation." : "Resume the creator automation."} type="button">
+                <CalendarClock aria-hidden="true" size={16} /> {overview?.automation.creatorEnabled ? "Pause creator" : "Resume creator"}
+              </button>
+              <button disabled={busyAction === "health"} onClick={runHealthCheck} type="button" title={overview?.bufferHealth.rateLimited ? "Provider is cooling down; this performs one intentional health read-back." : "Run the real provider health check now."}><ExternalLink aria-hidden="true" size={16} /> Check provider</button>
+              {overview?.latestReportPath ? <button onClick={() => void openResource(overview.latestReportPath)} title="Open the latest local report artifact." type="button"><ExternalLink aria-hidden="true" size={16} /> Latest report</button> : <span className="social-latest-report-metadata">Latest report: {safePathLabel(overview?.latestReportPath)}</span>}
+            </div>
+          </div>
+        </details>
       </div>
 
       <section className="social-panel social-schedule-calendar" aria-label="Week schedule" id="social-calendar" ref={scheduleRef}>
@@ -413,7 +514,7 @@ export function SocialDashboard() {
               <section className="social-detail-summary social-detail-hero-card" id="social-summary" ref={summaryRef}>
                 <div className="social-detail-heading"><span>{selectedPost.postDate} · {selectedPost.slotType.replace(/_/g, " ")}</span><h3>{neutralizeProviderCopy(selectedPost.title)}</h3><small>{neutralizeProviderCopy(selectedPost.topicOrNewsItem)}</small></div>
                 <p className="social-caption">{neutralizeProviderCopy(selectedPost.caption)}</p>
-                <div className="social-gate" role="status"><AlertTriangle aria-hidden="true" size={18} /> {retryState.ok ? "Ready for scheduling after /impecabble content review approval and media validation." : `Schedule or retry is locked because ${retryState.reason}. Check provider state, validate media, then retry after the blocker clears.`}</div>
+                <div className="social-gate" role="status"><AlertTriangle aria-hidden="true" size={18} /> {retryState.ok ? "Ready for scheduling after /impecabble content review approval and media validation." : hasUnverifiedProviderState(selectedPost) ? "Verify provider state before retrying schedule actions. This protects already-created provider posts from duplicate scheduling." : `Schedule or retry is locked because ${retryState.reason}. Check provider state, validate media, then retry after the blocker clears.`}</div>
               </section>
 
               <section className="social-detail-section social-media-strip" aria-label="Design previews" id="social-media" ref={mediaRef}>
@@ -423,7 +524,7 @@ export function SocialDashboard() {
                     const source = canOpenExternal(asset.publicUrl) ? asset.publicUrl : null;
                     return (
                       <article className="social-media-card" key={`${asset.path}-${asset.publicUrl ?? "local"}`}>
-                        <button className="social-media-preview social-media-thumb" disabled={!source} onClick={() => source && setPreviewAsset({ src: source, alt: `${neutralizeValue(selectedPost.title)} design ${index + 1}` })} title={source ? "Preview design" : "Preview requires a public HTTPS image URL."} type="button">
+                        <button className="social-media-preview social-media-thumb" disabled={!source} onClick={() => source && openPreview(index)} title={source ? "Preview design" : "Preview requires a public HTTPS image URL."} type="button">
                           {source ? <img alt={`${neutralizeValue(selectedPost.title)} design ${index + 1}`} loading="lazy" src={source} /> : <div className="social-media-fallback">Local-only asset metadata; preview requires a validated public HTTPS image URL.</div>}
                         </button>
                         <span>Design {index + 1}</span>
@@ -432,7 +533,7 @@ export function SocialDashboard() {
                         {asset.temporary ? <small className="social-warning">Temporary media host — replace with durable owned media before production scheduling.</small> : null}
                         <div className="social-action-row social-action-row--icons">
                           <button aria-label={`Open media URL for design ${index + 1}`} disabled={!source} onClick={() => void openExternal(asset.publicUrl)} title={source ? "Open media URL" : "No public HTTPS media URL available."} type="button"><ExternalLink size={15} aria-hidden="true" /></button>
-                          <button aria-label={`Validate media for design ${index + 1}`} disabled={!source || Boolean(busyAction)} onClick={() => validateMediaUrl(asset.publicUrl)} title={source ? "Validate this media URL" : "No public HTTPS media URL available."} type="button"><ShieldCheck size={15} aria-hidden="true" /></button>
+                          <button aria-label={`${selectedPostNeedsProviderVerification ? "Verify provider state before media validation" : "Validate media"} for design ${index + 1}`} disabled={!source || Boolean(busyAction)} onClick={() => validateMediaUrl(asset.publicUrl)} title={source ? selectedPostNeedsProviderVerification ? "Verify provider read-back before validating this media URL." : "Validate this media URL" : "No public HTTPS media URL available."} type="button"><ShieldCheck size={15} aria-hidden="true" /></button>
                           <button aria-label={`Retry design ${index + 1}`} disabled={Boolean(busyAction)} onClick={() => { setRedesignTarget({ postId: selectedPost.id, mediaPath: asset.path, label: `Design ${index + 1}` }); setRedesignNotes(""); }} title="Ask the designer agent to retry this design" type="button"><RotateCcw size={15} aria-hidden="true" /></button>
                         </div>
                       </article>
@@ -483,11 +584,23 @@ export function SocialDashboard() {
         </aside>
       </div>
 
-      {previewAsset ? (
-        <div className="social-preview-backdrop" onClick={() => setPreviewAsset(null)} role="presentation">
-          <div className="social-preview-lightbox" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Design preview">
-            <button aria-label="Close preview" className="social-preview-close" onClick={() => setPreviewAsset(null)} type="button"><X size={18} aria-hidden="true" /></button>
-            <img alt={previewAsset.alt} src={previewAsset.src} />
+      {activePreview ? (
+        <div className="social-preview-backdrop social-preview-backdrop--full-app" onClick={() => setPreviewAsset(null)} role="presentation">
+          <div className="social-preview-lightbox social-preview-lightbox--full-app" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Design preview">
+            <div className="social-preview-topbar">
+              <div className="social-panel-heading"><span>Design preview</span><strong>{selectedPost ? neutralizeValue(selectedPost.title) : "Selected design"}</strong><small>{displayStatus(selectedPost?.status)} · Public preview {activePreviewIndex + 1} of {selectedPreviewAssets.length}</small></div>
+              <button aria-label="Close preview" className="social-preview-close" onClick={() => setPreviewAsset(null)} type="button"><X size={18} aria-hidden="true" /></button>
+            </div>
+            <div className="social-preview-stage">
+              {hasPreviewNavigation ? <button aria-label="Previous design preview" className="social-preview-nav social-preview-nav--prev" onClick={() => movePreview(-1)} type="button">‹</button> : null}
+              <img alt={activePreview.alt} src={activePreview.source ?? ""} />
+              {hasPreviewNavigation ? <button aria-label="Next design preview" className="social-preview-nav social-preview-nav--next" onClick={() => movePreview(1)} type="button">›</button> : null}
+            </div>
+            <div className="social-preview-actionbar social-action-row">
+              {selectedPost?.review?.reportPath ? <button onClick={() => void openResource(selectedPost.review?.reportPath)} title="Open the selected post review approval report." type="button"><CheckCircle2 size={15} aria-hidden="true" /> Open approval report</button> : <button disabled title="No review approval report is linked for this post." type="button"><CheckCircle2 size={15} aria-hidden="true" /> Approval report unavailable</button>}
+              <button disabled={Boolean(busyAction)} onClick={replacePreviewMedia} title="Ask the designer agent to retry/replace this media asset." type="button"><RotateCcw size={15} aria-hidden="true" /> Replace media</button>
+              <button onClick={() => void openExternal(activePreview.source)} title="Open this media URL using the system handler." type="button"><ExternalLink size={15} aria-hidden="true" /> Open media URL</button>
+            </div>
           </div>
         </div>
       ) : null}
@@ -502,6 +615,20 @@ export function SocialDashboard() {
               <button onClick={() => setRedesignTarget(null)} type="button">Cancel</button>
             </div>
           </form>
+        </div>
+      ) : null}
+
+      {providerVerificationTarget ? (
+        <div className="social-preview-backdrop" onClick={() => setProviderVerificationTarget(null)} role="presentation">
+          <div className="social-redesign-modal social-provider-verification-modal" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Verify provider state">
+            <div className="social-panel-heading"><span>Verify provider state</span><strong>Re-check media after provider read-back</strong><small>This post already has scheduled or posted provider records. Zoid needs a fresh provider verification before retrying schedule actions so it does not create duplicates.</small></div>
+            <p className="social-action-note">Run one provider health/read-back check now, then retry the media validation when the local state shows those provider records as verified.</p>
+            <div className="social-action-row">
+              <button disabled={Boolean(busyAction)} onClick={() => void verifyProviderState()} type="button"><ShieldCheck size={15} aria-hidden="true" /> Verify now</button>
+              {providerVerificationTarget.detailsResource ? <button onClick={() => void openResource(providerVerificationTarget.detailsResource)} type="button"><ExternalLink size={15} aria-hidden="true" /> Open provider details</button> : <button disabled title="No provider report, published URL, or review report is linked for this post." type="button">Open provider details unavailable</button>}
+              <button onClick={() => setProviderVerificationTarget(null)} type="button">Cancel</button>
+            </div>
+          </div>
         </div>
       ) : null}
     </section>
