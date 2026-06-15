@@ -1,5 +1,6 @@
 import { AlertTriangle, Bot, CalendarClock, CheckCircle2, ExternalLink, RefreshCw, RotateCcw, ShieldCheck, Wand2, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { getMavoidSocialOverview, listMavoidSocialPosts, manageMavoidSocialAutomation, openMavoidSocialResource, retryMavoidSocialDesign, runMavoidBufferHealthCheck, startMavoidSocialPostGeneration, validateMavoidMediaUrl } from "./socialClient";
 import { canRetryBufferSchedule, formatPlatformList } from "./socialViewModel";
 import type { MavoidSocialOverview, MavoidSocialPost } from "./types";
@@ -164,6 +165,11 @@ function providerDetailsResource(post: MavoidSocialPost | null): string | null {
     ?? post.reports.find((report) => report.kind === "buffer" || report.kind === "monitor")?.path
     ?? post.review?.reportPath
     ?? null;
+}
+
+function renderScreenOverlay(overlay: ReactNode): ReactNode {
+  if (typeof document === "undefined") return overlay;
+  return createPortal(overlay, document.body);
 }
 
 function platformIconList(post: MavoidSocialPost) {
@@ -396,7 +402,8 @@ export function SocialDashboard() {
   }
 
   return (
-    <section className="social-dashboard social-ink-command social-sumi-e" aria-label="MaVoid social operations dashboard">
+    <>
+      <section className="social-dashboard social-ink-command social-sumi-e" aria-label="MaVoid social operations dashboard">
       <header className="social-hero social-ink-hero">
         <div className="social-hero-copy">
           <p className="social-eyebrow kana-line">コンテンツ運用</p>
@@ -470,6 +477,7 @@ export function SocialDashboard() {
               </div>
               {quickMenuDate === day.date ? (
                 <div className="social-calendar-type-menu" role="menu">
+                  <button aria-label={`Close generation menu for ${day.label}`} className="social-calendar-type-menu-close" onClick={() => setQuickMenuDate(null)} role="menuitem" title="Close generation menu" type="button"><X size={14} aria-hidden="true" /></button>
                   {contentTypes.map((type) => (
                     <button disabled={Boolean(busyAction)} key={type.id} onClick={() => void generateForDate(day.date, type)} role="menuitem" title={type.description} type="button">
                       <strong>{type.label}</strong><small>{type.description}</small>
@@ -583,8 +591,9 @@ export function SocialDashboard() {
           </div>
         </aside>
       </div>
+      </section>
 
-      {activePreview ? (
+      {activePreview ? renderScreenOverlay((
         <div className="social-preview-backdrop social-preview-backdrop--full-app" onClick={() => setPreviewAsset(null)} role="presentation">
           <div className="social-preview-lightbox social-preview-lightbox--full-app" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Design preview">
             <div className="social-preview-topbar">
@@ -603,9 +612,9 @@ export function SocialDashboard() {
             </div>
           </div>
         </div>
-      ) : null}
+      )) : null}
 
-      {redesignTarget ? (
+      {redesignTarget ? renderScreenOverlay((
         <div className="social-preview-backdrop" onClick={() => setRedesignTarget(null)} role="presentation">
           <form className="social-redesign-modal" onClick={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); void submitRedesign(); }}>
             <div className="social-panel-heading"><span>Retry design</span><strong>{redesignTarget.label}</strong><small>Optional feedback is passed to the background designer agent.</small></div>
@@ -616,9 +625,9 @@ export function SocialDashboard() {
             </div>
           </form>
         </div>
-      ) : null}
+      )) : null}
 
-      {providerVerificationTarget ? (
+      {providerVerificationTarget ? renderScreenOverlay((
         <div className="social-preview-backdrop" onClick={() => setProviderVerificationTarget(null)} role="presentation">
           <div className="social-redesign-modal social-provider-verification-modal" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Verify provider state">
             <div className="social-panel-heading"><span>Verify provider state</span><strong>Re-check media after provider read-back</strong><small>This post already has scheduled or posted provider records. Zoid needs a fresh provider verification before retrying schedule actions so it does not create duplicates.</small></div>
@@ -630,7 +639,7 @@ export function SocialDashboard() {
             </div>
           </div>
         </div>
-      ) : null}
-    </section>
+      )) : null}
+    </>
   );
 }

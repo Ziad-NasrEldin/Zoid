@@ -845,12 +845,15 @@ async function runFocusWorkspaceTests() {
   assert.ok(container.querySelector(".chat-workspace--focus-mode"), "focus workspace should mark the workspace grid");
   assert.ok(container.querySelector(".sessions-rail--focus-mode.sessions-rail--compact"), "focus workspace should force sessions into a thin icon rail");
   assert.equal(container.querySelector(".sessions-rail--focus-mode .sessions-rail-morph-button"), null, "focus workspace should hide the normal rail morph button instead of rendering a no-op control");
-  assert.ok(container.querySelector(".sessions-rail--focus-mode .session-row-controls--focus"), "focus workspace should preserve compact session controls/status in the rail");
-  assert.ok(container.querySelector(".sessions-rail--focus-mode .session-continue-button"), "focus rail should retain a continue affordance");
-  assert.ok(container.querySelector(".sessions-rail--focus-mode .archive-session-button"), "focus rail should retain archive access");
+  assert.equal(container.querySelector(".sessions-rail--focus-mode .session-row-controls--focus"), null, "focus workspace should not cram per-session controls into the icon rail");
+  assert.equal(container.querySelector(".sessions-rail--focus-mode .session-runtime-chip"), null, "focus rail should avoid crammed runtime chips");
+  assert.equal(container.querySelector(".sessions-rail--focus-mode .session-continue-button"), null, "focus rail should avoid duplicate continue controls");
+  assert.equal(container.querySelector(".sessions-rail--focus-mode .archive-session-button"), null, "focus rail should avoid duplicate archive controls");
   assert.ok(container.querySelector(".chat-main-pane--focus-mode"), "focus workspace should expand the main chat pane");
+  assert.equal(container.querySelector(".chat-main-pane--focus-mode .agent-monitor-bar"), null, "focus workspace should remove the dashboard monitor bar instead of stacking redundant controls above the focus header");
   assert.ok(container.querySelector(".chat-stage--focus-mode"), "focus workspace should render the expanded chat stage");
-  assert.ok(container.querySelector(".focus-workspace-strip .repository-link-control--focus-strip"), "focus workspace should keep repository selection in the workspace strip");
+  assert.equal(container.querySelector(".focus-workspace-strip .repository-link-control--focus-strip"), null, "focus workspace should remove the duplicate repository selector strip");
+  assert.ok(container.querySelector(".focus-workspace-actions .file-manager-toggle-button--focus"), "focus workspace should keep only focused top-level actions");
   assert.ok(container.querySelector(".chat-workspace--focus-mode .chat-composer"), "focus workspace should preserve the normal composer in the focused workspace");
 
   const filesButton = container.querySelector<HTMLButtonElement>(".file-manager-toggle-button");
@@ -883,6 +886,29 @@ assert.ok(/\.agent-monitor-bar\s*\{[^}]*overflow:\s*visible;[^}]*\}/s.test(appCs
 assert.ok(/\.chat-main-pane\.chat-main-pane--dashboard\s*\{[^}]*overflow:\s*visible;[^}]*\}/s.test(appCssSource), "dashboard pane must not clip monitor overlays");
 assert.ok(/\.agent-monitor-panel\s*\{[^}]*overflow:\s*visible;[^}]*\}/s.test(appCssSource), "dashboard detail panels must not clip ChatComposer slash command drop-ups");
 assert.ok(appCssSource.includes(".agent-monitor-composer .chat-composer--panel"), "dashboard detail panels need compact styling around the shared ChatComposer, not a separate textarea style");
+assert.ok(/\.hermes-chat-shell\[data-hermes-focus-workspace="true"\] \.hermes-topbar\s*\{[^}]*display:\s*none;[^}]*\}/s.test(appCssSource), "focus workspace must hide the normal Hermes topbar to avoid duplicate controls");
+assert.ok(/\.focus-workspace-strip\s*\{[^}]*background:\s*var\(--sumi-paper\);[^}]*\}/s.test(appCssSource), "focus workspace strip must use neutral sumi paper, not a warm wash");
+{
+  const trackedUiSources = [agentsSource, appCssSource, readFileSync(new URL("../../tokens.json", import.meta.url), "utf8"), readFileSync(new URL("../../DESIGN.md", import.meta.url), "utf8"), readFileSync(new URL("../vendor/agentation-fixed.mjs", import.meta.url), "utf8")].join("\n");
+  const word = (...codes: number[]) => String.fromCharCode(...codes);
+  const rejectedArtifacts = [
+    word(121, 101, 108, 108, 111, 119),
+    word(89, 101, 108, 108, 111, 119),
+    word(97, 109, 98, 101, 114),
+    word(65, 109, 98, 101, 114),
+    word(111, 114, 97, 110, 103, 101),
+    word(79, 114, 97, 110, 103, 101),
+    word(115, 117, 109, 105, 45, 119, 97, 114, 110),
+    word(107, 117, 106, 111, 45, 121, 101, 108, 108, 111, 119),
+    word(107, 117, 106, 111, 45, 97, 109, 98, 101, 114),
+    `#${word(70, 68, 69, 56, 54, 51)}`, `#${word(102, 100, 101, 56, 54, 51)}`, `#${word(70, 70, 67, 67, 48, 48)}`, `#${word(102, 102, 99, 99, 48, 48)}`, `#${word(70, 70, 56, 68, 50, 56)}`, `#${word(102, 102, 56, 100, 50, 56)}`, `#${word(102, 57, 55, 51, 49, 54)}`,
+    `${249}, ${115}, ${22}`, `${253},${232},${99}`, `${253}, ${232}, ${99}`, `${239},${172},${57}`, `${239}, ${172}, ${57}`, `rgba(${255},${253},${247}`,
+    "color(display-p3 1.00 0.55 0.16)",
+  ];
+  for (const rejectedArtifact of rejectedArtifacts) {
+    assert.ok(!trackedUiSources.includes(rejectedArtifact), `Zoid UI source must not contain rejected warm/gold artifact ${rejectedArtifact}`);
+  }
+}
 
 
 await runFileManagerTests();

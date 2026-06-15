@@ -1912,16 +1912,7 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
                       <span className="session-tab-meta">{repositoryLabel(sessionRepository)}</span>
                     </button>
                   )}
-                  {isFocusWorkspaceActive ? (
-                    <div className="session-row-controls session-row-controls--focus" aria-label={`Focus controls for ${session.title}: ${focusSessionStatus}`}>
-                      {sessionRuntime.status !== "idle" ? <span className={`session-runtime-chip session-runtime-chip--${sessionRuntime.status}`} title={`Runtime: ${sessionRuntime.status}`}>{sessionRuntime.status}</span> : <span className="session-runtime-chip session-runtime-chip--idle" title="Runtime: idle">idle</span>}
-                      {hasQueuedPrompts ? <span className="session-runtime-chip session-runtime-chip--queued" title={`${sessionRuntime.queuedPrompts.length} queued prompt${sessionRuntime.queuedPrompts.length === 1 ? "" : "s"}`}>Q{sessionRuntime.queuedPrompts.length}</span> : null}
-                      <button className="session-continue-button" aria-label={`Continue ${session.title}`} disabled={isSessionRunning || connectionState !== "online"} onClick={() => void continueDashboardSession(session.id)} title={isSessionRunning ? "Session is already running" : "Continue this session"} type="button"><Play size={13} strokeWidth={2.6} aria-hidden="true" /></button>
-                      <button aria-label={`Archive session ${session.title}`} className="archive-session-button" onClick={() => onArchiveSession(session.id)} title="Archive session" type="button">
-                        <Archive size={14} strokeWidth={2.4} aria-hidden="true" />
-                      </button>
-                    </div>
-                  ) : !isSessionsRailCompact ? (
+                  {!isFocusWorkspaceActive && !isSessionsRailCompact ? (
                     <div className="session-row-controls">
                       {sessionRuntime.status !== "idle" ? <span className={`session-runtime-chip session-runtime-chip--${sessionRuntime.status}`}>{sessionRuntime.status}</span> : null}
                       {hasQueuedPrompts ? <span className="session-runtime-chip session-runtime-chip--queued">Q{sessionRuntime.queuedPrompts.length}</span> : null}
@@ -1983,38 +1974,36 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
           onDrop={handleChatDashboardDrop}
           ref={chatDashboardDropRef}
         >
-          <div className="agent-monitor-bar" aria-label="Agent monitor controls">
-            <div className="agent-monitor-status-cluster" aria-label="Agent dashboard status">
-              <span><b className="stat-number-accent">{dashboardState.tiledSessionIds.length}</b> tiled</span>
-              <span><b className="stat-number-accent">{runningCount}</b> running</span>
-              <span><b className="stat-number-accent">{needsReplyCount}</b> needs reply</span>
-              <span><b className="stat-number-accent">{queuedCount}</b> queued</span>
+          {!isFocusWorkspaceActive ? (
+            <div className="agent-monitor-bar" aria-label="Agent monitor controls">
+              <div className="agent-monitor-status-cluster" aria-label="Agent dashboard status">
+                <span><b className="stat-number-accent">{dashboardState.tiledSessionIds.length}</b> tiled</span>
+                <span><b className="stat-number-accent">{runningCount}</b> running</span>
+                <span><b className="stat-number-accent">{needsReplyCount}</b> needs reply</span>
+                <span><b className="stat-number-accent">{queuedCount}</b> queued</span>
+              </div>
+              <div className="agent-monitor-command-cluster">
+                <button type="button" aria-pressed={dashboardState.autoPrioritize} onClick={() => patchDashboard((current) => ({ ...current, autoPrioritize: !current.autoPrioritize }))}>Auto-prioritize</button>
+                <button type="button" onClick={showActiveAgents}>Active agents</button>
+                <button type="button" onClick={() => patchDashboard((current) => ({ ...current, tiledSessionIds: [], primarySessionId: undefined, focusedSessionId: undefined }))}>Clear</button>
+              </div>
             </div>
-            <div className="agent-monitor-command-cluster">
-              <button type="button" aria-pressed={dashboardState.autoPrioritize} onClick={() => patchDashboard((current) => ({ ...current, autoPrioritize: !current.autoPrioritize }))}>Auto-prioritize</button>
-              <button type="button" onClick={showActiveAgents}>Active agents</button>
-              <button type="button" onClick={() => patchDashboard((current) => ({ ...current, tiledSessionIds: [], primarySessionId: undefined, focusedSessionId: undefined }))}>Clear</button>
-            </div>
-          </div>
+          ) : null}
           {expandedSession ? (
             <div className="agent-expanded-chat agent-expanded-chat--focus-workspace">
-              <div className="focus-workspace-strip focus-workspace-strip--top">
-                <button className="chat-focus-mode-button chat-focus-mode-button--active" aria-pressed="true" type="button" onClick={() => setExpandedModeSessionId(null)} title="Return to normal Hermes layout"><Minimize2 size={15} aria-hidden="true" /><span>Exit focus</span></button>
-                <div className="focus-workspace-session-title"><span>Focus workspace</span><strong>{expandedSession.title}</strong></div>
-                <div className="repository-link-control repository-link-control--focus-strip">
-                  <label htmlFor="linked-repository-select-focus"><span>Repository</span><span className="control-label-jp">接続</span></label>
-                  <GlobalDropdown
-                    disabled={repositories.length === 0}
-                    id="linked-repository-select-focus"
-                    label="Link repository"
-                    onChange={handleLinkedRepositoryChange}
-                    options={[
-                      { value: "none", label: "Unlinked / 未接続" },
-                      ...repositories.map((repository) => ({ value: repository.id, label: repository.name, meta: `${repository.branch || "unknown"} — ${repository.path}` })),
-                    ]}
-                    size="compact"
-                    value={selectedRepository ? activeRepositoryId : "none"}
-                  />
+              <div className="focus-workspace-strip focus-workspace-strip--top" aria-label="Focus workspace controls">
+                <div className="focus-workspace-session-title">
+                  <span>Focus mode</span>
+                  <strong>{expandedSession.title}</strong>
+                  <small>{connectionState === "online" ? "Hermes ready" : "Hermes offline"} · {selectedRepository ? selectedRepository.name : "No repository linked"}</small>
+                </div>
+                <div className="focus-workspace-actions">
+                  <button className="chat-focus-mode-button chat-focus-mode-button--active" aria-pressed="true" type="button" onClick={() => setExpandedModeSessionId(null)} title="Return to normal Hermes layout"><Minimize2 size={15} aria-hidden="true" /><span>Exit focus</span></button>
+                  <button aria-label={fileManagerOpen ? "Close file manager sidebar" : "Open file manager sidebar"} aria-pressed={fileManagerOpen} className="file-manager-toggle-button file-manager-toggle-button--focus" onClick={handleFileManagerToggle} title="Open file manager" type="button">
+                    <FolderTree size={15} strokeWidth={2.4} aria-hidden="true" />
+                    <span>Files</span>
+                    <span className="button-label-jp" aria-hidden="true">書類</span>
+                  </button>
                 </div>
               </div>
               <div className={isFileDropArmed ? "chat-stage chat-stage--focus-mode chat-stage--file-drop-armed" : "chat-stage chat-stage--focus-mode"} onDragLeave={handleChatFileDragLeave} onDragOver={handleChatFileDragOver} onDrop={handleChatFileDrop} onPointerDown={handleChatStagePointerDown}>

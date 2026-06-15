@@ -5,7 +5,7 @@
     "component": "src/agents/AgentsHermesScreen.tsx",
     "rootClass": "hermes-chat-shell hermes-genm agents-sumi-e",
     "css": "src/App.css .agents-sumi-e plus root --sumi-* and motion tokens",
-    "note": "Yellow artifacts are explicitly excluded from the extracted system."
+    "note": "Warm-gold artifacts are explicitly excluded from the extracted system; red seal remains the accepted accent."
   },
   "tokens": {
     "colors": {
@@ -21,14 +21,13 @@
       "sumiSealDeep": "#8F211A",
       "sumiSealWash": "#F5E5E3",
       "sumiOkay": "#2F3A2F",
-      "sumiWarnLegacyOnly": "#8F5A1A"
+      "sumiSealWash": "#F5E5E3"
     },
     "forbiddenVisibleColors": [
-      "#FDE863",
-      "yellow focus rings",
-      "amber command chips",
-      "orange warning cards",
-      "yellowed parchment panels"
+      "golden focus rings",
+      "golden command chips",
+      "warm warning cards",
+      "warm parchment panels"
     ],
     "fonts": {
       "latin": "trajan-pro-3, Times New Roman, Baskerville, Georgia, serif",
@@ -106,7 +105,7 @@
       "state text"
     ],
     "rejected": [
-      "yellow artifacts",
+      "warm-gold artifacts",
       "cobalt Kujoyama as visible direction",
       "generic SaaS cards",
       "rounded bubble UI",

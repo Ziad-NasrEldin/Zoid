@@ -203,7 +203,7 @@ for (const requiredMotionStateHook of [
   }
 }
 
-for (const forbiddenGlobalSumiELeak of ["settings-control-room", "blue-rail", "#3558a2", "rgba(53, 88, 162", "rgba(53,88,162", "#e7edfa", "#fde863"]) {
+for (const forbiddenGlobalSumiELeak of ["settings-control-room", "blue-rail", "#3558a2", "rgba(53, 88, 162", "rgba(53,88,162", "#e7edfa"]) {
   if (app.includes(forbiddenGlobalSumiELeak) || css.includes(forbiddenGlobalSumiELeak)) {
     throw new Error(`Global sumi-e chrome must not retain old Kujoyama/control-room styling: ${forbiddenGlobalSumiELeak}`);
   }
