@@ -222,6 +222,9 @@ async function runTests() {
   const quickGenerate = rendered.container.querySelector(".social-calendar-quick-button");
   assert.ok(quickGenerate, "every calendar day should expose a quick generation button");
   await click(quickGenerate);
+  const generationDialog = rendered.container.querySelector(".social-calendar-type-menu");
+  assert.equal(generationDialog?.getAttribute("role"), "dialog", "calendar generation popup should be structured as a compact dialog instead of a loose menu");
+  assert.ok(rendered.container.querySelector(".social-calendar-type-menu-header") && rendered.container.querySelector(".social-calendar-type-menu-note") && rendered.container.querySelector(".social-calendar-type-menu-options"), "calendar generation popup should have header, purpose copy, and grouped options");
   const closeGenerateMenu = rendered.container.querySelector(".social-calendar-type-menu-close");
   assert.ok(closeGenerateMenu, "calendar generation menu should expose a close button");
   await click(closeGenerateMenu);
@@ -254,7 +257,7 @@ async function runTests() {
   assert.ok(socialCss.includes("height: 100vh"), "social page should own a viewport-height scroll surface inside the fixed Zoid shell");
   assert.ok(socialCss.includes(".social-toolbar { display: grid") && socialCss.includes(".social-toolbar-group--primary") && socialCss.includes(".social-toolbar-more > summary"), "dashboard actions should use compact grouped workflow, review/assets, and utility controls with a narrow More affordance");
   assert.ok(socialCss.includes(".social-rhythm-step") && socialCss.includes("grid-template-columns: minmax(72px, max-content) minmax(0, 1fr)") && socialCss.includes("column-gap: clamp(14px, 1.2vw, 22px)"), "rhythm labels should keep comfortable spacing from the hour column");
-  assert.ok(socialCss.includes(".social-calendar-quick-button") && socialCss.includes(".social-calendar-type-menu"), "calendar should include a wired generation menu");
+  assert.ok(socialCss.includes(".social-calendar-quick-button") && socialCss.includes(".social-calendar-type-menu") && socialCss.includes(".social-calendar-type-menu-header") && socialCss.includes(".social-calendar-type-menu-options"), "calendar should include a structured generation command sheet");
   assert.ok(socialCss.includes(".social-preview-backdrop") && socialCss.includes("backdrop-filter: blur"), "image preview should use centered lightbox with progressive blur");
   assert.ok(socialCss.includes(".social-schedule-calendar { position: relative; z-index: auto") && socialCss.includes("overflow: hidden") && socialCss.includes("margin-bottom: clamp(10px, 1.4vw, 18px)"), "calendar should reserve space and clip its own overflow instead of using z-index band-aids");
   assert.ok(socialCss.includes(".social-automation-summary") && socialCss.includes(".social-automation-cards"), "automation state should be redesigned into a summarized command panel");
