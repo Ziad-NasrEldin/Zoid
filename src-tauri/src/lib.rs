@@ -6299,11 +6299,26 @@ fn hostinger_api_token() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn is_allowed_hostinger_base_url_override(value: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(value) else {
+        return false;
+    };
+
+    match url.scheme() {
+        "https" => true,
+        "http" => matches!(
+            url.host_str(),
+            Some("localhost") | Some("127.0.0.1") | Some("::1") | Some("[::1]")
+        ),
+        _ => false,
+    }
+}
+
 fn hostinger_base_url() -> String {
     env::var("HOSTINGER_API_BASE_URL")
         .ok()
         .map(|value| value.trim().trim_end_matches('/').to_string())
-        .filter(|value| value.starts_with("https://") || value.starts_with("http://127.0.0.1") || value.starts_with("http://localhost"))
+        .filter(|value| is_allowed_hostinger_base_url_override(value))
         .unwrap_or_else(|| "https://developers.hostinger.com".to_string())
 }
 
@@ -7223,6 +7238,52 @@ mod tests {
             sync_status: "synced".to_string(),
             archived: false,
         }
+    }
+
+    #[test]
+    fn hostinger_base_url_override_allows_https_and_loopback_http() {
+        assert!(is_allowed_hostinger_base_url_override(
+            "https://developers.hostinger.com"
+        ));
+        assert!(is_allowed_hostinger_base_url_override(
+            "https://example.test/api"
+        ));
+        assert!(is_allowed_hostinger_base_url_override(
+            "http://localhost:8080"
+        ));
+        assert!(is_allowed_hostinger_base_url_override(
+            "http://127.0.0.1:8080"
+        ));
+        assert!(is_allowed_hostinger_base_url_override("http://[::1]:8080"));
+    }
+
+    #[test]
+    fn hostinger_base_url_override_rejects_misleading_http_hosts() {
+        assert!(!is_allowed_hostinger_base_url_override(
+            "http://localhost.evil.example"
+        ));
+        assert!(!is_allowed_hostinger_base_url_override(
+            "http://127.0.0.1.evil.example"
+        ));
+        assert!(!is_allowed_hostinger_base_url_override(
+            "http://example.test"
+        ));
+        assert!(!is_allowed_hostinger_base_url_override("ftp://localhost"));
+        assert!(!is_allowed_hostinger_base_url_override("not a url"));
+    }
+
+    #[test]
+    fn hostinger_base_url_falls_back_for_unsafe_override() {
+        let _guard = env_lock();
+        env::set_var(
+            "HOSTINGER_API_BASE_URL",
+            "http://localhost.evil.example/api",
+        );
+
+        let base_url = hostinger_base_url();
+
+        env::remove_var("HOSTINGER_API_BASE_URL");
+        assert_eq!(base_url, "https://developers.hostinger.com");
     }
 
     #[test]
