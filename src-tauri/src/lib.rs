@@ -610,6 +610,74 @@ pub struct MavoidSocialJobResult {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostingerVpsStore {
+    servers: Vec<HostingerVirtualMachine>,
+    actions: Vec<HostingerVpsActionLog>,
+    last_synced_at: Option<String>,
+    last_error: Option<String>,
+}
+
+impl Default for HostingerVpsStore {
+    fn default() -> Self {
+        Self {
+            servers: Vec::new(),
+            actions: Vec::new(),
+            last_synced_at: None,
+            last_error: None,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostingerVirtualMachine {
+    id: String,
+    hostname: String,
+    state: String,
+    plan: Option<String>,
+    primary_ip: Option<String>,
+    location: Option<String>,
+    actions_lock: Option<String>,
+    cpus: Option<u64>,
+    memory_mb: Option<u64>,
+    disk_gb: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostingerVpsActionLog {
+    id: String,
+    virtual_machine_id: String,
+    action: String,
+    state: String,
+    created_at: String,
+    provider_action_id: Option<String>,
+    message: String,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostingerVpsOverview {
+    token_present: bool,
+    servers: Vec<HostingerVirtualMachine>,
+    actions: Vec<HostingerVpsActionLog>,
+    last_synced_at: Option<String>,
+    last_error: Option<String>,
+    cache_path: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostingerVpsOperationResult {
+    ok: bool,
+    message: String,
+    action: HostingerVpsActionLog,
+    overview: HostingerVpsOverview,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct HermesProfileSettings {
     user_name: String,
@@ -6196,6 +6264,287 @@ fn mavoid_counts(posts: &[MavoidSocialPost]) -> MavoidSocialCounts {
     counts
 }
 
+fn hostinger_vps_storage_path() -> Result<PathBuf, String> {
+    Ok(hermes_profile_home()?.join("zoid-vps.json"))
+}
+
+fn load_hostinger_vps_store() -> Result<HostingerVpsStore, String> {
+    let path = hostinger_vps_storage_path()?;
+    if !path.exists() {
+        return Ok(HostingerVpsStore::default());
+    }
+    let raw = fs::read_to_string(&path)
+        .map_err(|error| format!("Failed to read Hostinger VPS cache {}: {error}", path.display()))?;
+    serde_json::from_str(&raw)
+        .map_err(|error| format!("Failed to parse Hostinger VPS cache {}: {error}", path.display()))
+}
+
+fn save_hostinger_vps_store(store: &HostingerVpsStore) -> Result<(), String> {
+    let path = hostinger_vps_storage_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Failed to create Hostinger VPS cache directory: {error}"))?;
+    }
+    let _ = backup_file(&path, "zoid-vps-save")?;
+    let serialized = serde_json::to_string_pretty(store)
+        .map_err(|error| format!("Failed to serialize Hostinger VPS cache: {error}"))?;
+    fs::write(&path, serialized)
+        .map_err(|error| format!("Failed to write Hostinger VPS cache {}: {error}", path.display()))
+}
+
+fn hostinger_api_token() -> Option<String> {
+    env::var("HOSTINGER_API_TOKEN")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn is_allowed_hostinger_base_url_override(value: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(value) else {
+        return false;
+    };
+
+    match url.scheme() {
+        "https" => true,
+        "http" => matches!(
+            url.host_str(),
+            Some("localhost") | Some("127.0.0.1") | Some("::1") | Some("[::1]")
+        ),
+        _ => false,
+    }
+}
+
+fn hostinger_base_url() -> String {
+    env::var("HOSTINGER_API_BASE_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| is_allowed_hostinger_base_url_override(value))
+        .unwrap_or_else(|| "https://developers.hostinger.com".to_string())
+}
+
+fn hostinger_vps_overview_from_store(store: HostingerVpsStore) -> Result<HostingerVpsOverview, String> {
+    Ok(HostingerVpsOverview {
+        token_present: hostinger_api_token().is_some(),
+        servers: store.servers,
+        actions: store.actions,
+        last_synced_at: store.last_synced_at,
+        last_error: store.last_error,
+        cache_path: hostinger_vps_storage_path()?.to_string_lossy().to_string(),
+        updated_at: now_millis_string(),
+    })
+}
+
+fn hostinger_json_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(candidate) = value.get(*key).and_then(|item| item.as_str()) {
+            if !candidate.trim().is_empty() {
+                return Some(candidate.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn hostinger_json_u64(value: &serde_json::Value, keys: &[&str]) -> Option<u64> {
+    for key in keys {
+        if let Some(candidate) = value.get(*key).and_then(|item| item.as_u64()) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn hostinger_primary_ip(value: &serde_json::Value) -> Option<String> {
+    hostinger_json_string(value, &["ip", "ip_address", "primary_ip"]).or_else(|| {
+        value.get("ipv4")
+            .or_else(|| value.get("ip_addresses"))
+            .or_else(|| value.get("ipAddresses"))
+            .and_then(|ips| ips.as_array())
+            .and_then(|ips| ips.iter().find_map(|ip| hostinger_json_string(ip, &["address", "ip", "value"])))
+    })
+}
+
+fn hostinger_disk_gb(value: &serde_json::Value) -> Option<u64> {
+    hostinger_json_u64(value, &["disk_gb", "diskGb"]).or_else(|| {
+        hostinger_json_u64(value, &["disk", "storage"])
+            .map(|megabytes| ((megabytes as f64) / 1024.0).ceil().max(1.0) as u64)
+    })
+}
+
+fn hostinger_virtual_machine_from_value(value: serde_json::Value) -> HostingerVirtualMachine {
+    let id = value
+        .get("id")
+        .and_then(|item| item.as_u64().map(|id| id.to_string()).or_else(|| item.as_str().map(ToString::to_string)))
+        .unwrap_or_else(|| "unknown".to_string());
+    let hostname = hostinger_json_string(&value, &["hostname", "name", "label"])
+        .unwrap_or_else(|| format!("VPS {id}"));
+    let state = hostinger_json_string(&value, &["state", "status"])
+        .unwrap_or_else(|| "unknown".to_string());
+    let location = hostinger_json_string(&value, &["location", "data_center", "dataCenter", "city"])
+        .or_else(|| value.get("data_center").and_then(|dc| hostinger_json_string(dc, &["city", "name", "location"])));
+    HostingerVirtualMachine {
+        id,
+        hostname,
+        state,
+        plan: hostinger_json_string(&value, &["plan", "plan_name", "planName"]),
+        primary_ip: hostinger_primary_ip(&value),
+        location,
+        actions_lock: hostinger_json_string(&value, &["actions_lock", "actionsLock"]),
+        cpus: hostinger_json_u64(&value, &["cpus", "cpu", "vcpu", "vcpus"]),
+        memory_mb: hostinger_json_u64(&value, &["memory", "memory_mb", "memoryMb", "ram", "ram_mb"]),
+        disk_gb: hostinger_disk_gb(&value),
+    }
+}
+
+fn hostinger_parse_virtual_machines(value: serde_json::Value) -> Vec<HostingerVirtualMachine> {
+    let items = value
+        .as_array()
+        .cloned()
+        .or_else(|| value.get("data").and_then(|data| data.as_array().cloned()))
+        .unwrap_or_default();
+    items.into_iter().map(hostinger_virtual_machine_from_value).collect()
+}
+
+fn hostinger_vps_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| format!("Failed to create Hostinger VPS API client: {error}"))
+}
+
+fn hostinger_authorized_request(
+    client: &reqwest::blocking::Client,
+    method: reqwest::Method,
+    path: &str,
+) -> Result<reqwest::blocking::RequestBuilder, String> {
+    let token = hostinger_api_token().ok_or_else(|| {
+        "HOSTINGER_API_TOKEN is not set. Add it to the native app environment before refreshing VPS state.".to_string()
+    })?;
+    Ok(client
+        .request(method, format!("{}{}", hostinger_base_url(), path))
+        .bearer_auth(token)
+        .header("accept", "application/json"))
+}
+
+fn hostinger_safe_error_body(text: &str) -> String {
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return "No response body.".to_string();
+    }
+    let truncated: String = collapsed.chars().take(220).collect();
+    let lower = truncated.to_ascii_lowercase();
+    if lower.contains("token") || lower.contains("secret") || lower.contains("password") || lower.contains("authorization") {
+        return "Provider returned an error body with sensitive fields redacted.".to_string();
+    }
+    truncated
+}
+
+fn hostinger_response_json(response: reqwest::blocking::Response, context: &str) -> Result<serde_json::Value, String> {
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|error| format!("Hostinger {context} response could not be read: {error}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "Hostinger {context} failed with HTTP {status}: {}",
+            hostinger_safe_error_body(&text)
+        ));
+    }
+    if text.trim().is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+    serde_json::from_str(&text)
+        .map_err(|error| format!("Hostinger {context} returned invalid JSON: {error}"))
+}
+
+fn hostinger_vps_get_overview_inner() -> Result<HostingerVpsOverview, String> {
+    hostinger_vps_overview_from_store(load_hostinger_vps_store()?)
+}
+
+fn hostinger_vps_refresh_inner() -> Result<HostingerVpsOverview, String> {
+    let client = hostinger_vps_client()?;
+    let response = hostinger_authorized_request(&client, reqwest::Method::GET, "/api/vps/v1/virtual-machines")?
+        .send()
+        .map_err(|error| format!("Hostinger virtual machines request failed: {error}"))?;
+    let payload = hostinger_response_json(response, "virtual machines")?;
+    let mut store = load_hostinger_vps_store()?;
+    store.servers = hostinger_parse_virtual_machines(payload);
+    store.last_synced_at = Some(now_millis_string());
+    store.last_error = None;
+    save_hostinger_vps_store(&store)?;
+    hostinger_vps_overview_from_store(store)
+}
+
+fn hostinger_action_from_payload(
+    virtual_machine_id: &str,
+    action: &str,
+    payload: &serde_json::Value,
+) -> HostingerVpsActionLog {
+    let provider_action_id = payload
+        .get("id")
+        .and_then(|item| item.as_u64().map(|id| id.to_string()).or_else(|| item.as_str().map(ToString::to_string)));
+    let state = hostinger_json_string(payload, &["state", "status"]).unwrap_or_else(|| "sent".to_string());
+    HostingerVpsActionLog {
+        id: format!("{action}-{virtual_machine_id}-{}", now_millis_string()),
+        virtual_machine_id: virtual_machine_id.to_string(),
+        action: action.to_string(),
+        state: state.clone(),
+        created_at: now_millis_string(),
+        provider_action_id,
+        message: format!("Hostinger accepted {action} for VPS {virtual_machine_id} ({state})."),
+    }
+}
+
+fn hostinger_vps_run_action_inner(
+    virtual_machine_id: &str,
+    action: &str,
+) -> Result<HostingerVpsOperationResult, String> {
+    let action_path = match action {
+        "start" => "start",
+        "stop" => "stop",
+        "restart" | "reboot" => "restart",
+        _ => return Err(format!("Unsupported Hostinger VPS action: {action}")),
+    };
+    let virtual_machine_id = virtual_machine_id.trim();
+    if virtual_machine_id.is_empty() {
+        return Err("Virtual machine id is required.".to_string());
+    }
+    if !virtual_machine_id.chars().all(|character| character.is_ascii_alphanumeric() || character == '-' || character == '_') {
+        return Err("Virtual machine id contains unsupported characters.".to_string());
+    }
+    let cached_store = load_hostinger_vps_store()?;
+    if !cached_store.servers.iter().any(|server| server.id == virtual_machine_id) {
+        return Err("Refresh Hostinger VPS state before sending actions for this server.".to_string());
+    }
+    let client = hostinger_vps_client()?;
+    let response = hostinger_authorized_request(
+        &client,
+        reqwest::Method::POST,
+        &format!("/api/vps/v1/virtual-machines/{virtual_machine_id}/{action_path}"),
+    )?
+    .send()
+    .map_err(|error| format!("Hostinger {action_path} request failed: {error}"))?;
+    let payload = hostinger_response_json(response, action_path)?;
+    let action_log = hostinger_action_from_payload(virtual_machine_id, action_path, &payload);
+    let mut store = load_hostinger_vps_store()?;
+    store.actions.insert(0, action_log.clone());
+    store.actions.truncate(40);
+    store.last_error = None;
+    save_hostinger_vps_store(&store)?;
+    let overview = hostinger_vps_refresh_inner().or_else(|refresh_error| {
+        let mut fallback = load_hostinger_vps_store()?;
+        fallback.last_error = Some(format!("Action sent, but refresh failed: {refresh_error}"));
+        save_hostinger_vps_store(&fallback)?;
+        hostinger_vps_overview_from_store(fallback)
+    })?;
+    Ok(HostingerVpsOperationResult {
+        ok: true,
+        message: action_log.message.clone(),
+        action: action_log,
+        overview,
+    })
+}
+
 fn mavoid_social_overview_with_health(buffer_health_override: Option<MavoidBufferHealth>) -> Result<MavoidSocialOverview, String> {
     let workspace = mavoid_social_workspace_path();
     let status_path = workspace.join("STATUS.json");
@@ -6688,6 +7037,21 @@ mod commands {
     }
 
     #[tauri::command]
+    pub async fn hostinger_vps_get_overview() -> Result<HostingerVpsOverview, String> {
+        hostinger_vps_get_overview_inner()
+    }
+
+    #[tauri::command]
+    pub async fn hostinger_vps_refresh() -> Result<HostingerVpsOverview, String> {
+        hostinger_vps_refresh_inner()
+    }
+
+    #[tauri::command]
+    pub async fn hostinger_vps_run_action(virtual_machine_id: String, action: String) -> Result<HostingerVpsOperationResult, String> {
+        hostinger_vps_run_action_inner(&virtual_machine_id, &action)
+    }
+
+    #[tauri::command]
     pub async fn load_hermes_profile_settings() -> Result<HermesProfileSettings, String> {
         load_hermes_profile_settings_inner()
     }
@@ -6780,6 +7144,9 @@ pub fn run() {
             commands::mavoid_social_open_resource,
             commands::mavoid_social_start_generation,
             commands::mavoid_social_retry_design,
+            commands::hostinger_vps_get_overview,
+            commands::hostinger_vps_refresh,
+            commands::hostinger_vps_run_action,
             commands::load_hermes_profile_settings,
             commands::save_hermes_profile_settings,
             commands::warm_file_permissions,
@@ -6871,6 +7238,52 @@ mod tests {
             sync_status: "synced".to_string(),
             archived: false,
         }
+    }
+
+    #[test]
+    fn hostinger_base_url_override_allows_https_and_loopback_http() {
+        assert!(is_allowed_hostinger_base_url_override(
+            "https://developers.hostinger.com"
+        ));
+        assert!(is_allowed_hostinger_base_url_override(
+            "https://example.test/api"
+        ));
+        assert!(is_allowed_hostinger_base_url_override(
+            "http://localhost:8080"
+        ));
+        assert!(is_allowed_hostinger_base_url_override(
+            "http://127.0.0.1:8080"
+        ));
+        assert!(is_allowed_hostinger_base_url_override("http://[::1]:8080"));
+    }
+
+    #[test]
+    fn hostinger_base_url_override_rejects_misleading_http_hosts() {
+        assert!(!is_allowed_hostinger_base_url_override(
+            "http://localhost.evil.example"
+        ));
+        assert!(!is_allowed_hostinger_base_url_override(
+            "http://127.0.0.1.evil.example"
+        ));
+        assert!(!is_allowed_hostinger_base_url_override(
+            "http://example.test"
+        ));
+        assert!(!is_allowed_hostinger_base_url_override("ftp://localhost"));
+        assert!(!is_allowed_hostinger_base_url_override("not a url"));
+    }
+
+    #[test]
+    fn hostinger_base_url_falls_back_for_unsafe_override() {
+        let _guard = env_lock();
+        env::set_var(
+            "HOSTINGER_API_BASE_URL",
+            "http://localhost.evil.example/api",
+        );
+
+        let base_url = hostinger_base_url();
+
+        env::remove_var("HOSTINGER_API_BASE_URL");
+        assert_eq!(base_url, "https://developers.hostinger.com");
     }
 
     #[test]
