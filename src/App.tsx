@@ -40,15 +40,16 @@ type NavigationIconProps = {
 
 type NavigationIcon = (props: NavigationIconProps) => ReactElement;
 
-type ActiveWorkspace = "Brain" | "Agents" | "Code" | "Content" | "Automations" | "Settings";
+type ActiveWorkspace = "Brain" | "Agents" | "Code" | "Content" | "VPS" | "Automations" | "Settings";
 
 const LazyAgentsHermesScreen = lazy(() => import("./agents/AgentsHermesScreen").then((module) => ({ default: module.AgentsHermesScreen })));
 const LazyAutomationsWorkspace = lazy(() => import("./automations/AutomationsWorkspace").then((module) => ({ default: module.AutomationsWorkspace })));
 const LazyBrainWorkspace = lazy(() => import("./brain/BrainWorkspace").then((module) => ({ default: module.BrainWorkspace })));
 const LazyCodeWorkspace = lazy(() => import("./code/CodeWorkspace").then((module) => ({ default: module.CodeWorkspace })));
 const LazyContentWorkspace = lazy(() => import("./content/ContentWorkspace").then((module) => ({ default: module.ContentWorkspace })));
+const LazyVpsWorkspace = lazy(() => import("./vps/VpsWorkspace").then((module) => ({ default: module.VpsWorkspace })));
 
-function InkSigil({ size = 20, strokeWidth = 1.8, "aria-hidden": ariaHidden, variant }: NavigationIconProps & { variant: "brain" | "today" | "projects" | "agents" | "code" | "content" | "automations" | "settings" }) {
+function InkSigil({ size = 20, strokeWidth = 1.8, "aria-hidden": ariaHidden, variant }: NavigationIconProps & { variant: "brain" | "today" | "projects" | "agents" | "code" | "content" | "vps" | "automations" | "settings" }) {
   const common = { stroke: "currentColor", strokeWidth, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, fill: "none" };
 
   return (
@@ -91,6 +92,13 @@ function InkSigil({ size = 20, strokeWidth = 1.8, "aria-hidden": ariaHidden, var
           <path {...common} d="M5.5 16.8c2.6.6 5.8.1 8.6-1.4" />
         </>
       ) : null}
+      {variant === "vps" ? (
+        <>
+          <path {...common} d="M6 7.5c0-1.1 2.7-2 6-2s6 .9 6 2v9c0 1.1-2.7 2-6 2s-6-.9-6-2z" />
+          <path {...common} d="M6 10.5c0 1.1 2.7 2 6 2s6-.9 6-2" />
+          <path {...common} d="M6 13.5c0 1.1 2.7 2 6 2s6-.9 6-2" />
+        </>
+      ) : null}
       {variant === "automations" ? (
         <>
           <path {...common} d="M6 13.5c1.7 3.5 6.7 4.2 9.7 1.8 2.9-2.3 2.4-6.7-.9-8.2" />
@@ -115,6 +123,7 @@ const navigationItems: NavigationItem[] = [
   { label: "Agents", meta: "Hermes chat", status: "ready", Icon: (props) => <InkSigil {...props} variant="agents" /> },
   { label: "Code", meta: "Repos", status: "idle", Icon: (props) => <InkSigil {...props} variant="code" /> },
   { label: "Content", meta: "Social", status: "idle", Icon: (props) => <InkSigil {...props} variant="content" /> },
+  { label: "VPS", meta: "Hostinger", status: "idle", Icon: (props) => <InkSigil {...props} variant="vps" /> },
   { label: "Automations", meta: "Routines", status: "idle", Icon: (props) => <InkSigil {...props} variant="automations" /> },
   { label: "Settings", meta: "Local app", status: "idle", Icon: (props) => <InkSigil {...props} variant="settings" /> },
 ];
@@ -160,7 +169,7 @@ function mergeCatalog(enabledValue: string, availableValues: string[]): string[]
 }
 
 function isActiveWorkspace(value: string | null): value is ActiveWorkspace {
-  return value === "Brain" || value === "Agents" || value === "Code" || value === "Content" || value === "Automations" || value === "Settings";
+  return value === "Brain" || value === "Agents" || value === "Code" || value === "Content" || value === "VPS" || value === "Automations" || value === "Settings";
 }
 
 function isCodeRepository(value: unknown): value is CodeRepository {
@@ -1293,6 +1302,8 @@ export default function App() {
           <LazyAutomationsWorkspace onStatusChange={setAutomationsStatus} />
         ) : activeWorkspace === "Content" ? (
           <LazyContentWorkspace />
+        ) : activeWorkspace === "VPS" ? (
+          <LazyVpsWorkspace />
         ) : activeWorkspace === "Settings" ? (
           <SettingsArchive
             archivedSessions={archivedHermesSessions}
