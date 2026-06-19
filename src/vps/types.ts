@@ -28,7 +28,6 @@ export type HostingerVirtualMachine = {
   cpus: number | null;
   memoryMb: number | null;
   diskGb: number | null;
-  raw: unknown;
 };
 
 export type HostingerVpsActionLog = {

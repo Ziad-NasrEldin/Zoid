@@ -642,7 +642,6 @@ pub struct HostingerVirtualMachine {
     cpus: Option<u64>,
     memory_mb: Option<u64>,
     disk_gb: Option<u64>,
-    raw: serde_json::Value,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -6371,7 +6370,6 @@ fn hostinger_virtual_machine_from_value(value: serde_json::Value) -> HostingerVi
         cpus: hostinger_json_u64(&value, &["cpus", "cpu", "vcpu", "vcpus"]),
         memory_mb: hostinger_json_u64(&value, &["memory", "memory_mb", "memoryMb", "ram", "ram_mb"]),
         disk_gb: hostinger_json_u64(&value, &["disk", "disk_gb", "diskGb", "storage"]),
-        raw: value,
     }
 }
 
@@ -6405,13 +6403,29 @@ fn hostinger_authorized_request(
         .header("accept", "application/json"))
 }
 
+fn hostinger_safe_error_body(text: &str) -> String {
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return "No response body.".to_string();
+    }
+    let truncated: String = collapsed.chars().take(220).collect();
+    let lower = truncated.to_ascii_lowercase();
+    if lower.contains("token") || lower.contains("secret") || lower.contains("password") || lower.contains("authorization") {
+        return "Provider returned an error body with sensitive fields redacted.".to_string();
+    }
+    truncated
+}
+
 fn hostinger_response_json(response: reqwest::blocking::Response, context: &str) -> Result<serde_json::Value, String> {
     let status = response.status();
     let text = response
         .text()
         .map_err(|error| format!("Hostinger {context} response could not be read: {error}"))?;
     if !status.is_success() {
-        return Err(format!("Hostinger {context} failed with HTTP {status}: {text}"));
+        return Err(format!(
+            "Hostinger {context} failed with HTTP {status}: {}",
+            hostinger_safe_error_body(&text)
+        ));
     }
     if text.trim().is_empty() {
         return Ok(serde_json::json!({}));
@@ -6471,6 +6485,13 @@ fn hostinger_vps_run_action_inner(
     let virtual_machine_id = virtual_machine_id.trim();
     if virtual_machine_id.is_empty() {
         return Err("Virtual machine id is required.".to_string());
+    }
+    if !virtual_machine_id.chars().all(|character| character.is_ascii_alphanumeric() || character == '-' || character == '_') {
+        return Err("Virtual machine id contains unsupported characters.".to_string());
+    }
+    let cached_store = load_hostinger_vps_store()?;
+    if !cached_store.servers.iter().any(|server| server.id == virtual_machine_id) {
+        return Err("Refresh Hostinger VPS state before sending actions for this server.".to_string());
     }
     let client = hostinger_vps_client()?;
     let response = hostinger_authorized_request(

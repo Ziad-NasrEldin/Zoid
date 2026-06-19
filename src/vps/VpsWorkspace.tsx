@@ -122,6 +122,9 @@ export function VpsWorkspace() {
   }
 
   async function handleAction(server: HostingerVirtualMachine, action: ServerAction) {
+    if ((action === "stop" || action === "restart") && !window.confirm(`${action === "stop" ? "Stop" : "Reboot"} ${server.hostname}?`)) {
+      return;
+    }
     const actionKey = `${server.id}:${action}`;
     setBusyAction(actionKey);
     setError(null);
