@@ -6340,11 +6340,19 @@ fn hostinger_json_u64(value: &serde_json::Value, keys: &[&str]) -> Option<u64> {
 }
 
 fn hostinger_primary_ip(value: &serde_json::Value) -> Option<String> {
-    hostinger_json_string(value, &["ipv4", "ip", "ip_address", "primary_ip"]).or_else(|| {
-        value.get("ip_addresses")
+    hostinger_json_string(value, &["ip", "ip_address", "primary_ip"]).or_else(|| {
+        value.get("ipv4")
+            .or_else(|| value.get("ip_addresses"))
             .or_else(|| value.get("ipAddresses"))
             .and_then(|ips| ips.as_array())
             .and_then(|ips| ips.iter().find_map(|ip| hostinger_json_string(ip, &["address", "ip", "value"])))
+    })
+}
+
+fn hostinger_disk_gb(value: &serde_json::Value) -> Option<u64> {
+    hostinger_json_u64(value, &["disk_gb", "diskGb"]).or_else(|| {
+        hostinger_json_u64(value, &["disk", "storage"])
+            .map(|megabytes| ((megabytes as f64) / 1024.0).ceil().max(1.0) as u64)
     })
 }
 
@@ -6369,7 +6377,7 @@ fn hostinger_virtual_machine_from_value(value: serde_json::Value) -> HostingerVi
         actions_lock: hostinger_json_string(&value, &["actions_lock", "actionsLock"]),
         cpus: hostinger_json_u64(&value, &["cpus", "cpu", "vcpu", "vcpus"]),
         memory_mb: hostinger_json_u64(&value, &["memory", "memory_mb", "memoryMb", "ram", "ram_mb"]),
-        disk_gb: hostinger_json_u64(&value, &["disk", "disk_gb", "diskGb", "storage"]),
+        disk_gb: hostinger_disk_gb(&value),
     }
 }
 
