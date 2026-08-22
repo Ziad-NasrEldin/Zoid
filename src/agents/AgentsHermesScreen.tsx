@@ -1466,6 +1466,7 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
   const queuedCount = Object.values(runtime.runtimeBySessionId).reduce((total, state) => total + state.queuedPrompts.length, 0);
   const needsReplyCount = sessions.filter((session) => session.needsReply || runtime.getSessionRuntime(session.id).status === "needs-input").length;
   const expandedSession = expandedModeSessionId ? sessions.find((session) => session.id === expandedModeSessionId) : undefined;
+  const isFocusWorkspaceActive = Boolean(expandedSession);
 
   function patchDashboard(updater: (current: AgentDashboardStateV1) => AgentDashboardStateV1) {
     setDashboardState((current) => updater(current));
@@ -1761,7 +1762,7 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
   }, []);
 
   return (
-    <section aria-label="Hermes chat" className="hermes-chat-shell hermes-genm agents-sumi-e">
+    <section aria-label="Hermes chat" className="hermes-chat-shell hermes-genm agents-sumi-e" data-hermes-focus-workspace={isFocusWorkspaceActive ? "true" : undefined}>
       <header className="hermes-topbar hermes-topbar--status-only">
         <div className="hermes-title-block">
           <p className="kana-line">代理</p>
@@ -1804,18 +1805,20 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
         </div>
       </header>
 
-      <div className={["chat-workspace", fileManagerVisible ? "chat-workspace--file-manager-mounted" : "", fileManagerOpen ? "chat-workspace--file-manager-open" : "", isFileManagerResizing ? "chat-workspace--file-manager-resizing" : ""].filter(Boolean).join(" ")} ref={chatWorkspaceRef} style={chatWorkspaceStyle}>
-        <aside className={isSessionsRailCompact ? "sessions-rail sessions-rail--compact" : sessionsRailWidth < 160 ? "sessions-rail sessions-rail--narrow" : sessionsRailWidth < 184 ? "sessions-rail sessions-rail--medium" : "sessions-rail sessions-rail--wide"} aria-label="Opened Hermes sessions" data-session-rail-morph-panel>
+      <div className={["chat-workspace", isFocusWorkspaceActive ? "chat-workspace--focus-mode" : "", fileManagerVisible ? "chat-workspace--file-manager-mounted" : "", fileManagerOpen ? "chat-workspace--file-manager-open" : "", isFileManagerResizing ? "chat-workspace--file-manager-resizing" : ""].filter(Boolean).join(" ")} ref={chatWorkspaceRef} style={chatWorkspaceStyle}>
+        <aside className={isFocusWorkspaceActive ? "sessions-rail sessions-rail--compact sessions-rail--focus-mode" : isSessionsRailCompact ? "sessions-rail sessions-rail--compact" : sessionsRailWidth < 160 ? "sessions-rail sessions-rail--narrow" : sessionsRailWidth < 184 ? "sessions-rail sessions-rail--medium" : "sessions-rail sessions-rail--wide"} aria-label="Opened Hermes sessions" data-session-rail-morph-panel>
           <div className="sessions-rail-header">
             <span className="sessions-rail-title">Sessions</span>
             <span className="sessions-rail-count" aria-label={`${sessions.length} sessions`}>{sessions.length}</span>
-            <button aria-label={isSessionsRailCompact ? "Maximize sessions rail" : "Minimize sessions rail"} aria-pressed={isSessionsRailCompact} className="sessions-rail-morph-button" onClick={handleSessionsRailMorphToggle} title={isSessionsRailCompact ? "Maximize sessions rail" : "Minimize sessions rail"} type="button">
-              {isSessionsRailCompact ? <Maximize2 size={13} strokeWidth={2.4} /> : <Minimize2 size={13} strokeWidth={2.4} />}
-            </button>
+            {!isFocusWorkspaceActive ? (
+              <button aria-label={isSessionsRailCompact ? "Maximize sessions rail" : "Minimize sessions rail"} aria-pressed={isSessionsRailCompact} className="sessions-rail-morph-button" onClick={handleSessionsRailMorphToggle} title={isSessionsRailCompact ? "Maximize sessions rail" : "Minimize sessions rail"} type="button">
+                {isSessionsRailCompact ? <Maximize2 size={13} strokeWidth={2.4} /> : <Minimize2 size={13} strokeWidth={2.4} />}
+              </button>
+            ) : null}
           </div>
           <div className="sessions-list" onScroll={updateSessionsOverflowCue} ref={sessionsListRef} role="list">
             <div className="session-tab-row session-tab-row--new" role="listitem">
-              <button aria-label="New session" className="session-tab session-new-button" data-session-rail-morph-item="new-session" onClick={handleNewSession} title={isSessionsRailCompact ? "New session" : undefined} type="button">
+              <button aria-label="New session" className="session-tab session-new-button" data-session-rail-morph-item="new-session" onClick={handleNewSession} title={isFocusWorkspaceActive || isSessionsRailCompact ? "New session" : undefined} type="button">
                 <span className="session-tab-icon session-new-icon" aria-hidden="true"><Plus size={16} strokeWidth={2.6} /></span>
                 <span className="session-tab-title">New session</span>
                 <span className="session-tab-meta">Start a clean Hermes terminal thread</span>
@@ -1831,6 +1834,11 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
               const isSessionIdle = sessionRuntime.status === "idle";
               const isSessionRunning = sessionRuntime.status === "running";
               const hasQueuedPrompts = sessionRuntime.queuedPrompts.length > 0;
+              const focusSessionStatus = [
+                sessionRuntime.status !== "idle" ? `status ${sessionRuntime.status}` : "idle",
+                needsReply ? "needs reply" : null,
+                hasQueuedPrompts ? `${sessionRuntime.queuedPrompts.length} queued` : null,
+              ].filter(Boolean).join(" · ");
               const sessionRowClassName = [
                 "session-tab-row",
                 needsReply ? "session-tab-row--needs-reply" : "",
@@ -1887,7 +1895,7 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
                       onDragStart={(event) => handleSessionIconDragStart(event, session)}
                       onPointerDown={(event) => handleSessionIconPointerDown(event, session)}
                       style={portraitStyle}
-                      title={isSessionsRailCompact ? `${session.title} · drag to split chat` : "Double-click/right-click to rename · drag to split chat"}
+                      title={isFocusWorkspaceActive || isSessionsRailCompact ? `${session.title} · ${focusSessionStatus} · drag to split chat` : "Double-click/right-click to rename · drag to split chat"}
                       type="button"
                     >
                       <span
@@ -1904,7 +1912,7 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
                       <span className="session-tab-meta">{repositoryLabel(sessionRepository)}</span>
                     </button>
                   )}
-                  {!isSessionsRailCompact ? (
+                  {!isFocusWorkspaceActive && !isSessionsRailCompact ? (
                     <div className="session-row-controls">
                       {sessionRuntime.status !== "idle" ? <span className={`session-runtime-chip session-runtime-chip--${sessionRuntime.status}`}>{sessionRuntime.status}</span> : null}
                       {hasQueuedPrompts ? <span className="session-runtime-chip session-runtime-chip--queued">Q{sessionRuntime.queuedPrompts.length}</span> : null}
@@ -1941,7 +1949,7 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
               <ChevronDown size={16} strokeWidth={2.8} aria-hidden="true" />
             </button>
           ) : null}
-          {!isSessionsRailCompact ? (
+          {!isFocusWorkspaceActive && !isSessionsRailCompact ? (
             <button
               aria-label="Drag to resize Sessions rail"
               aria-orientation="vertical"
@@ -1959,30 +1967,46 @@ export function AgentsHermesScreen({ repositories = [], sessions, activeSessionI
         </aside>
 
         <div
-          className={isChatDropArmed ? "chat-main-pane chat-main-pane--dashboard chat-main-pane--drop-armed" : "chat-main-pane chat-main-pane--dashboard"}
+          className={["chat-main-pane", "chat-main-pane--dashboard", isFocusWorkspaceActive ? "chat-main-pane--focus-mode" : "", isChatDropArmed ? "chat-main-pane--drop-armed" : ""].filter(Boolean).join(" ")}
           data-drop-cue={dashboardDropCue}
           onDragLeave={handleChatDashboardDragLeave}
           onDragOver={handleChatDashboardDragOver}
           onDrop={handleChatDashboardDrop}
           ref={chatDashboardDropRef}
         >
-          <div className="agent-monitor-bar" aria-label="Agent monitor controls">
-            <div className="agent-monitor-status-cluster" aria-label="Agent dashboard status">
-              <span><b className="stat-number-accent">{dashboardState.tiledSessionIds.length}</b> tiled</span>
-              <span><b className="stat-number-accent">{runningCount}</b> running</span>
-              <span><b className="stat-number-accent">{needsReplyCount}</b> needs reply</span>
-              <span><b className="stat-number-accent">{queuedCount}</b> queued</span>
+          {!isFocusWorkspaceActive ? (
+            <div className="agent-monitor-bar" aria-label="Agent monitor controls">
+              <div className="agent-monitor-status-cluster" aria-label="Agent dashboard status">
+                <span><b className="stat-number-accent">{dashboardState.tiledSessionIds.length}</b> tiled</span>
+                <span><b className="stat-number-accent">{runningCount}</b> running</span>
+                <span><b className="stat-number-accent">{needsReplyCount}</b> needs reply</span>
+                <span><b className="stat-number-accent">{queuedCount}</b> queued</span>
+              </div>
+              <div className="agent-monitor-command-cluster">
+                <button type="button" aria-pressed={dashboardState.autoPrioritize} onClick={() => patchDashboard((current) => ({ ...current, autoPrioritize: !current.autoPrioritize }))}>Auto-prioritize</button>
+                <button type="button" onClick={showActiveAgents}>Active agents</button>
+                <button type="button" onClick={() => patchDashboard((current) => ({ ...current, tiledSessionIds: [], primarySessionId: undefined, focusedSessionId: undefined }))}>Clear</button>
+              </div>
             </div>
-            <div className="agent-monitor-command-cluster">
-              <button type="button" aria-pressed={dashboardState.autoPrioritize} onClick={() => patchDashboard((current) => ({ ...current, autoPrioritize: !current.autoPrioritize }))}>Auto-prioritize</button>
-              <button type="button" onClick={showActiveAgents}>Active agents</button>
-              <button type="button" onClick={() => patchDashboard((current) => ({ ...current, tiledSessionIds: [], primarySessionId: undefined, focusedSessionId: undefined }))}>Clear</button>
-            </div>
-          </div>
+          ) : null}
           {expandedSession ? (
-            <div className="agent-expanded-chat">
-              <button type="button" onClick={() => setExpandedModeSessionId(null)}>Back to dashboard · {runningCount} running</button>
-              <div className={isFileDropArmed ? "chat-stage chat-stage--file-drop-armed" : "chat-stage"} onDragLeave={handleChatFileDragLeave} onDragOver={handleChatFileDragOver} onDrop={handleChatFileDrop} onPointerDown={handleChatStagePointerDown}>
+            <div className="agent-expanded-chat agent-expanded-chat--focus-workspace">
+              <div className="focus-workspace-strip focus-workspace-strip--top" aria-label="Focus workspace controls">
+                <div className="focus-workspace-session-title">
+                  <span>Focus mode</span>
+                  <strong>{expandedSession.title}</strong>
+                  <small>{connectionState === "online" ? "Hermes ready" : "Hermes offline"} · {selectedRepository ? selectedRepository.name : "No repository linked"}</small>
+                </div>
+                <div className="focus-workspace-actions">
+                  <button className="chat-focus-mode-button chat-focus-mode-button--active" aria-pressed="true" type="button" onClick={() => setExpandedModeSessionId(null)} title="Return to normal Hermes layout"><Minimize2 size={15} aria-hidden="true" /><span>Exit focus</span></button>
+                  <button aria-label={fileManagerOpen ? "Close file manager sidebar" : "Open file manager sidebar"} aria-pressed={fileManagerOpen} className="file-manager-toggle-button file-manager-toggle-button--focus" onClick={handleFileManagerToggle} title="Open file manager" type="button">
+                    <FolderTree size={15} strokeWidth={2.4} aria-hidden="true" />
+                    <span>Files</span>
+                    <span className="button-label-jp" aria-hidden="true">書類</span>
+                  </button>
+                </div>
+              </div>
+              <div className={isFileDropArmed ? "chat-stage chat-stage--focus-mode chat-stage--file-drop-armed" : "chat-stage chat-stage--focus-mode"} onDragLeave={handleChatFileDragLeave} onDragOver={handleChatFileDragOver} onDrop={handleChatFileDrop} onPointerDown={handleChatStagePointerDown}>
                 <div className="message-list" ref={messageListRef} role="log" aria-live="polite" aria-label="Hermes conversation messages">
                   {expandedSession.messages.map((message, index) => {
                     const userTurnsAfterMessage = expandedSession.messages.slice(index + 1).filter((item) => item.role === "user").length;

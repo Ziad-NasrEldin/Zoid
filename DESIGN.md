@@ -1,7 +1,7 @@
 ---
 version: alpha
 name: Zoid 25 Sumi-e Command System
-description: "The accepted Zoid 25 product UI system extracted from the Agents page: white paper, black sumi ink, pale rules, red seal accents, serif English/Japanese typography, boxed operational rails, and no yellow artifacts."
+description: "The accepted Zoid 25 product UI system extracted from the Agents page: white paper, black sumi ink, pale rules, red seal accents, serif English/Japanese typography, boxed operational rails, and no warm gold artifacts."
 colors:
   primary: "#0D0A0A"
   secondary: "#545554"
@@ -19,7 +19,6 @@ colors:
   sumi-seal-deep: "#8F211A"
   sumi-seal-wash: "#F5E5E3"
   sumi-okay: "#2F3A2F"
-  sumi-warn: "#8F5A1A"
   danger-field: "#FFECEC"
 typography:
   display:
@@ -214,7 +213,7 @@ components:
     rounded: "{rounded.none}"
     padding: "4px 7px"
   status-warn-legacy:
-    backgroundColor: "{colors.sumi-warn}"
+    backgroundColor: "{colors.sumi-alert}"
     textColor: "{colors.sumi-paper}"
     typography: "{typography.label-small}"
     rounded: "{rounded.none}"
@@ -235,7 +234,7 @@ Zoid 25 is a local-first macOS AI operating system. The accepted visual source i
 
 The system is sumi-e product UI, not SaaS dashboard UI: white paper fields, black ink structure, pale gray rules, restrained red seal accents, roomy boxed operational controls, and Japanese/English serif typography. It should feel like an authored command room: tactile, quiet, sharp, and operationally truthful.
 
-The yellow/parchment artifacts from earlier edits are explicitly rejected. Do not carry forward yellow focus rings, yellow command chips, amber strips, beige monitor cards, or orange warning-card surfaces. Command/attention states use the red seal family or written state text, not yellow.
+Warm gold/parchment artifacts from earlier edits are explicitly rejected. Do not carry forward golden focus rings, golden command chips, ochre strips, beige monitor cards, or warm warning-card surfaces. Command/attention states use the red seal family or written state text, not warm gold.
 
 Core characteristics:
 - White paper first; pale gray/mist for depth only.
@@ -255,16 +254,15 @@ Primary structure is `sumi-ink` on `sumi-paper`. The page background may use sub
 - `sumi-mist` `#F5F5F5`: stage base and large quiet work areas.
 - `sumi-rule` `#E0E0E0` and `sumi-pale-rule` `#EDEDED`: borders and separators. Prefer pale rules over black rules on the final Agents system.
 - `sumi-muted` `#545554`: metadata and secondary operational copy.
-- `sumi-wash` `#F7F5F4`: near-white ink wash; use sparingly and avoid beige/yellow drift.
+- `sumi-wash` `#F7F5F4`: near-white ink wash; use sparingly and avoid beige/gold drift.
 - `sumi-seal` `#C23A2E`: the only saturated accent. Use for attention, focus underline, active/tune hover, reply marker, assistant side rail, and signature marks.
 - `sumi-seal-deep` `#8F211A`: stronger destructive/blocked accent and depth for seal marks.
-- `sumi-seal-wash` `#F5E5E3`: light attention background; acceptable because it is red-derived, not yellow.
+- `sumi-seal-wash` `#F5E5E3`: light attention background; acceptable because it is red-derived, not warm gold.
 - `sumi-okay` `#2F3A2F`: ready/online state when text also says Ready/Online.
-- `sumi-warn` `#8F5A1A`: legacy warning alias only. Avoid visible yellow/amber fills in the accepted system.
 
-No yellow rule:
-- Do not use `#FDE863`, yellow focus outlines, amber command chips, yellow input glows, orange cards, or parchment surfaces.
-- If older `kujo-yellow` or `kujo-amber` names appear in code, treat them as legacy aliases that must resolve away from yellow in the final visual system.
+No warm-gold rule:
+- Do not use golden focus outlines, golden command chips, warm input glows, ochre cards, or parchment surfaces.
+- Legacy color aliases must resolve to neutral ink, white paper, mist, or red seal in the final visual system.
 
 ## Typography
 
@@ -325,7 +323,7 @@ Shell/header:
 
 Buttons:
 - Primary actions use black ink fill, white paper text, serif label, zero radius.
-- Hover/active attention may move to red seal, not yellow.
+- Hover/active attention may move to red seal, not warm gold.
 - Pressed controls move 1px using `--motion-press-offset`.
 - Disabled controls use opacity around 0.62 and no shadow.
 
@@ -356,7 +354,7 @@ Chat stage/messages:
 Composer:
 - Paper panel, pale rule, equal-height attach/send controls.
 - Send is black ink; stop/destructive is red seal.
-- Slash/command mode must not use yellow. Use seal wash or black/red state instead.
+- Slash/command mode must not use warm gold. Use seal wash or black/red state instead.
 
 Footer/status:
 - Footer stats strip is compact, pale-ruled, and text-first.
@@ -385,7 +383,7 @@ Motion:
 
 ### Don't
 
-- Don't reintroduce yellow artifacts, amber chips, parchment cards, beige monitor panels, orange warning panels, or `#FDE863` styling.
+- Don't reintroduce warm-gold artifacts, golden chips, parchment cards, beige monitor panels, warm warning panels, or old golden styling.
 - Don't fall back to the old cobalt/Kujoyama design language except as legacy token aliases mapped to sumi-e values.
 - Don't use generic SaaS cards, rounded dashboard tiles, glass panels, fake metrics, or ornamental AI chat novelty.
 - Don't hide backend/runtime truth; distinguish native, preview, blocked, ready, verified, running, queued, stopped, and failed states.

@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { Window } from "happy-dom";
-import { flushSync } from "react-dom";
+import { act as reactAct } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { BrainWorkspace } from "./BrainWorkspace";
@@ -28,14 +28,11 @@ Object.assign(globalThis, {
 
 
 async function act(callback: () => void | Promise<void>) {
-  let result: void | Promise<void> = undefined;
-  flushSync(() => {
-    result = callback();
+  await reactAct(async () => {
+    await callback();
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
-  await result;
-  await Promise.resolve();
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  flushSync(() => undefined);
 }
 const baseSource: AppleNotesSource = {
   id: "apple-notes:icloud:Zoid Brain",

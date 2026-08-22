@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
+import { act as reactAct } from "react";
 import { Window } from "happy-dom";
-import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { SocialDashboard } from "./SocialDashboard";
@@ -79,12 +79,11 @@ async function settle() {
 }
 
 async function act(callback: () => unknown | Promise<unknown>) {
-  let result: unknown | Promise<unknown>;
-  flushSync(() => {
-    result = callback();
+  await reactAct(async () => {
+    await callback();
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
-  await result;
-  await settle();
 }
 
 async function click(element: Element) {
@@ -169,12 +168,16 @@ async function runTests() {
   assert.ok(rendered.container.textContent?.includes("Temporary media host"), "media hosting section should warn about temporary public URLs");
   assert.ok(rendered.container.textContent?.includes("Latest report"), "dashboard should expose latest report metadata/action area");
   assert.ok(rendered.container.textContent?.includes("Schedule or retry is locked"), "schedule retry should be visibly locked when gates fail");
-  assert.ok([...rendered.container.querySelectorAll("button")].some((button) => button.textContent?.includes("Pause monitor")), "monitor pause control should render when monitor is enabled");
+  assert.ok(rendered.container.querySelector(".social-toolbar-group--primary"), "toolbar should emphasize primary workflow actions as one compact group");
+  assert.deepEqual([...rendered.container.querySelectorAll(".social-toolbar-group--primary button")].map((button) => button.textContent?.trim()), ["Generate", "Validate", "Pause monitor"], "primary workflow should expose honest Generate / Validate / monitor controls");
+  assert.ok(rendered.container.querySelector(".social-toolbar-more"), "secondary toolbar actions should be available inside a More disclosure for narrow widths");
+  assert.ok(rendered.container.textContent?.includes("Review + assets"), "review and asset actions should be grouped together");
+  assert.ok(rendered.container.textContent?.includes("Utilities"), "refresh/settings/logs actions should be grouped together");
   assert.ok([...rendered.container.querySelectorAll(".social-toolbar button")].every((button) => button.getAttribute("title")), "toolbar actions should include plain-language hover tooltips");
   assert.ok([...rendered.container.querySelectorAll(".social-toolbar button")].some((button) => button.textContent?.includes("Latest report")), "local latest report should render as a real opener action");
   assert.ok(rendered.container.textContent?.includes("Real source:"), "review verdict should identify its local source instead of appearing as fake seeded data");
   assert.ok([...rendered.container.querySelectorAll("button")].some((button) => button.getAttribute("aria-label")?.includes("Validate media")), "media validation icon action should render");
-  const toolbarValidateButton = [...rendered.container.querySelectorAll(".social-toolbar button")].find((button) => button.textContent?.includes("Validate media"));
+  const toolbarValidateButton = [...rendered.container.querySelectorAll(".social-toolbar-group--primary button")].find((button) => button.textContent?.includes("Validate"));
   assert.ok(toolbarValidateButton && !toolbarValidateButton.hasAttribute("disabled"), "toolbar validation should be enabled when at least one safe HTTPS media URL exists");
   await click(toolbarValidateButton);
   await settle();
@@ -193,11 +196,39 @@ async function runTests() {
   const firstPreviewButton = [...rendered.container.querySelectorAll(".social-media-preview")].find((button) => !button.hasAttribute("disabled"));
   assert.ok(firstPreviewButton, "safe media assets should expose preview button");
   await click(firstPreviewButton);
-  assert.ok(rendered.container.querySelector(".social-preview-lightbox"), "clicking a design should open the lightbox");
+  assert.equal(rendered.container.querySelector(".social-preview-backdrop--full-app"), null, "preview overlay should not be mounted inline inside the scrolling dashboard section");
+  assert.ok(document.body.querySelector(".social-preview-lightbox--full-app"), "clicking a design should open the full-app lightbox overlay");
+  assert.ok(document.body.querySelector(".social-preview-backdrop--full-app"), "preview overlay should cover the application screen instead of rendering as an inline section");
+  assert.ok(document.body.textContent?.includes("Open media URL"), "preview overlay should expose an honest media-url opener action");
+  assert.ok(document.body.textContent?.includes("Replace media"), "preview overlay should expose a replace-media action");
+  assert.ok(document.body.textContent?.includes("Open approval report"), "preview overlay should expose an honest approval-report action");
+  const nextPreview = document.body.querySelector(".social-preview-nav--next");
+  assert.ok(nextPreview, "multiple safe design previews should expose next navigation");
+  await click(nextPreview);
+  assert.equal(document.body.querySelector(".social-preview-stage img")?.getAttribute("src"), "https://d.uguu.se/XiBkwaaa.png", "next preview should advance to the next safe media asset");
+  const openMediaUrl = [...document.body.querySelectorAll(".social-preview-actionbar button")].find((button) => button.textContent?.includes("Open media URL"));
+  assert.ok(openMediaUrl, "overlay should include a real media URL opener button");
+  await click(openMediaUrl);
+  await settle();
+  assert.equal(rendered.openedUrls[rendered.openedUrls.length - 1], "https://d.uguu.se/XiBkwaaa.png", "overlay Open media URL should call the native opener for the active preview URL");
+  const previewBackdrop = document.body.querySelector(".social-preview-backdrop--full-app");
+  assert.ok(previewBackdrop, "preview backdrop should be present before outside-click close");
+  await click(previewBackdrop);
+  assert.equal(document.body.querySelector(".social-preview-lightbox--full-app"), null, "outside click should close the image preview overlay");
+  await click(firstPreviewButton);
+  assert.ok(document.body.querySelector(".social-preview-lightbox--full-app"), "preview should reopen after outside-click close");
   await act(async () => window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }) as unknown as Event));
-  assert.equal(rendered.container.querySelector(".social-preview-lightbox"), null, "Escape should close the image preview lightbox");
+  assert.equal(document.body.querySelector(".social-preview-lightbox--full-app"), null, "Escape should close the image preview lightbox");
   const quickGenerate = rendered.container.querySelector(".social-calendar-quick-button");
   assert.ok(quickGenerate, "every calendar day should expose a quick generation button");
+  await click(quickGenerate);
+  const generationDialog = rendered.container.querySelector(".social-calendar-type-menu");
+  assert.equal(generationDialog?.getAttribute("role"), "dialog", "calendar generation popup should be structured as a compact dialog instead of a loose menu");
+  assert.ok(rendered.container.querySelector(".social-calendar-type-menu-header") && rendered.container.querySelector(".social-calendar-type-menu-note") && rendered.container.querySelector(".social-calendar-type-menu-options"), "calendar generation popup should have header, purpose copy, and grouped options");
+  const closeGenerateMenu = rendered.container.querySelector(".social-calendar-type-menu-close");
+  assert.ok(closeGenerateMenu, "calendar generation menu should expose a close button");
+  await click(closeGenerateMenu);
+  assert.equal(rendered.container.querySelector(".social-calendar-type-menu"), null, "close button should dismiss the calendar generation menu");
   await click(quickGenerate);
   const contentTypeButton = [...rendered.container.querySelectorAll(".social-calendar-type-menu button")].find((button) => button.textContent?.includes("AI Intel brief"));
   assert.ok(contentTypeButton, "known content types should drive the calendar generation menu");
@@ -207,12 +238,12 @@ async function runTests() {
   const retryDesignButton = [...rendered.container.querySelectorAll(".social-media-card button")].find((button) => button.getAttribute("aria-label")?.includes("Retry design") && !button.hasAttribute("disabled"));
   assert.ok(retryDesignButton, "each design should expose a redesign retry action");
   await click(retryDesignButton);
-  const redesignSubmit = [...rendered.container.querySelectorAll(".social-redesign-modal button")].find((button) => button.textContent?.includes("Start redesign"));
+  const redesignSubmit = [...document.body.querySelectorAll(".social-redesign-modal button")].find((button) => button.textContent?.includes("Start redesign"));
   assert.ok(redesignSubmit, "redesign modal should allow optional feedback submission");
   await act(async () => window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }) as unknown as Event));
-  assert.equal(rendered.container.querySelector(".social-redesign-modal"), null, "Escape should close the redesign modal");
+  assert.equal(document.body.querySelector(".social-redesign-modal"), null, "Escape should close the redesign modal");
   await click(retryDesignButton);
-  const redesignSubmitAfterEscape = [...rendered.container.querySelectorAll(".social-redesign-modal button")].find((button) => button.textContent?.includes("Start redesign"));
+  const redesignSubmitAfterEscape = [...document.body.querySelectorAll(".social-redesign-modal button")].find((button) => button.textContent?.includes("Start redesign"));
   assert.ok(redesignSubmitAfterEscape, "redesign modal should reopen after Escape close");
   await click(redesignSubmitAfterEscape);
   await settle();
@@ -222,29 +253,31 @@ async function runTests() {
   const css = readFileSync("src/App.css", "utf8");
   const socialCss = css.slice(css.indexOf("/* MaVoid social operations dashboard */"));
   assert.ok(socialCss.includes("/* Social dashboard hard redraw: single-flow non-overlap layout */"), "social page should use the full redraw block that forces a single-flow non-overlap layout");
-  assert.ok(socialCss.includes("--social-ink: var(--sumi-ink)"), "social page should inherit sumi-e ink token instead of custom brown/yellow palette");
+  assert.ok(socialCss.includes("--social-ink: var(--sumi-ink)"), "social page should inherit sumi-e ink token instead of custom brown/gold palette");
   assert.ok(socialCss.includes("height: 100vh"), "social page should own a viewport-height scroll surface inside the fixed Zoid shell");
-  assert.ok(socialCss.includes(".social-toolbar { display: grid") && socialCss.includes("repeat(auto-fit, minmax(150px, max-content))"), "dashboard actions should use a compact responsive grid");
-  assert.ok(socialCss.includes(".social-calendar-quick-button") && socialCss.includes(".social-calendar-type-menu"), "calendar should include a wired generation menu");
+  assert.ok(socialCss.includes(".social-toolbar { display: grid") && socialCss.includes(".social-toolbar-group--primary") && socialCss.includes(".social-toolbar-more > summary"), "dashboard actions should use compact grouped workflow, review/assets, and utility controls with a narrow More affordance");
+  assert.ok(socialCss.includes(".social-rhythm-step") && socialCss.includes("grid-template-columns: minmax(72px, max-content) minmax(0, 1fr)") && socialCss.includes("column-gap: clamp(14px, 1.2vw, 22px)"), "rhythm labels should keep comfortable spacing from the hour column");
+  assert.ok(socialCss.includes(".social-calendar-quick-button") && socialCss.includes(".social-calendar-type-menu") && socialCss.includes(".social-calendar-type-menu-header") && socialCss.includes(".social-calendar-type-menu-options"), "calendar should include a structured generation command sheet");
   assert.ok(socialCss.includes(".social-preview-backdrop") && socialCss.includes("backdrop-filter: blur"), "image preview should use centered lightbox with progressive blur");
+  assert.ok(socialCss.includes(".social-preview-lightbox--full-app .social-preview-stage img") && socialCss.includes("width: 100%") && socialCss.includes("height: 100%") && socialCss.includes("object-fit: contain"), "full-app preview image should fit entirely inside the visible overlay stage without clipping");
   assert.ok(socialCss.includes(".social-schedule-calendar { position: relative; z-index: auto") && socialCss.includes("overflow: hidden") && socialCss.includes("margin-bottom: clamp(10px, 1.4vw, 18px)"), "calendar should reserve space and clip its own overflow instead of using z-index band-aids");
   assert.ok(socialCss.includes(".social-automation-summary") && socialCss.includes(".social-automation-cards"), "automation state should be redesigned into a summarized command panel");
   assert.ok(socialCss.includes("@container (max-width: 1100px)") && socialCss.includes(".social-automation-panel { grid-column: 1 / -1; }"), "automation state should respond to available dashboard container width before it crushes the center column");
   assert.ok(socialCss.includes(".social-automation-panel .social-kv") && socialCss.includes("grid-template-columns: 1fr"), "automation state rows should stack labels and values to prevent narrow-panel text overlap");
   assert.ok(!socialCss.includes(".social-automation-panel .social-kv { grid-template-columns: repeat(3"), "automation key/value rows must not split dt/dd pairs into an eye-draining three-column grid");
   assert.ok(socialCss.includes(".social-automation-panel .social-kv dd") && socialCss.includes("line-height: 1.35"), "automation state values should have readable line-height when wrapping");
-  assert.ok(!socialCss.includes("rgba(255, 252, 242"), "social page must not use the rejected warm yellow card wash");
-  assert.ok(!socialCss.includes("rgba(255, 241, 225"), "social page must not use the rejected yellow/orange rate-limit wash");
-  assert.ok(!socialCss.includes("rgba(236,228,209"), "social hero must not use the rejected yellow background gradient");
+  assert.ok(!socialCss.includes("rgba(255, 252, 242"), "social page must not use the rejected warm gold card wash");
+  assert.ok(!socialCss.includes("rgba(255, 241, 225"), "social page must not use the rejected warm rate-limit wash");
+  assert.ok(!socialCss.includes("rgba(236,228,209"), "social hero must not use the rejected warm background gradient");
 
-  const healthButton = [...rendered.container.querySelectorAll("button")].find((button) => button.textContent?.includes("Check provider API"));
-  assert.ok(healthButton, "provider health button should render");
+  const healthButton = [...rendered.container.querySelectorAll("button")].find((button) => button.textContent?.includes("Check provider"));
+  assert.ok(healthButton, "provider read-back button should render with honest copy");
   await click(healthButton);
   await settle();
   assert.ok(rendered.calls.includes("mavoid_social_run_buffer_health_check"), "health button should call backend Buffer check");
 
   const pauseButton = [...rendered.container.querySelectorAll("button")].find((button) => button.textContent?.includes("Pause creator"));
-  assert.ok(pauseButton, "creator pause button should render");
+  assert.ok(pauseButton, "creator automation pause/resume button should render with explicit copy");
   await click(pauseButton);
   await settle();
   assert.ok(rendered.calls.includes("mavoid_social_manage_automation"), "automation button should call backend manager");
@@ -252,12 +285,43 @@ async function runTests() {
   await act(async () => rendered.root.unmount());
   clearMocks();
 
+  const providerLocked = await renderDashboard([post({
+    status: "approved",
+    bufferPosts: [
+      { bufferId: "fb-post-1", platform: "facebook", channelId: "fb-1", channelDisplayName: "Facebook", scheduledAtUtc: "2026-06-10T07:00:00Z", scheduledAtLocal: "2026-06-10 10:00 Africa/Cairo", state: "scheduled", readBackVerifiedAt: null, publishedUrl: null, lastErrorCode: null, lastErrorMessage: null },
+    ],
+    reports: [{ label: "Provider report", path: "/tmp/provider-report.json", kind: "buffer", createdAt: "2026-06-09T12:50:00Z" }],
+  })]);
+  const providerLockedToolbarValidate = [...providerLocked.container.querySelectorAll(".social-toolbar-group--primary button")].find((button) => button.textContent?.includes("Verify provider state"));
+  assert.ok(providerLockedToolbarValidate, "provider-locked post should advertise provider verification before click in the primary toolbar");
+  const providerLockedValidate = [...providerLocked.container.querySelectorAll(".social-media-card button")].find((button) => button.getAttribute("aria-label")?.includes("Verify provider state before media validation") && !button.hasAttribute("disabled"));
+  assert.ok(providerLockedValidate, "provider-locked post should expose an honest provider verification affordance on media cards");
+  await click(providerLockedValidate);
+  await settle();
+  assert.ok(document.body.querySelector(".social-provider-verification-modal"), "media validate should open the provider verification flow instead of surfacing a raw lock error");
+  assert.ok(document.body.textContent?.includes("Verify provider state"), "provider verification flow should have a clear title");
+  assert.ok(document.body.textContent?.includes("duplicate scheduling"), "provider verification flow should explain why verification is required");
+  assert.ok(!document.body.textContent?.includes("This post already has provider state and must be verified before retrying"), "raw provider-state lock reason should not be shown as the user-facing flow");
+  const openProviderDetails = [...document.body.querySelectorAll(".social-provider-verification-modal button")].find((button) => button.textContent?.includes("Open provider details"));
+  assert.ok(openProviderDetails && !openProviderDetails.hasAttribute("disabled"), "provider details action should be available when a provider report is linked");
+  await click(openProviderDetails);
+  await settle();
+  assert.equal(providerLocked.openedUrls[providerLocked.openedUrls.length - 1], "/tmp/provider-report.json", "provider details should open the linked provider report");
+  const verifyNow = [...document.body.querySelectorAll(".social-provider-verification-modal button")].find((button) => button.textContent?.includes("Verify now"));
+  assert.ok(verifyNow, "provider verification flow should include a verify now action");
+  await click(verifyNow);
+  await settle();
+  assert.ok(providerLocked.calls.includes("mavoid_social_run_buffer_health_check"), "Verify now should call the existing provider health/read-back check");
+  assert.ok(providerLocked.container.textContent?.includes("still has unverified provider state"), "unchanged local read-back should report the unlock limitation honestly");
+  await act(async () => providerLocked.root.unmount());
+  clearMocks();
+
   const unsafeOnly = await renderDashboard([post({
     mediaAssets: [
       { path: "/tmp/local-only.png", publicUrl: "file:///tmp/local-only.png", contentType: "image/png", bytes: 12345, width: 1080, height: 1350, validatedAt: null, provider: "local", temporary: false, validationStatus: "unchecked" },
     ],
   })]);
-  const unsafeOnlyToolbarValidate = [...unsafeOnly.container.querySelectorAll(".social-toolbar button")].find((button) => button.textContent?.includes("Validate media"));
+  const unsafeOnlyToolbarValidate = [...unsafeOnly.container.querySelectorAll(".social-toolbar-group--primary button")].find((button) => button.textContent?.includes("Validate"));
   assert.ok(unsafeOnlyToolbarValidate?.hasAttribute("disabled"), "toolbar media validation should stay disabled when no safe HTTPS media URL exists");
   assert.equal(unsafeOnly.validatedUrls.length, 0, "unsafe-only render should not validate media during initial load");
   await act(async () => unsafeOnly.root.unmount());
