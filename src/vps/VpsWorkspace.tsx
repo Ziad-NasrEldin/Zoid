@@ -67,6 +67,7 @@ function ServerCard({ busyAction, onAction, server }: { busyAction: string | nul
       <ServerStats server={server} />
       <footer>
         <span>{server.location ?? "Hostinger VPS"}</span>
+        <span>Action lock: {server.actionsLock ?? "unknown"}</span>
         <div className="vps-action-row" aria-label={`Actions for ${server.hostname}`}>
           <button disabled={actionDisabled(server, "start", busyAction)} onClick={() => onAction(server, "start")} type="button"><Play size={14} /> Start</button>
           <button disabled={actionDisabled(server, "stop", busyAction)} onClick={() => onAction(server, "stop")} type="button"><Square size={14} /> Stop</button>
@@ -84,6 +85,8 @@ function ActionRow({ action }: { action: HostingerVpsActionLog }) {
       <strong>{action.action}</strong>
       <span>{action.virtualMachineId}</span>
       <time>{readableDateTime(action.createdAt)}</time>
+      <span>{action.message}</span>
+      {action.providerActionId ? <span>Provider action: {action.providerActionId}</span> : null}
     </li>
   );
 }
